@@ -93,6 +93,12 @@ struct ClientConfig {
     /// 配置即替代默认信任库。用于自建服务器用私有 CA 签证书的场景。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ca_path: Option<String>,
+    /// 本机没有任何显示器时，临时接入一块虚拟显示器供远程采集。
+    ///
+    /// 首次开启会在会话开始时弹一次 UAC 安装 Amyuni usbmmidd_v2（微软签名的
+    /// 间接显示驱动，第三方组件，可能弹一次广告页）。默认关闭。
+    #[serde(default)]
+    virtual_display: bool,
 }
 
 fn default_direct_port() -> u16 {
@@ -124,6 +130,7 @@ impl Default for ClientConfig {
             direct_tokens: Vec::new(),
             max_bitrate: None,
             ca_path: None,
+            virtual_display: false,
         }
     }
 }
@@ -2467,6 +2474,7 @@ async fn get_local_settings(shared: State<'_, Arc<Shared>>) -> Result<Value, Str
         "uiZoom": config.ui_zoom,
         "closeToTray": config.close_to_tray,
         "caPath": config.ca_path,
+        "virtualDisplay": config.virtual_display,
     }))
 }
 
@@ -2508,6 +2516,24 @@ async fn set_close_to_tray(shared: State<'_, Arc<Shared>>, enabled: bool) -> Res
             .map_err(|error| format!("保存设置失败: {error}"))?;
     }
     tracing::info!("关闭窗口缩到托盘: {enabled}");
+    Ok(enabled)
+}
+
+/// 无头机器上临时接入虚拟显示器（usbmmidd_v2）。切换即时生效。
+#[tauri::command]
+async fn set_virtual_display(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    screenwall_agent::virtual_display::set_enabled(enabled);
+    let mut config = shared.config.write().await;
+    if config.virtual_display != enabled {
+        config.virtual_display = enabled;
+        config
+            .save()
+            .map_err(|error| format!("保存设置失败: {error}"))?;
+    }
+    tracing::info!("无头虚拟显示器: {enabled}");
     Ok(enabled)
 }
 
@@ -3595,6 +3621,7 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
             account_token: config.token.clone(),
             device_id: config.device_id.clone(),
             ca_path: config.ca_path.clone().unwrap_or_default(),
+            virtual_display: config.virtual_display,
         };
         let approval: ApprovalFn = {
             let app = app.clone();
@@ -3897,8 +3924,15 @@ fn main() {
     if let Some(code) = firewall::run_helper_from_args() {
         std::process::exit(code);
     }
+    // 无头机器装/插 usbmmidd 虚拟显示器：同样是提权重跑自身，
+    // 由被控端在会话开始前通过 ShellExecuteExW(runas) 拉起。
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = screenwall_agent::virtual_display::run_helper_from_args(&args) {
+        std::process::exit(code);
+    }
     init_tracing();
     let mut config = ClientConfig::load();
+    screenwall_agent::virtual_display::set_enabled(config.virtual_display);
     let mut changed = false;
     // 旧版本 client.json 里的 token 是 Agent 的共享 Token，不是账号令牌。
     if config.username.is_empty() && !config.token.is_empty() {
@@ -4039,6 +4073,7 @@ fn main() {
             get_local_settings,
             set_allow_control,
             set_close_to_tray,
+            set_virtual_display,
             open_log_dir,
             export_diagnostics,
             get_log_info,

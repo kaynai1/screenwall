@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../third_party/kaypanel/dist/kaypanel.exe": "kaypanel.exe"
+      "../../third_party/kaypanel/dist/kaypanel.exe": "kaypanel.exe",
+      "../../third_party/usbmmidd_v2/": "usbmmidd_v2/"
     },
     "publisher": "ScreenWall",
     "shortDescription": "同账号互控的远程桌面工作台",

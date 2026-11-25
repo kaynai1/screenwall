@@ -19,6 +19,7 @@ pub mod server;
 pub mod session;
 pub mod stats;
 pub mod tls;
+pub mod virtual_display;
 pub mod wol;
 
 pub use server::{run_server, AgentState};

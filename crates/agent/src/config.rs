@@ -32,6 +32,9 @@ pub struct AgentConfig {
     /// 自定义 CA 根证书路径（文件或目录）；为空表示用系统默认信任库。
     #[serde(default)]
     pub ca_path: String,
+    /// 无头机器上是否允许临时接入虚拟显示器（需要管理员安装第三方 IDD 驱动）。
+    #[serde(default)]
+    pub virtual_display: bool,
 }
 
 impl AgentConfig {
@@ -46,6 +49,7 @@ impl AgentConfig {
             account_token: String::new(),
             device_id: generate_device_id(),
             ca_path: String::new(),
+            virtual_display: false,
         }
     }
 }

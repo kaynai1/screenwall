@@ -938,6 +938,28 @@ async fn session_task(
                                     max_bitrate: if view_only { None } else { sub.max_bitrate },
                                 }
                                 .normalized();
+                                // 无头机器：先确保有一块可采集的虚拟屏，否则
+                                // DXGI/GDI 只能给出黑帧。已开物理屏时是空操作。
+                                if state.config.virtual_display
+                                    || crate::virtual_display::enabled()
+                                {
+                                    match tokio::task::spawn_blocking(|| {
+                                        crate::virtual_display::ensure_display(Duration::from_secs(
+                                            15,
+                                        ))
+                                    })
+                                    .await
+                                    {
+                                        Ok(Ok(true)) => {}
+                                        Ok(Ok(false)) => {}
+                                        Ok(Err(error)) => {
+                                            tracing::warn!("无头虚拟显示器不可用: {error}");
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!("无头虚拟显示器任务失败: {error}");
+                                        }
+                                    }
+                                }
                                 let id = next_stream_id;
                                 next_stream_id = next_stream_id.wrapping_add(1).max(1);
                                 let session_id = session;

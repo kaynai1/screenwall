@@ -117,6 +117,7 @@ async fn start_direct(tag: &str) -> Result<Harness> {
             account_token: String::new(),
             device_id: "direct-device".into(),
             ca_path: String::new(),
+            virtual_display: false,
         },
         displays: vec![DisplayInfo {
             index: 0,
@@ -423,6 +424,7 @@ async fn direct_without_approval_is_rejected() -> Result<()> {
             account_token: String::new(),
             device_id: "direct-device".into(),
             ca_path: String::new(),
+            virtual_display: false,
         },
         displays: Vec::new(),
         approval: None,

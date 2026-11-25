@@ -27,6 +27,7 @@ import {
   setCaPath,
   setDirectEnabled,
   setUiZoom,
+  setVirtualDisplay,
   testServer,
 } from "../api";
 import { Modal, Progress, Segmented, Switch } from "../components/ui";
@@ -142,6 +143,9 @@ export default function SettingsPage({
 
   // 本机设置：改动先留在界面，点「保存更改」才落地。
   const [allowControl, setAllowControlState] = useState(true);
+  // 无头虚拟显示器：切换即时生效（像直连开关一样，不参与保存按钮）。
+  const [virtualDisplay, setVirtualDisplayState] = useState(false);
+  const [virtualDisplayBusy, setVirtualDisplayBusy] = useState(false);
   const [autoStart, setAutoStartState] = useState(false);
   const [zoom, setZoom] = useState("100");
   const [animations, setAnimationsState] = useState(true);
@@ -229,6 +233,7 @@ export default function SettingsPage({
       const motion = storedMotion();
       const currentTheme = storedTheme();
       setAllowControlState(local.allowControl);
+      setVirtualDisplayState(local.virtualDisplay ?? false);
       setCaPathState(local.caPath ?? "");
       setAutoStartState(autostart);
       setZoom(nextZoom);
@@ -344,6 +349,26 @@ export default function SettingsPage({
       notify(errorLine(error), "error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** 无头虚拟显示器：即时生效，失败时回滚开关。 */
+  async function toggleVirtualDisplay(next: boolean) {
+    if (virtualDisplayBusy) return;
+    const previous = virtualDisplay;
+    setVirtualDisplayState(next);
+    setVirtualDisplayBusy(true);
+    try {
+      setVirtualDisplayState(await setVirtualDisplay(next));
+      notify(
+        next ? "无头时会自动接入虚拟显示器" : "已关闭无头虚拟显示器",
+        "success",
+      );
+    } catch (error) {
+      setVirtualDisplayState(previous);
+      notify(errorLine(error), "error");
+    } finally {
+      setVirtualDisplayBusy(false);
     }
   }
 
@@ -1042,6 +1067,13 @@ export default function SettingsPage({
                     hint="关闭后任何设备都无法连接本机，包括同账号设备"
                     checked={allowControl}
                     onChange={setAllowControlState}
+                  />
+                  <Switch
+                    label="无头时接入虚拟显示器"
+                    hint="本机没有任何显示器时，用 usbmmidd_v2（Amyuni 签名的间接显示驱动）临时接一块 1920×1080 虚拟屏再采集。首次使用需要一次管理员授权，驱动可能弹一次广告页"
+                    checked={virtualDisplay}
+                    disabled={virtualDisplayBusy}
+                    onChange={(next) => void toggleVirtualDisplay(next)}
                   />
                   <div className="set-row">
                     <div className="set-row-copy">

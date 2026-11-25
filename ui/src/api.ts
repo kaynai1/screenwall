@@ -958,6 +958,8 @@ export type LocalSettings = {
   closeToTray?: boolean;
   /** 自定义 CA 根证书路径；null 表示使用系统默认信任库。 */
   caPath?: string | null;
+  /** 无头机器上是否允许临时接入虚拟显示器。 */
+  virtualDisplay?: boolean;
 };
 
 export async function getLocalSettings(): Promise<LocalSettings> {
@@ -971,6 +973,12 @@ export async function getLocalSettings(): Promise<LocalSettings> {
 
 export async function setAllowControl(enabled: boolean): Promise<boolean> {
   if (isTauri) return invoke<boolean>("set_allow_control", { enabled });
+  return enabled;
+}
+
+/** 无头机器上临时接入虚拟显示器（首次需要 UAC 安装驱动）。 */
+export async function setVirtualDisplay(enabled: boolean): Promise<boolean> {
+  if (isTauri) return invoke<boolean>("set_virtual_display", { enabled });
   return enabled;
 }
 

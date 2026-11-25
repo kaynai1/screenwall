@@ -96,6 +96,7 @@ async fn start_agent(tag: &str) -> Result<u16> {
             account_token: String::new(),
             device_id: "test-device".into(),
             ca_path: String::new(),
+            virtual_display: false,
         },
         displays: Vec::new(),
         approval: None,

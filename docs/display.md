@@ -630,6 +630,29 @@ powercfg /requests
 
 ---
 
+## 7.5 本项目的落地：无头时自动接入 usbmmidd 虚拟屏
+
+2026-11-25 实现，对应 `crates/agent/src/virtual_display.rs`。做法与 CrossDesk 一致：
+随安装包带 Amyuni **usbmmidd_v2**（微软签名的间接显示驱动），检测到本机没有任何活动
+显示输出时，装驱动并插一块 1920×1080 虚拟屏，再照常走 DXGI 采集。
+
+- **开关**：设置 → 安全 → 被控授权 → 「无头时接入虚拟显示器」，默认关闭，切换即时生效。
+  第一次真正需要时会在会话开始时弹 UAC；用户拒绝就继续黑帧，不阻塞会话。
+- **判断**：`EnumDisplayDevicesW` 枚举活动适配器，数量为 0（且虚拟桌面尺寸为 0）才算
+  headless。显示器只是断电、EDID 还在的情况**不算**，那种情况本来就能采到画面。
+- **安装**：提权重跑自身（`--screenwall-vdisplay=plug`），在管理员进程里执行
+  `deviceinstaller64.exe install usbmmidd.inf usbmmidd`、`enableidd 1`，成功后写
+  `HKLM\Software\ScreenWall\UsbmmiddDriverInstalled = 1`（64 位视图）。
+- **复用自己的屏**：桌面上已经有 usbmmidd 输出时不再插第二块。
+- **卸载**：NSIS 的 `PREUNINSTALL` 先 `enableidd 0` 逐块拔屏，再 `stop` / `remove`；
+  只有上面的注册表标记存在才删，用户自己为别的软件装的同名驱动不动。
+- **第三方边界**：驱动包原样放在 `third_party/usbmmidd_v2/`，声明与许可见
+  `third_party/usbmmidd_v2/NOTICE.md`。许可要求保留版权声明，且首次使用可能弹一次
+  广告页；`usbmmIdd.inf` 不能改，改了签名就失效。
+- **排查**：手动指定驱动目录用环境变量 `SCREENWALL_USBMMIDD_DIR`；日志里搜
+  「无头虚拟显示器」。开发机没接显示器时可以用它验证，但**不要**在无人值守机器上
+  自动点 UAC。
+
 ## 8. 验收方法
 
 以下步骤用于在真实机器上确认“关显示器、拔线、改电源计划、装虚拟屏”分别会怎样。建议用两台机器：被控端 + 主控端；记录 GPU、接口（HDMI/DP）、显示器型号、Windows 版本、驱动版本。

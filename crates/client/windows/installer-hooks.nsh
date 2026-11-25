@@ -54,4 +54,43 @@
   nsExec::ExecToStack '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="${SCREENWALL_DISCOVERY_RULE}"'
   Pop $0
   Pop $1
+
+  ; 无头虚拟显示器：只删 ScreenWall 自己装的 usbmmidd 驱动。
+  ; crates/agent/src/virtual_display.rs 安装成功后会写
+  ; HKLM\Software\ScreenWall\UsbmmiddDriverInstalled = 1（64 位视图）；
+  ; 用户自己为别的软件装的同名驱动不能被我们删掉。
+  IfFileExists "$INSTDIR\usbmmidd_v2\deviceinstaller64.exe" 0 screenwall_vd_done
+  SetRegView 64
+  ClearErrors
+  ReadRegDWORD $0 HKLM "Software\ScreenWall" "UsbmmiddDriverInstalled"
+  ${If} ${Errors}
+  ${OrIf} $0 != 1
+    SetRegView lastused
+    Goto screenwall_vd_done
+  ${EndIf}
+
+  DetailPrint "ScreenWall: 移除 usbmmidd 虚拟显示器驱动"
+  SetOutPath "$INSTDIR\usbmmidd_v2"
+  ; 先把最多 4 块虚拟屏拔掉，再停服务、删驱动。
+  StrCpy $1 0
+  screenwall_vd_unplug:
+    nsExec::ExecToLog '"$INSTDIR\usbmmidd_v2\deviceinstaller64.exe" enableidd 0'
+    Pop $2
+    IntOp $1 $1 + 1
+    ${If} $2 = 0
+    ${AndIf} $1 < 4
+      Goto screenwall_vd_unplug
+    ${EndIf}
+  nsExec::ExecToLog '"$INSTDIR\usbmmidd_v2\deviceinstaller64.exe" stop usbmmidd'
+  Pop $2
+  nsExec::ExecToLog '"$INSTDIR\usbmmidd_v2\deviceinstaller64.exe" remove usbmmidd'
+  Pop $2
+  ${If} $2 != 0
+    DetailPrint "ScreenWall: 驱动删除返回 $2，可在设备管理器里手动移除「USB Mobile Monitor Virtual Display」"
+  ${EndIf}
+  DeleteRegValue HKLM "Software\ScreenWall" "UsbmmiddDriverInstalled"
+  SetRegView lastused
+  SetOutPath "$TEMP"
+
+  screenwall_vd_done:
 !macroend

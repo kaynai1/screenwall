@@ -428,6 +428,7 @@ fn agent_config(config: &crate::ClientConfig) -> screenwall_agent::config::Agent
         account_token: String::new(),
         device_id: config.device_id.clone(),
         ca_path: config.ca_path.clone().unwrap_or_default(),
+        virtual_display: config.virtual_display,
     }
 }
 

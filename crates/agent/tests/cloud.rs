@@ -161,6 +161,7 @@ async fn agent_connects_and_serves_session() {
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
         ca_path: String::new(),
+        virtual_display: false,
     };
     let state = Arc::new(AgentState {
         config,
@@ -286,6 +287,7 @@ async fn control_requires_host_approval() {
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
         ca_path: String::new(),
+        virtual_display: false,
     };
     let state = Arc::new(AgentState {
         config,
@@ -410,6 +412,7 @@ async fn wol_request_is_relayed_and_rate_limited() {
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
         ca_path: String::new(),
+        virtual_display: false,
     };
     let state = Arc::new(AgentState {
         config,
