@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 
 /// 进程级开关。设置页切换后立即生效，不必重启被控端。
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// 上一次提权失败的时间，用来抑制连续的 UAC 弹窗。
+static LAST_FAILURE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
@@ -156,16 +159,22 @@ pub fn count_virtual_displays() -> usize {
             cb: std::mem::size_of::<DisplayDeviceW>() as u32,
             ..Default::default()
         };
-        // SAFETY: adapter.device_name 是系统填好的显示设备名。
-        if unsafe { EnumDisplayDevicesW(name.as_ptr(), 0, &mut monitor, 0) } == 0 {
-            continue;
-        }
-        let ident = format!(
+        // 刚插上的屏可能还没枚举出监视器；此时仍用适配器信息判断，
+        // 避免误以为没有插过而再插一块。
+        let mut ident = format!(
             "{} {}",
-            from_wide(&monitor.device_string),
-            from_wide(&monitor.device_id)
-        )
-        .to_ascii_lowercase();
+            from_wide(&adapter.device_string),
+            from_wide(&adapter.device_id)
+        );
+        // SAFETY: adapter.device_name 是系统填好的显示设备名。
+        if unsafe { EnumDisplayDevicesW(name.as_ptr(), 0, &mut monitor, 0) } != 0 {
+            ident.push_str(&format!(
+                " {} {}",
+                from_wide(&monitor.device_string),
+                from_wide(&monitor.device_id)
+            ));
+        }
+        let ident = ident.to_ascii_lowercase();
         if ident.contains("usbmmidd") || ident.contains("usb mobile monitor") {
             count += 1;
         }
@@ -242,8 +251,21 @@ pub fn ensure_display(timeout: Duration) -> Result<bool, String> {
         return Ok(true);
     }
     let dir = package_dir().ok_or_else(|| "缺少虚拟显示器驱动包 usbmmidd_v2".to_string())?;
+    // UAC 被取消时不要在每个流/每次会话上反复弹窗，退避一分钟。
+    if let Ok(guard) = LAST_FAILURE.lock() {
+        if let Some(at) = *guard {
+            if at.elapsed() < FAILURE_BACKOFF {
+                return Err("上一次管理员授权被取消，稍后再试".to_string());
+            }
+        }
+    }
     let started = Instant::now();
-    request_elevated("plug")?;
+    if let Err(error) = request_elevated("plug") {
+        if let Ok(mut guard) = LAST_FAILURE.lock() {
+            *guard = Some(Instant::now());
+        }
+        return Err(error);
+    }
     let mode = loop {
         if count_virtual_displays() > 0 {
             break true;

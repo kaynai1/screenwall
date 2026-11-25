@@ -644,6 +644,8 @@ powercfg /requests
   `deviceinstaller64.exe install usbmmidd.inf usbmmidd`、`enableidd 1`，成功后写
   `HKLM\Software\ScreenWall\UsbmmiddDriverInstalled = 1`（64 位视图）。
 - **复用自己的屏**：桌面上已经有 usbmmidd 输出时不再插第二块。
+- **已知限制**：插上的虚拟屏不会在物理显示器接回后自动拔掉，会一直留到卸载；接回真屏后
+  可以在 Windows 显示设置里禁用这块 1920×1080。UAC 被取消后 60 秒内不再重复弹窗。
 - **卸载**：NSIS 的 `PREUNINSTALL` 先 `enableidd 0` 逐块拔屏，再 `stop` / `remove`；
   只有上面的注册表标记存在才删，用户自己为别的软件装的同名驱动不动。
 - **第三方边界**：驱动包原样放在 `third_party/usbmmidd_v2/`，声明与许可见
