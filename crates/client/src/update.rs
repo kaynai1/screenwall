@@ -156,12 +156,22 @@ pub async fn check_update(
 ///
 /// 网络不可达时返回 Err，由界面显示原因 —— 不静默当成「已是最新」。
 pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<UpdateInfo>, String> {
+    // 全局 HTTP 超时只有 10s，国内访问 api.github.com 常常不够；这里单独
+    // 给 30s，而且把失败原因说成「网络问题」而不是让上层静默当成「已是最新」。
     let response = client
         .get(GITHUB_RELEASES)
+        .timeout(std::time::Duration::from_secs(30))
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|error| format!("检查更新失败: {error}"))?;
+        .map_err(|error| {
+            if error.is_timeout() {
+                "检查更新超时：无法访问 GitHub（国内网络可能需要代理），请稍后重试或手动下载"
+                    .to_string()
+            } else {
+                format!("检查更新失败：无法访问 GitHub（国内网络可能需要代理）: {error}")
+            }
+        })?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         // 仓库还没有发布任何 Release：按「已是最新」处理，不当作错误。

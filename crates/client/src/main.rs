@@ -4702,14 +4702,16 @@ async fn check_update(
         (config.server_url.clone(), config.token.clone())
     };
 
-    let from_server = async {
-        if base.is_empty() {
-            // 局域网模式没有自建服务器，直接看 GitHub。
-            return Ok(None);
-        }
-        update::check_update(&shared.http, &base, &token).await
-    };
-    let (server, github) = tokio::join!(from_server, update::check_update_github(&shared.http));
+    if base.is_empty() {
+        // 局域网模式没有自建服务器，只依赖 GitHub。这里必须把 GitHub 的失败
+        // 如实返回，不能静默成「已是最新」——否则国内网络下 GitHub 一超时，
+        // 用户就会一直以为没有新版本（0.2.5 检测不到 0.2.6 就是这个原因）。
+        return update::check_update_github(&shared.http).await;
+    }
+    let (server, github) = tokio::join!(
+        update::check_update(&shared.http, &base, &token),
+        update::check_update_github(&shared.http)
+    );
     merge_update_sources(server, github)
 }
 

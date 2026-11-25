@@ -74,6 +74,17 @@ export default function App() {
   const [directBusy, setDirectBusy] = useState(false);
   /** 已经打开过的页面：切回来时复用，不再重新挂载、重新拉数据。 */
   const [visited, setVisited] = useState<Set<PageKey>>(() => new Set(["wall"]));
+  // 任何方式切页（侧栏 navigate、屏幕墙/设备页 openDevice、登录后进控制页）都要
+  // 把目标页登记进 visited：页面容器只渲染 visited 里的项，漏登记就会整页空白。
+  // openDevice 等路径不走 navigate，所以这里统一兜住。
+  useEffect(() => {
+    setVisited((current) => {
+      if (current.has(page)) return current;
+      const copy = new Set(current);
+      copy.add(page);
+      return copy;
+    });
+  }, [page]);
   const toastSeq = useRef(0);
 
   const notify = useCallback((text: string, tone: ToastTone = "info") => {
@@ -609,7 +620,11 @@ export default function App() {
           {/* 访问过的页面保留在 DOM 里，切回来只切 display。
               之前每次切页都换 key，整页卸载重挂、每个页面的 useEffect
               又各自 invoke 后端，所以点一下要等好几秒才有反应。 */}
-          {Array.from(visited).map((key) => (
+          {Array.from(
+            // 当前页永远在渲染集合里：即使某条切页路径还没来得及登记 visited，
+            // 也不会出现「顶栏说在控制页、内容区空白」的一帧。
+            visited.has(currentPage) ? visited : new Set(visited).add(currentPage),
+          ).map((key) => (
             <div
               className={`page-enter ${key === currentPage ? "" : "is-hidden"}`}
               key={key}
