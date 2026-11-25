@@ -563,12 +563,23 @@ Linux 上编译运行。
 #### 0. 一键部署（Ubuntu / 无域名 / 直绑公网，最快路径）
 
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
-`scripts/deploy-server.sh`。**一条命令、无需交互**：
+`scripts/deploy-server.sh`。**一条命令、无需交互**。
+
+GitHub 直连不通时（国内服务器常见）用镜像克隆，再跑脚本：
+
+```bash
+git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/sw \
+  && bash /tmp/sw/scripts/deploy-server.sh --yes --account kay --password '至少8位密码'
+```
+
+能访问 jsDelivr 的机器可以完全不落地文件：
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh \
   | bash -s -- --yes --account kay --password '至少8位密码'
 ```
+
+脚本会自己处理这些容易失败的环节：
 
 脚本会自己处理这些容易失败的环节：
 
@@ -586,6 +597,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh | bash
+# 或者用上面克隆的目录：
+# bash /tmp/sw/scripts/deploy-server.sh
 ```
 
 装完记得去云控制台 **安全组** 放行 TCP 端口 `8787`。需要域名 + HTTPS / WSS 的
