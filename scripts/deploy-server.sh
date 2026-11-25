@@ -7,7 +7,8 @@
 #     && bash /tmp/sw/scripts/deploy-server.sh
 #
 # 跑起来是一个菜单，输入编号选择：安装 / 更新 / 状态 / 日志 / 重启 / 备份 / 卸载 / 退出。
-# 安装只问账号和密码，其余（安装目录、端口、源码地址）都用固定默认值，自动处理。
+# 安装时依次填写：账号名、账号密码、监听端口、是否允许自助注册、确认开始。
+# 安装目录、源码地址都用固定默认值，自动处理；装完打印中转服务器地址。
 #
 set -euo pipefail
 
@@ -100,11 +101,30 @@ build_server() {
   ok "编译完成。"
 }
 
+# 从 server.toml 读出实际监听端口；读不到则回退 8787。
+config_port() {
+  sed -n 's/^bind *= *"[^"]*:\([0-9][0-9]*\)".*/\1/p' "$CONFIG" 2>/dev/null | head -1
+}
+
+# 取服务器对外地址：优先公网 IP，取不到用本机 IP，再不行 127.0.0.1。
+public_ip() {
+  local ip=""
+  if command -v curl >/dev/null 2>&1; then
+    ip=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
+  fi
+  if [[ -z "$ip" ]]; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  echo "${ip:-127.0.0.1}"
+}
+
 health_check() {
+  local p
+  p=$(config_port); p=${p:-8787}
   sleep 1
   local h=""
   if command -v curl >/dev/null 2>&1; then
-    h=$(curl -fsS "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)
+    h=$(curl -fsS "http://127.0.0.1:$p/healthz" 2>/dev/null || true)
   fi
   if [[ -n "$h" ]]; then
     ok "健康检查：$h"
@@ -139,11 +159,27 @@ install_server() {
     [[ "${ans,,}" != "y" ]] && return
   fi
 
+  # 1. 账号名
   read -rp "账号名（登录用，如 kay）: " ACCOUNT
   [[ -z "$ACCOUNT" ]] && { warn "账号名不能为空。"; return; }
+  # 2. 账号密码
   read -rsp "账号密码（≥8 位，输入不显示）: " PASSWORD; echo
   [[ -z "$PASSWORD" ]] && { warn "密码不能为空。"; return; }
   [[ ${#PASSWORD} -lt 8 ]] && warn "密码少于 8 位，建议更长。"
+  # 3. 监听端口
+  read -rp "监听端口 [8787]: " PORT; PORT=${PORT:-8787}
+  # 4. 允许自助注册
+  read -rp "允许客户端自助注册账号? (y/N): " REGISTER; REGISTER=${REGISTER:-N}
+
+  # 5. 确认开始部署
+  echo
+  info "配置确认："
+  printf '   账号        : %s\n' "$ACCOUNT"
+  printf '   端口        : %s\n' "$PORT"
+  printf '   自助注册    : %s\n' "$([ "$REGISTER" = "y" ] && echo 是 || echo 否)"
+  echo
+  read -rp "确认开始部署? (Y/n): " CONFIRM
+  [[ "${CONFIRM,,}" == "n" ]] && { info "已取消。"; return; }
 
   ensure_tools
   ensure_rust
@@ -154,11 +190,13 @@ install_server() {
   $SUDO mkdir -p "$APP_DIR"
   $SUDO cp "$SRC_DIR/target/release/screenwall-server" "$BIN"
   $SUDO chmod 755 "$BIN"
+  local reg_bool
+  reg_bool=$([ "$REGISTER" = "y" ] && echo true || echo false)
   $SUDO tee "$CONFIG" >/dev/null <<EOF
 # ScreenWall 服务器配置（由 deploy-server.sh 生成）
 bind = "0.0.0.0:$PORT"
 db_path = "$DB"
-allow_registration = false
+allow_registration = $reg_bool
 token_ttl_days = 30
 max_frame_bytes = 1048576
 EOF
@@ -187,9 +225,12 @@ EOF
   fi
 
   health_check
+  local ip
+  ip=$(public_ip)
   echo
-  ok "安装完成。客户端连接地址： http://<服务器公网IP>:$PORT"
-  echo "  ScreenWall 设置 → 连接 → 服务器地址填上面的地址，用 $ACCOUNT 登录。"
+  ok "部署完成！"
+  echo "  中转服务器地址： http://$ip:$PORT"
+  echo "  在 ScreenWall 设置 → 连接 → 服务器地址填上面的地址，用 $ACCOUNT 登录。"
 }
 
 # ---------- 2. 更新 ----------

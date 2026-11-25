@@ -564,9 +564,8 @@ Linux 上编译运行。
 
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
 `scripts/deploy-server.sh`：跑起来是一个菜单，输入编号选择操作。选「1. 安装」
-后只问账号和密码，其余（安装目录 `/opt/screenwall`、端口 `8787`、源码地址）
-都用固定默认值，自动完成装依赖、装 Rust、编译、写配置、建账号、装 systemd，
-最后提示放行端口并做健康检查。
+后依次填写账号名、密码、监听端口、是否允许自助注册，确认后自动完成装依赖、
+装 Rust、编译、写配置、建账号、装 systemd，最后打印中转服务器地址并做健康检查。
 
 ```bash
 git clone --depth 1 https://github.com/kaynai1/screenwall.git /tmp/sw \
