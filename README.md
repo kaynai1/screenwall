@@ -15,6 +15,7 @@
 - [M3 实现说明](docs/m3.md) — 键鼠注入、超级屏（虚拟桌面采集）、显示器保活与验收
 - [显示器与虚拟屏调研](docs/display.md) — 关屏/无头/超级屏/IDD 驱动与假负载方案
 - [界面设计说明](docs/ui.md) — 新版工作台的设计系统、页面结构与浏览器演示模式
+- [两台机器试用](docs/two-machines.md) — 同一局域网内起服务器、两台机器互控与直连的完整步骤
 - [局域网直连](docs/direct.md) — 同网段不经过服务器直接控制、配对码与安全边界
 - [局域网自动发现](docs/lan-discovery.md) — UDP 广播扫描同网段开启了直连的设备
 - [服务器管理](docs/server-panel.md) — 内嵌 KayPanel：sidecar + 子 webview 的架构、构建与排障
