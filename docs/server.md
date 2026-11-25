@@ -204,6 +204,43 @@ Authorization: Bearer <token>
   IP 连续失败 5 次锁定 60 秒。
 - 服务器发给被控端的 `open` 消息带 `"trusted": true`，被控端据此跳过「允许控制」弹窗。
 
+#### 一次性连接链接
+
+`POST /api/v1/connect-link`（需要账号令牌）—— 为当前设备签发一条一次性链接：
+
+```json
+{ "deviceId": "可选；省略时用该账号第一台设备" }
+```
+
+```json
+{
+  "url": "http://host/l/<token>",
+  "token": "<token>",
+  "expiresAt": 1790000600000,
+  "expiresInSec": 600,
+  "device": { "id": "……", "name": "客厅电脑" }
+}
+```
+
+链接地址按请求的 `Host` 构造，反向代理下优先读 `x-forwarded-host` / `x-forwarded-proto`。
+未开启连接码连接时返回 `403 quick_disabled`，被控关闭时返回 `403 control_disabled`。
+
+`GET /l/{token}`（不需要登录）—— 链接落地页（HTML）。有效时渲染「在 ScreenWall 中打开」
+按钮，跳转 `screenwall://connect?server=…&token=…`；失效时渲染「连接链接已失效」。
+页面本身不消费令牌。
+
+`POST /api/v1/connect-link/use`（**不需要登录**）—— 消费令牌换受限令牌：
+
+```json
+{ "token": "<token>" }
+```
+
+- 链接 **10 分钟有效、单次消费**；`connect_links` 表只存令牌的 SHA256。
+- 消费前先只读校验并检查设备在线：设备离线返回 `409 device_offline`，链接仍可用。
+- 不存在、过期、已使用统一返回 `404 link_invalid`。
+- 换到的令牌与连接码相同（`kind = 'quick'`，15 分钟，只能连这一台设备）。
+- 按 IP 复用 `quick_connect_rate` 限流。
+
 ### 1.9 版本检查（不需要登录）
 
 `GET /api/v1/version`

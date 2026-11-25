@@ -8,11 +8,16 @@ import {
   login as apiLogin,
   logout as apiLogout,
   quickConnect as apiQuickConnect,
+  connectByLink as apiConnectByLink,
   subscribeAccount,
+  subscribeConnectLink,
   subscribeControlRequest,
   subscribeDevices,
+  takeConnectLink,
+  type ConnectLinkInput,
   type ControlRequest,
 } from "./api";
+import ConnectLinkDialog from "./components/ConnectLinkDialog";
 import ControlRequestDialog from "./components/ControlRequestDialog";
 import { subscribeWatchdog } from "./connection";
 import { describeError, errorLine } from "./errors";
@@ -57,6 +62,8 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [requests, setRequests] = useState<ControlRequest[]>([]);
+  /** 收到但还没确认的连接链接（登录状态下需要先问是否退出账号）。 */
+  const [pendingLink, setPendingLink] = useState<ConnectLinkInput | null>(null);
   const toastSeq = useRef(0);
 
   const notify = useCallback((text: string, tone: ToastTone = "info") => {
@@ -246,6 +253,69 @@ export default function App() {
       setBusy(false);
     }
   }
+
+  /** 用一次性链接连入：成功后的界面状态与连接码连接完全一致。 */
+  const runConnectLink = useCallback(
+    async (link: ConnectLinkInput) => {
+      setBusy(true);
+      setLoginError(null);
+      try {
+        const next = await apiConnectByLink(link);
+        setAccount(next);
+        const list = await listDevices().catch(() => [] as DeviceView[]);
+        setDevices(list);
+        setActiveId(list[0]?.id ?? null);
+        setPage("control");
+        notify(list[0] ? `已连接 ${list[0].name}` : "已连接到远程设备", "success");
+        window.setTimeout(() => {
+          Promise.all([getAccount(), listDevices()])
+            .then(([fresh, freshDevices]) => {
+              setAccount(fresh);
+              setDevices(freshDevices);
+              if (freshDevices[0]) {
+                setActiveId((current) => current ?? freshDevices[0].id);
+              }
+            })
+            .catch(() => {});
+        }, 1200);
+      } catch (error) {
+        const { title, detail } = describeError(error);
+        setLoginError(`${title}：${detail}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [notify],
+  );
+
+  // 连接链接：启动时主动取一次（协议唤起早于前端挂载），运行中再监听事件。
+  const accountRef = useRef(account);
+  accountRef.current = account;
+  const runLinkRef = useRef(runConnectLink);
+  runLinkRef.current = runConnectLink;
+
+  useEffect(() => {
+    let alive = true;
+    const accept = (link: ConnectLinkInput) => {
+      if (!alive) return;
+      // 已登录时链接会顶掉账号会话：先让用户确认，不悄悄退出。
+      if (accountRef.current?.loggedIn) {
+        setPendingLink(link);
+      } else {
+        void runLinkRef.current(link);
+      }
+    };
+    const off = subscribeConnectLink(accept);
+    takeConnectLink()
+      .then((link) => {
+        if (link) accept(link);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
 
   async function handleLogout() {
     if (busy) return;
@@ -453,6 +523,23 @@ export default function App() {
       <ControlRequestDialog
         request={requests[0] ?? null}
         onAnswer={answerRequest}
+      />
+
+      <ConnectLinkDialog
+        link={pendingLink}
+        busy={busy}
+        onCancel={() => setPendingLink(null)}
+        onConfirm={() => {
+          const link = pendingLink;
+          setPendingLink(null);
+          if (!link) return;
+          void (async () => {
+            // 先退出当前账号：链接会话是匿名的，不能两个会话并存。
+            await stopActiveSession().catch(() => {});
+            await apiLogout().catch(() => {});
+            await runConnectLink(link);
+          })();
+        }}
       />
 
       <div className="toast-stack" aria-live="polite">

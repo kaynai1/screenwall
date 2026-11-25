@@ -315,6 +315,82 @@ export async function rotateConnectCode(): Promise<ConnectCodeView> {
   };
 }
 
+// ---------------------------------------------------------------- 一次性连接链接
+
+export type ConnectLinkView = {
+  /** 完整链接，形如 `http://host/l/<token>`。 */
+  url: string;
+  expiresAt: number;
+  expiresInSec: number;
+};
+
+export type ConnectLinkInput = {
+  server: string;
+  token: string;
+};
+
+/** 本机生成一条一次性连接链接（10 分钟有效、只能用一次）。 */
+export async function createConnectLink(
+  deviceId?: string,
+): Promise<ConnectLinkView> {
+  if (isTauri) return invoke<ConnectLinkView>("create_connect_link", { deviceId });
+  await delay(300);
+  return {
+    url: `${mockAccount.serverUrl}/l/${Math.random().toString(16).slice(2, 34)}`,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+    expiresInSec: 600,
+  };
+}
+
+/** 用一次性链接令牌直接连入（无需密码）。 */
+export async function connectByLink(
+  input: ConnectLinkInput,
+): Promise<AccountView> {
+  if (isTauri) {
+    return invoke<AccountView>("connect_by_link", {
+      serverUrl: input.server,
+      token: input.token,
+    });
+  }
+  await delay(600);
+  demoQuick = true;
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem(DEMO_KEY);
+  }
+  return {
+    ...mockAccount,
+    serverUrl: input.server || mockAccount.serverUrl,
+    username: "连接码会话",
+    loggedIn: true,
+    quick: true,
+  };
+}
+
+/** 启动时通过 `screenwall://` 唤起：取走待处理的链接。 */
+export async function takeConnectLink(): Promise<ConnectLinkInput | null> {
+  if (!isTauri) return null;
+  return invoke<ConnectLinkInput | null>("take_connect_link");
+}
+
+/** 运行中再次点开链接：由 Rust 侧 emit。 */
+export function subscribeConnectLink(
+  handler: (link: ConnectLinkInput) => void,
+): () => void {
+  if (!isTauri) return () => {};
+  let unlisten: UnlistenFn | null = null;
+  let disposed = false;
+  listen<ConnectLinkInput>("connect-link", (event) => handler(event.payload))
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {});
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}
+
 export async function logout(): Promise<AccountView> {
   if (isTauri) return invoke<AccountView>("logout");
   await delay(260);

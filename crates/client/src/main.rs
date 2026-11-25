@@ -536,6 +536,11 @@ struct Shared {
     direct: StdMutex<direct::DirectHub>,
     /// 连接码模式：只跑主控端（view），不跑被控端（host），令牌也不写盘。
     quick_mode: AtomicBool,
+    /// 还没交给前端的 `screenwall://` 链接。
+    ///
+    /// 应用启动时前端尚未加载，直接 emit 会丢事件，所以先存这里，
+    /// 前端挂载后调用 `take_connect_link` 主动取；运行中再由事件推送。
+    pending_link: StdMutex<Option<(String, String)>>,
 }
 
 /// 主控连接断开期间暂存的重连计划。
@@ -878,6 +883,208 @@ async fn rotate_connect_code(shared: State<'_, Arc<Shared>>) -> Result<ConnectCo
     get_connect_code(shared).await
 }
 
+/// 本机（被控端）生成一条一次性连接链接。
+///
+/// 链接 10 分钟有效、只能使用一次；点开后会唤起客户端并直接连入本机。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectLinkView {
+    url: String,
+    expires_at: i64,
+    expires_in_sec: i64,
+}
+
+#[tauri::command]
+async fn create_connect_link(
+    shared: State<'_, Arc<Shared>>,
+    device_id: Option<String>,
+) -> Result<ConnectLinkView, String> {
+    let (base, token) = {
+        let config = shared.config.read().await;
+        (config.server_url.clone(), config.token.clone())
+    };
+    if token.is_empty() {
+        return Err("尚未登录".into());
+    }
+    let mut body = json!({});
+    if let Some(device_id) = device_id.filter(|value| !value.trim().is_empty()) {
+        body["deviceId"] = json!(device_id);
+    }
+    let value = post_api(
+        &shared.http,
+        format!("{base}/api/v1/connect-link"),
+        &body,
+        Some(&token),
+    )
+    .await?;
+    Ok(ConnectLinkView {
+        url: value["url"].as_str().unwrap_or_default().to_string(),
+        expires_at: value["expiresAt"].as_i64().unwrap_or(0),
+        expires_in_sec: value["expiresInSec"].as_i64().unwrap_or(0),
+    })
+}
+
+/// 用一次性链接令牌换会话：匿名、单次消费，失败时链接就作废了。
+///
+/// 与连接码不同，这里没有密码：链接本身就是凭据，所以只允许短期、单次。
+#[tauri::command]
+async fn connect_by_link(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    server_url: String,
+    token: String,
+) -> Result<AccountView, String> {
+    let shared = shared.inner().clone();
+    connect_by_link_inner(&app, &shared, server_url, token).await
+}
+
+async fn connect_by_link_inner(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    server_url: String,
+    token: String,
+) -> Result<AccountView, String> {
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        return Err("已经在一个远程会话里，请先断开".into());
+    }
+    {
+        let config = shared.config.read().await;
+        if !config.token.is_empty() {
+            return Err("请先退出当前账号，再使用连接链接".into());
+        }
+    }
+    let base = normalize_server_url(&server_url)?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err("连接链接缺少令牌".into());
+    }
+
+    let value = post_api(
+        &shared.http,
+        format!("{base}/api/v1/connect-link/use"),
+        &json!({ "token": token }),
+        None,
+    )
+    .await?;
+    let session_token = value["token"]
+        .as_str()
+        .ok_or_else(|| "服务器没有返回连接令牌".to_string())?
+        .to_string();
+    let device_id = value["device"]["id"]
+        .as_str()
+        .ok_or_else(|| "服务器没有返回设备 ID".to_string())?
+        .to_string();
+    let device_name = value["device"]["name"]
+        .as_str()
+        .unwrap_or("远程设备")
+        .to_string();
+
+    Ok(enter_quick_session(app, shared, base, session_token, device_id, device_name).await)
+}
+
+/// 解析网页链接 `http(s)://host/l/<token>`，返回（服务器地址, 令牌）。
+///
+/// 登录页允许直接粘贴链接，省去「先点开网页再点按钮」这一步。
+fn parse_web_link(raw: &str) -> Option<(String, String)> {
+    let raw = raw.trim();
+    let scheme_end = raw.find("://")?;
+    let scheme = &raw[..scheme_end];
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let rest = &raw[scheme_end + 3..];
+    let (host, path) = rest.split_once('/')?;
+    let token = path.strip_prefix("l/")?.trim();
+    if host.is_empty() || token.is_empty() || token.contains('/') {
+        return None;
+    }
+    Some((format!("{scheme}://{host}"), token.to_string()))
+}
+
+/// 解析 `screenwall://connect?server=...&token=...`。
+///
+/// 手写解析而不引 URL 库：这个协议只有一种形状，字段只有两个。
+fn parse_connect_link(raw: &str) -> Option<(String, String)> {
+    let rest = raw.trim();
+    let rest = rest.strip_prefix("screenwall://")?;
+    let rest = rest.strip_prefix("connect")?;
+    let query = rest.strip_prefix('?')?;
+    let mut server = String::new();
+    let mut token = String::new();
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let value = percent_decode(value);
+        match key {
+            "server" => server = value,
+            "token" => token = value,
+            _ => {}
+        }
+    }
+    if server.is_empty() || token.is_empty() {
+        return None;
+    }
+    Some((server, token))
+}
+
+/// 只解码 `%XX`，够用了：协议里的值由服务器用 `encodeURIComponent` 生成。
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+            if let Some(byte) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// 处理一条 `screenwall://` 链接：交给前端，由前端决定直接连还是先提示。
+///
+/// 不在这里直接建会话：链接可能是在账号已登录时打开的，前端需要先提示
+/// 「会退出当前账号」，用户确认后才调用 `connect_by_link`。
+fn dispatch_connect_link(app: &AppHandle, raw: &str) {
+    let Some((server, token)) = parse_connect_link(raw) else {
+        tracing::warn!("无法解析的连接链接: {raw}");
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    // 先存一份：前端可能还没挂载监听。
+    if let Some(shared) = app.try_state::<Arc<Shared>>() {
+        *shared.pending_link.lock().unwrap() = Some((server.clone(), token.clone()));
+    }
+    let _ = app.emit("connect-link", json!({ "server": server, "token": token }));
+}
+
+/// 前端挂载后主动取走待处理的连接链接（启动时通过协议唤起的情况）。
+#[tauri::command]
+fn take_connect_link(shared: State<'_, Arc<Shared>>) -> Option<ConnectLinkInput> {
+    shared
+        .pending_link
+        .lock()
+        .unwrap()
+        .take()
+        .map(|(server, token)| ConnectLinkInput { server, token })
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConnectLinkInput {
+    server: String,
+    token: String,
+}
+
 /// 用「连接码 + 密码」临时连接一台设备：不登录账号、不写盘、不启动被控端。
 #[tauri::command]
 async fn quick_connect(
@@ -901,6 +1108,10 @@ async fn quick_connect(
     let code = code.trim().to_string();
     if code.is_empty() {
         return Err("请填写连接码".into());
+    }
+    // 直接粘贴一条连接链接（`http://host/l/<token>`）也能连：不必先打开浏览器。
+    if let Some((link_base, link_token)) = parse_web_link(&code) {
+        return connect_by_link_inner(&app, &shared, link_base, link_token).await;
     }
     if password.is_empty() {
         return Err("请填写连接密码".into());
@@ -926,17 +1137,32 @@ async fn quick_connect(
         .unwrap_or("远程设备")
         .to_string();
 
+    Ok(enter_quick_session(&app, &shared, base, token, device_id, device_name).await)
+}
+
+/// 用已经换到的受限令牌进入连接码会话。
+///
+/// 连接码连接与一次性链接连接共用：两者拿到的都是 `kind = 'quick'` 的受限令牌，
+/// 后续清理、置位、起任务的流程完全一致。
+async fn enter_quick_session(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    base: String,
+    token: String,
+    device_id: String,
+    device_name: String,
+) -> AccountView {
     // 与登录共用同一套清理：旧的重连、挂起会话都不能留着。
-    cancel_reconnect(&shared, None);
+    cancel_reconnect(shared, None);
     *shared.pending_resume.lock().unwrap() = None;
     shared.control_wanted.store(false, Ordering::Relaxed);
-    stop_tasks(&shared);
+    stop_tasks(shared);
     *shared.view_tx.write().await = None;
     *shared.control.write().await = None;
     shared.pending_opens.lock().unwrap().clear();
     shared.files.lock().unwrap().reset();
-    wall::clear(&shared);
-    group::clear(&shared);
+    wall::clear(shared);
+    group::clear(shared);
 
     shared.quick_mode.store(true, Ordering::Relaxed);
     {
@@ -959,10 +1185,10 @@ async fn quick_connect(
         controllable: true,
     }];
     spawn_tasks(app.clone(), shared.clone());
-    emit_devices(&app, &shared).await;
-    let view = account_view(&shared).await;
+    emit_devices(app, shared).await;
+    let view = account_view(shared).await;
     let _ = app.emit("account", view.clone());
-    Ok(view)
+    view
 }
 
 async fn end_quick_session(app: &AppHandle, shared: &Arc<Shared>) -> AccountView {
@@ -4276,6 +4502,13 @@ fn main() {
     }
     let start_now = !config.token.is_empty() && !config.server_url.is_empty();
 
+    // 通过 screenwall:// 协议启动时，命令行里带着链接。
+    let startup_link = args
+        .iter()
+        .skip(1)
+        .find(|arg| arg.starts_with("screenwall://"))
+        .cloned();
+
     let allow_control = config.allow_control;
     let ui_zoom = config.ui_zoom;
     let clipboard_on = config.clipboard_sync;
@@ -4312,12 +4545,22 @@ fn main() {
         control_wanted: AtomicBool::new(false),
         direct: StdMutex::new(direct::DirectHub::default()),
         quick_mode: AtomicBool::new(false),
+        pending_link: StdMutex::new(startup_link.and_then(|raw| parse_connect_link(&raw))),
     });
 
     let initial = shared.clone();
     let panels = Arc::new(panels::Hub::default());
     let panel_state = panels.clone();
     tauri::Builder::default()
+        // 单实例：第二次启动（点链接唤起）把命令行转发给已有窗口，自己退出。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(link) = argv.iter().find(|arg| arg.starts_with("screenwall://")) {
+                dispatch_connect_link(app, link);
+            } else if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(shared)
         .manage(panels)
         .setup(move |app| {
@@ -4367,6 +4610,9 @@ fn main() {
             logout,
             quick_connect,
             quick_disconnect,
+            create_connect_link,
+            connect_by_link,
+            take_connect_link,
             get_connect_code,
             set_connect_code,
             rotate_connect_code,

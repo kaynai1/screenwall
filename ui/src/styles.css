@@ -904,6 +904,13 @@ textarea::placeholder {
   font-weight: 500;
 }
 
+/* 字段下方的补充说明（例如连接码可以粘贴链接）。 */
+.field-hint {
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .field-control {
   display: flex;
   align-items: center;

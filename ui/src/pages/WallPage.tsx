@@ -12,8 +12,11 @@ import {
   CheckCircle2,
   Copy,
   FolderUp,
+  Hash,
+  KeyRound,
   Layers,
   LayoutGrid,
+  Link2,
   List,
   Loader2,
   Monitor,
@@ -31,9 +34,12 @@ import DesktopPreview from "../components/DesktopPreview";
 import { EmptyState, Modal, Progress, Segmented } from "../components/ui";
 import {
   cancelFileTransfer,
+  createConnectLink,
+  getConnectCode,
   getControlInfo,
   isTauri,
   offerFiles,
+  rotateConnectCode,
   setWallPreview,
   startControl,
   stopControl,
@@ -43,8 +49,11 @@ import {
   subscribeWallMetrics,
   subscribeWallState,
   uploadChunk,
+  type ConnectCodeView,
+  type ConnectLinkView,
   type FileTransferEvent,
 } from "../api";
+import { formatConnectCode } from "../connect";
 import { errorLine } from "../errors";
 import { formatBytes, formatLastSeen, statusLabel } from "../mock";
 import type { DeviceView, WallPageProps } from "../types";
@@ -400,6 +409,64 @@ export default function WallPage(props: WallPageProps) {
   const [metrics, setMetrics] = useState<
     Record<string, { cpu: number; mem: number }>
   >({});
+
+  /* ------------------------------------------------- 本机连接码 / 连接链接 */
+
+  // 被控端把本机连接码直接放在工作台顶部，不用再进设置里找。
+  const [connect, setConnect] = useState<ConnectCodeView | null>(null);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [link, setLink] = useState<ConnectLinkView | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  useEffect(() => {
+    if (account.quick) return;
+    let alive = true;
+    getConnectCode()
+      .then((value) => {
+        if (alive) setConnect(value);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [account.quick, account.deviceId]);
+
+  async function rotateCode() {
+    if (connectBusy) return;
+    setConnectBusy(true);
+    try {
+      const next = await rotateConnectCode();
+      setConnect(next);
+      // 换码后旧链接也随之失效，避免界面上留着一条用不了的链接。
+      setLink(null);
+      notify("已换新的连接码，旧码立即失效", "success");
+    } catch (error) {
+      notify(errorLine(error), "error");
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
+  async function generateLink() {
+    if (linkBusy) return;
+    setLinkBusy(true);
+    try {
+      const next = await createConnectLink(account.deviceId || undefined);
+      setLink(next);
+      try {
+        await navigator.clipboard.writeText(next.url);
+        setLinkCopied(true);
+        notify("连接链接已生成并复制", "success");
+      } catch {
+        notify("连接链接已生成，请手动复制", "success");
+      }
+    } catch (error) {
+      notify(errorLine(error), "error");
+    } finally {
+      setLinkBusy(false);
+    }
+  }
 
   /* ------------------------------------------------------------ 拖拽发送 */
 
@@ -1392,6 +1459,105 @@ export default function WallPage(props: WallPageProps) {
           <span>松开到任意在线设备卡片上，即可把文件发到那台电脑</span>
         </div>
       )}
+      {!account.quick && (
+        <div className="wall-connect" aria-label="本机连接码">
+          <div className="wall-connect-main">
+            <span className="wall-connect-label">
+              <Hash size={14} strokeWidth={1.75} aria-hidden="true" />
+              本机连接码
+            </span>
+            <code className="wall-connect-code mono">
+              {connect ? formatConnectCode(connect.code) : "—"}
+            </code>
+            <span
+              className={`wall-connect-state ${
+                connect?.enabled ? "is-on" : ""
+              }`}
+            >
+              <i aria-hidden="true" />
+              {connect?.enabled ? "可连接" : "未开启"}
+            </span>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => void copyValue("连接码", connect?.code ?? "")}
+              disabled={!connect?.code}
+              title="复制连接码"
+              aria-label="复制连接码"
+            >
+              <Copy size={14} strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => void rotateCode()}
+              disabled={connectBusy || !connect}
+              title="换一个新的连接码，旧码立即失效"
+            >
+              <RefreshCw
+                size={13}
+                strokeWidth={1.75}
+                className={connectBusy ? "spin" : undefined}
+              />
+              换一个
+            </button>
+            {connect?.hasPassword && (
+              <span className="wall-connect-pass" title="连接密码（在设置 → 安全 里修改）">
+                <KeyRound size={13} strokeWidth={1.75} aria-hidden="true" />
+                <span className="mono">{connect.password ?? "已设置"}</span>
+              </span>
+            )}
+          </div>
+
+          <div className="wall-connect-link">
+            <div className="field-control wall-connect-link-field">
+              <Link2 size={14} strokeWidth={1.75} aria-hidden="true" />
+              <input
+                value={link?.url ?? ""}
+                readOnly
+                spellCheck={false}
+                placeholder="生成一条只能用一次的链接，点开即连"
+                aria-label="一次性连接链接"
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </div>
+            {link && (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => void copyValue("连接链接", link.url)}
+                title="复制连接链接"
+                aria-label="复制连接链接"
+              >
+                {linkCopied ? (
+                  <Check size={14} strokeWidth={1.75} />
+                ) : (
+                  <Copy size={14} strokeWidth={1.75} />
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => void generateLink()}
+              disabled={linkBusy || !connect?.enabled}
+              title={
+                connect?.enabled
+                  ? "生成 10 分钟有效、只能用一次的连接链接"
+                  : "先在设置 → 安全 里开启「允许连接码连接」"
+              }
+            >
+              <Link2
+                size={13}
+                strokeWidth={1.75}
+                className={linkBusy ? "spin" : undefined}
+              />
+              生成链接
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="wall-toolbar">
         <div className="wall-toolbar-main">
           <div className="wall-filters" role="group" aria-label="设备筛选">

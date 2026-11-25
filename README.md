@@ -59,7 +59,9 @@ M6 已落地：协议能力协商（`hello` / `welcome` 的可选 `caps`，15 �
 
 界面视觉与 [KayPanel](https://github.com/kaynai1/kaypanel) 对齐：同一套字体栈、同一组中性层与语义色、同一档圆角（浅色 `#f4f5f7`/`#ffffff`、深色 `#0a0f17`/`#121a26`、强调色 `#2563eb`/`#60a5fa`），浅色与深色双主题在设置 → 连接 → 外观里切换并持久化。样式规则已全部 token 化，页面里不再出现字面色值。字号保持 15px 整数阶梯（KayPanel 的 14.5px 半像素在 Windows 上会糊边，见 [设计文档](ui/DESIGN.md)）。
 
-连接码连接已落地（0.2.0）：被控端在 设置 → 安全 里设置密码并打开开关后，本机显示一个 9 位连接码；主控端在登录页选「连接码连接」，输入码和密码就能进入远程桌面，**不需要登录账号**。服务器给主控端的是 15 分钟、只能打开这一台设备的受限令牌，不能调账号接口，也不写盘；密码用 Argon2 哈希存在服务器，明文只留在被控端本机；连接码尝试按 IP 限流、同一码连错 5 次锁 60 秒。跨网段可用，画面仍走自建服务器中转。详见 [连接码连接](docs/quick-connect.md)。
+连接码连接已落地（0.2.0 起，0.2.1 补齐一次性链接）：被控端在 设置 → 安全 里设置密码并打开开关后，**本机连接码直接显示在工作台（屏幕墙）页面顶部**，连同「换一个」和「生成链接」按钮；主控端在登录页选「连接码连接」，输入码和密码就能进入远程桌面，**不需要登录账号**。服务器给主控端的是 15 分钟、只能打开这一台设备的受限令牌，不能调账号接口，也不写盘；密码用 Argon2 哈希存在服务器，明文只留在被控端本机；连接码尝试按 IP 限流、同一码连错 5 次锁 60 秒。跨网段可用，画面仍走自建服务器中转。
+
+一次性连接链接也已落地：工作台顶部点「生成链接」签发一条 `http://服务器/l/<令牌>`，**10 分钟有效、只能用一次**；对方点开后网页唤起 `screenwall://` 协议，客户端被单实例转发并直接连入，不用输码和密码。设备离线不会烧掉链接（返回 409，链接仍可用），落地页只负责唤起、不消费令牌。链接也能直接粘到登录页的连接码输入框。详见 [连接码连接](docs/quick-connect.md)。
 
 局域网直连已落地：同网段的两台机器可以完全不经过账号服务器直接控制。被控端在设置里打开开关后监听 `47900`，界面显示 6 位配对码（10 分钟有效，到期自动换新码，配对成功也立刻换码）；主控端在设备页点「直连」填地址和配对码即可。配对成功后保存长期令牌与证书指纹，之后免配对码、并靠指纹固定防冒充；设置页能看到「已授权 N 台设备」并一键清除。认证失败按来源 IP 限流（60 秒内 5 次后指数退避，封顶 30 秒，超限连 TLS 握手都不做）。协议、能力协商、授权、文件、音频、剪贴板全部复用中转那套代码——被控端本地放一个「服务器桩」把 tunnel 帧直接交给 `session_task`。真机实测 1920×1080 / 30 FPS / 37 Mbps / 零丢帧。详见 [局域网直连](docs/direct.md)。
 
@@ -74,7 +76,7 @@ cd D:\screenwall
 scripts\tauri-build.bat build --bundles nsis
 ```
 
-产物在 `target\release\bundle\nsis\ScreenWall_0.2.0_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
+产物在 `target\release\bundle\nsis\ScreenWall_0.2.1_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
 
 安装包里还包含服务器管理 sidecar `kaypanel.exe`，因此打包机需要 **Go 1.23+**。`scripts\tauri-build.bat` 发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时会自动调用 `scripts\build-kaypanel.bat`；也可以先手动构建：
 
@@ -100,7 +102,7 @@ CI 与代码签名的完整说明见 [CI 文档](docs/ci.md) 和 [签名文档](
 
 1. 升版本号：根 `Cargo.toml` 的 `workspace.package.version`、`ui/package.json`、`crates/client/tauri.conf.json`。
 2. 重新打包：`scripts\tauri-build.bat build --bundles nsis`。
-3. 发布：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.0`
+3. 发布：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.1`
    —— 复制安装包到 `dist/update`，改写 `server.toml` 的 `[update]` 段（dir / version / file / notes）。
 4. 重启服务器后，旧客户端点「检查更新」就能看到新版本、下载并校验 SHA256。
 

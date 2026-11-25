@@ -200,19 +200,21 @@ export default function LoginPage({
           {mode === "code" ? (
             <>
               <label className="field">
-                <span>连接码</span>
+                <span>连接码或连接链接</span>
                 <div className="field-control">
                   <Hash size={15} strokeWidth={1.75} />
                   <input
                     className="mono"
                     value={connectCode}
                     onChange={(event) => setConnectCode(event.target.value)}
-                    placeholder="9 位数字，如 572 955 600"
-                    inputMode="numeric"
+                    placeholder="9 位数字，或直接粘贴连接链接"
                     spellCheck={false}
                     autoComplete="off"
                   />
                 </div>
+                <span className="field-hint">
+                  粘贴对方发来的链接（形如 http://…/l/…）可以跳过密码。
+                </span>
               </label>
 
               <label className="field">

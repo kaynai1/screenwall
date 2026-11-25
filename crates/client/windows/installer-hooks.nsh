@@ -42,6 +42,14 @@
   ${Else}
     DetailPrint "ScreenWall: 已添加防火墙规则 ${SCREENWALL_DISCOVERY_RULE}（UDP ${SCREENWALL_DISCOVERY_PORT}）"
   ${EndIf}
+
+  ; 一次性连接链接：注册 screenwall:// 自定义协议，点开链接直接唤起客户端。
+  ; perMachine 安装写 HKLM\Software\Classes（全机可见），需要管理员权限，安装器本身已提权。
+  WriteRegStr HKLM "Software\Classes\screenwall" "" "URL:ScreenWall Connect Protocol"
+  WriteRegStr HKLM "Software\Classes\screenwall" "URL Protocol" ""
+  WriteRegStr HKLM "Software\Classes\screenwall\DefaultIcon" "" "$INSTDIR\${MAINBINARYNAME}.exe,0"
+  WriteRegStr HKLM "Software\Classes\screenwall\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  DetailPrint "ScreenWall: 已注册 screenwall:// 连接协议"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
@@ -93,4 +101,7 @@
   SetOutPath "$TEMP"
 
   screenwall_vd_done:
+
+  ; 清掉自定义协议注册（只删本安装器写的那一处）。
+  DeleteRegKey HKLM "Software\Classes\screenwall"
 !macroend

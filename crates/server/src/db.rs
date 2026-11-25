@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS audits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audits_user ON audits(user_id, started_at DESC);
+
+-- 一次性连接链接：短期有效、只能消费一次。
+-- 只存令牌哈希，明文链接只在签发时返回一次。
+CREATE TABLE IF NOT EXISTS connect_links (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id  TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_connect_links_user ON connect_links(user_id);
 "#;
 
 /// 旧库补列。`CREATE TABLE IF NOT EXISTS` 不会给已存在的表加字段，
@@ -186,6 +199,13 @@ pub struct QuickDeviceRow {
     pub connect_code: String,
     pub access_hash: String,
     pub access_enabled: bool,
+}
+
+/// 一次性连接链接命中后的结果：设备所属账号与设备本身。
+#[derive(Debug, Clone)]
+pub struct ConnectLinkRow {
+    pub user_id: i64,
+    pub device_id: String,
 }
 
 /// 一次远程会话的审计记录。
@@ -563,6 +583,87 @@ impl Db {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// 签发一条一次性连接链接，数据库只存令牌哈希。
+    pub fn create_connect_link(
+        &self,
+        user_id: i64,
+        device_id: &str,
+        token_hash: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        self.lock()?.execute(
+            "INSERT INTO connect_links
+                (token_hash, user_id, device_id, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                token_hash,
+                user_id,
+                device_id,
+                crate::auth::now_ms(),
+                expires_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 原子地消费一条链接：不存在、已过期或已使用都返回 `None`。
+    ///
+    /// 查询与「标记已用」在同一把锁内完成，并发下同一条链接只会被一个请求消费。
+    pub fn consume_connect_link(&self, token_hash: &str) -> Result<Option<ConnectLinkRow>> {
+        let conn = self.lock()?;
+        let row: Option<(i64, String, i64, Option<i64>)> = conn
+            .query_row(
+                "SELECT user_id, device_id, expires_at, used_at
+                 FROM connect_links WHERE token_hash = ?1",
+                params![token_hash],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((user_id, device_id, expires_at, used_at)) = row else {
+            return Ok(None);
+        };
+        if used_at.is_some() || expires_at < crate::auth::now_ms() {
+            return Ok(None);
+        }
+        let changed = conn.execute(
+            "UPDATE connect_links SET used_at = ?1
+             WHERE token_hash = ?2 AND used_at IS NULL",
+            params![crate::auth::now_ms(), token_hash],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(Some(ConnectLinkRow { user_id, device_id }))
+    }
+
+    /// 只读地查一条仍然可用的链接（存在、未过期、未消费）。
+    ///
+    /// 落地页用它判断该显示「唤起客户端」还是「链接已失效」；
+    /// 消费前也用它先查目标设备，避免「设备离线」这种可重试的失败把链接烧掉。
+    pub fn connect_link_target(&self, token_hash: &str) -> Result<Option<ConnectLinkRow>> {
+        let conn = self.lock()?;
+        let row: Option<(i64, String, i64, Option<i64>)> = conn
+            .query_row(
+                "SELECT user_id, device_id, expires_at, used_at
+                 FROM connect_links WHERE token_hash = ?1",
+                params![token_hash],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((user_id, device_id, expires_at, used_at)) = row else {
+            return Ok(None);
+        };
+        if used_at.is_some() || expires_at < crate::auth::now_ms() {
+            return Ok(None);
+        }
+        Ok(Some(ConnectLinkRow { user_id, device_id }))
+    }
+
+    /// 链接是否仍然可用；只读，不改状态。
+    pub fn connect_link_valid(&self, token_hash: &str) -> Result<bool> {
+        Ok(self.connect_link_target(token_hash)?.is_some())
     }
 
     pub fn touch_device(&self, user_id: i64, device_id: &str) -> Result<()> {

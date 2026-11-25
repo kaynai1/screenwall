@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -904,6 +904,271 @@ fn quick_auth_failed() -> ApiError {
         "连接码或密码不正确",
     )
 }
+
+/// 一次性连接链接的有效期（秒）：链接本身是凭据，短时效 + 单次消费。
+const CONNECT_LINK_TTL_SECS: i64 = 10 * 60;
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectLinkReq {
+    /// 目标设备 ID；留空时用该账号的第一台设备。
+    #[serde(default)]
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UseConnectLinkReq {
+    pub token: String,
+}
+
+/// 为被控设备签发一条一次性连接链接：点开链接即唤起客户端，无需输入密码。
+pub async fn create_connect_link(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ConnectLinkReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    let device_id = match req.device_id.as_deref().map(str::trim) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            let devices = state.db.list_devices(auth.user_id).map_err(internal)?;
+            let Some(first) = devices.first() else {
+                return Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "no_device",
+                    "该账号下没有设备",
+                ));
+            };
+            first.id.clone()
+        }
+    };
+    let Some(device) = state
+        .db
+        .device(auth.user_id, &device_id)
+        .map_err(internal)?
+    else {
+        return Err(not_found());
+    };
+    let Some((_, access_enabled, _)) = state
+        .db
+        .device_access(auth.user_id, &device_id)
+        .map_err(internal)?
+    else {
+        return Err(not_found());
+    };
+    if !access_enabled {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "quick_disabled",
+            "这台设备没有开启连接码连接",
+        ));
+    }
+    if !device.controllable {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "control_disabled",
+            "这台设备已关闭被控",
+        ));
+    }
+
+    let token = new_token();
+    let expires_at = now_ms() + CONNECT_LINK_TTL_SECS * 1000;
+    state
+        .db
+        .create_connect_link(auth.user_id, &device.id, &hash_token(&token), expires_at)
+        .map_err(internal)?;
+
+    // 链接地址用请求的 Host 构造；走反向代理时优先 x-forwarded-*。
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("127.0.0.1:8787")
+        .trim()
+        .to_string();
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("http")
+        .trim()
+        .to_string();
+    let url = format!("{proto}://{host}/l/{token}");
+
+    tracing::info!(
+        "一次性连接链接已签发: device={} user={}",
+        device.id,
+        auth.user_id
+    );
+    Ok(Json(json!({
+        "url": url,
+        "token": token,
+        "expiresAt": expires_at,
+        "expiresInSec": CONNECT_LINK_TTL_SECS,
+        "device": { "id": device.id, "name": device.name },
+    })))
+}
+
+/// 用一次性链接令牌换受限令牌：匿名、单次消费、只连这一台设备。
+pub async fn use_connect_link(
+    State(state): State<Arc<AppState>>,
+    client: ClientIp,
+    Json(req): Json<UseConnectLinkReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ip = client
+        .0
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Some(seconds) = state.quick_connect_rate.check(&ip) {
+        tracing::warn!("一次性链接消费过于频繁，已限流: ip={ip} retry_after={seconds}s");
+        state.metrics.add_error();
+        return Err(too_many_requests("链接使用", seconds));
+    }
+    let token = req.token.trim().to_string();
+    if token.is_empty() {
+        return Err(bad_request("链接令牌为空"));
+    }
+    let token_hash = hash_token(&token);
+    // 先只读校验：设备离线是暂时的，不能让一次「离线」把链接烧掉。
+    let Some(row) = state
+        .db
+        .connect_link_target(&token_hash)
+        .map_err(internal)?
+    else {
+        state.metrics.add_error();
+        return Err(link_invalid());
+    };
+
+    let device_key = AppState::device_key(row.user_id, &row.device_id);
+    if !state.devices.read().await.contains_key(&device_key) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "device_offline",
+            "这台设备当前不在线",
+        ));
+    }
+    // 消费是原子的：并发下同一条链接只会换到一个令牌。
+    let Some(row) = state
+        .db
+        .consume_connect_link(&token_hash)
+        .map_err(internal)?
+    else {
+        state.metrics.add_error();
+        return Err(link_invalid());
+    };
+    let device_name = state
+        .db
+        .device(row.user_id, &row.device_id)
+        .map_err(internal)?
+        .map(|device| device.name)
+        .unwrap_or_else(|| "远程设备".to_string());
+
+    let session_token = new_token();
+    let expires_at = now_ms() + 15 * 60 * 1000;
+    state
+        .db
+        .create_quick_token(
+            &hash_token(&session_token),
+            row.user_id,
+            &row.device_id,
+            expires_at,
+        )
+        .map_err(internal)?;
+    tracing::info!("一次性链接会话签发: device={} ip={ip}", row.device_id);
+    Ok(Json(json!({
+        "token": session_token,
+        "expiresAt": expires_at,
+        "device": { "id": row.device_id, "name": device_name },
+    })))
+}
+
+fn link_invalid() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "link_invalid",
+        "连接链接不存在、已过期或已被使用",
+    )
+}
+
+/// 链接落地页 `GET /l/{token}`：唤起桌面客户端，或提示链接已失效。
+///
+/// 页面本身不消费令牌，只负责把服务器地址和令牌交给 `screenwall://` 协议；
+/// 真正换令牌由客户端调用 `POST /api/v1/connect-link/use` 完成。
+pub async fn link_page(State(state): State<Arc<AppState>>, Path(token): Path<String>) -> Response {
+    let token = token.trim().to_string();
+    let valid = state
+        .db
+        .connect_link_valid(&hash_token(&token))
+        .unwrap_or(false);
+    if valid {
+        Html(LINK_PAGE_OK.replace("__TOKEN__", &token)).into_response()
+    } else {
+        Html(LINK_PAGE_BAD).into_response()
+    }
+}
+
+/// 有效链接的落地页：唤起客户端（不自动跳转，避免协议未注册时浏览器报错）。
+const LINK_PAGE_OK: &str = r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScreenWall 远程连接</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #0b0c0e; color: #e6e8eb; }
+  .card { max-width: 460px; padding: 32px; background: #161a21; border: 1px solid #262c36;
+          border-radius: 12px; text-align: center; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { color: #9aa3b0; line-height: 1.6; margin: 8px 0; font-size: 14px; }
+  button { margin-top: 16px; padding: 10px 22px; border: 0; border-radius: 8px;
+           background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>ScreenWall 远程连接</h1>
+  <p>已准备好连接链接，点击下面的按钮在 ScreenWall 客户端中打开。</p>
+  <button id="open" type="button">在 ScreenWall 中打开</button>
+  <p>如果客户端没有自动打开，请点击上面的按钮；尚未安装的话，请先下载 ScreenWall 客户端，再用连接码连接。</p>
+</div>
+<script>
+  const token = "__TOKEN__";
+  const server = location.origin;
+  document.getElementById("open").addEventListener("click", function () {
+    window.location.href =
+      "screenwall://connect?server=" + encodeURIComponent(server) +
+      "&token=" + encodeURIComponent(token);
+  });
+</script>
+</body>
+</html>"#;
+
+/// 链接失效的落地页。
+const LINK_PAGE_BAD: &str = r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScreenWall 连接链接已失效</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #0b0c0e; color: #e6e8eb; }
+  .card { max-width: 460px; padding: 32px; background: #161a21; border: 1px solid #262c36;
+          border-radius: 12px; text-align: center; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { color: #9aa3b0; line-height: 1.6; margin: 8px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>连接链接已失效</h1>
+  <p>这条连接链接不存在、已过期或已经被使用过。</p>
+  <p>请向对方重新生成一条新的连接链接，或改用连接码 + 密码连接。</p>
+</div>
+</body>
+</html>"#;
 
 pub async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))

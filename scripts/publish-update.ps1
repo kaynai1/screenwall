@@ -1,4 +1,4 @@
-# 发布一次自托管更新
+﻿# 发布一次自托管更新
 #
 # 用法（在仓库根目录执行）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.0
@@ -45,7 +45,8 @@ if (-not $Notes) {
     $Notes = "ScreenWall $Version"
 }
 
-$lines = Get-Content $Config
+# 配置里有中文：显式按 UTF-8 读，避免 PowerShell 5.1 按 ANSI（GBK）解析成乱码。
+$lines = Get-Content -Path $Config -Encoding UTF8
 $inUpdate = $false
 for ($i = 0; $i -lt $lines.Count; $i++) {
     $line = $lines[$i]
@@ -64,7 +65,13 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
     elseif ($line -match '^file\s*=') { $lines[$i] = "file = `"$file`"" }
     elseif ($line -match '^notes\s*=') { $lines[$i] = "notes = `"$Notes`"" }
 }
-Set-Content -Path $Config -Value $lines -Encoding UTF8
+# 用 .NET 写 UTF-8（不带 BOM）：PowerShell 5.1 的 -Encoding UTF8 会加 BOM，
+# 而 TOML 解析器对 BOM 敏感，服务器会读不出第一行。
+[System.IO.File]::WriteAllLines(
+    (Resolve-Path $Config),
+    $lines,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 
 Write-Host "已更新 $Config 的 [update] 段：version=$Version file=$file"
 Write-Host "重启服务器（或让它重新读取配置）后，客户端点「检查更新」就能看到 $Version。"

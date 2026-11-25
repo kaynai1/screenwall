@@ -21,8 +21,8 @@ import {
   forgetDirectPeers,
   getAutostart,
   getDirectFirewallState,
-  getDirectState,
   getConnectCode,
+  getDirectState,
   getLocalSettings,
   regeneratePairingCode,
   rotateConnectCode,
@@ -46,6 +46,7 @@ import {
   type UpdateInfo,
 } from "../update";
 import DiagnosticsCard from "../components/DiagnosticsCard";
+import { formatConnectCode } from "../connect";
 import { errorLine } from "../errors";
 import { applyMotion, applyTheme, storedMotion, storedTheme, type Theme } from "../theme";
 import type {
@@ -62,13 +63,6 @@ type TestState =
   | { kind: "error"; message: string };
 
 type SectionKey = "account" | "connection" | "security" | "about";
-
-/** 9 位连接码按 `572 955 600` 分组显示，方便口头转述。 */
-function formatConnectCode(code: string): string {
-  const digits = code.replace(/\D/g, "");
-  if (digits.length !== 9) return code;
-  return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
-}
 
 const ZOOM_OPTIONS = [
   { value: "90", label: "90%" },
@@ -1303,6 +1297,10 @@ export default function SettingsPage({
                       disabled={connectBusy || !connect}
                       onChange={(next) => void toggleConnectCode(next)}
                     />
+
+                    <p className="set-field-hint">
+                      连接码和「生成链接」按钮都在工作台顶部，日常使用不必进设置。
+                    </p>
 
                     {connectError && (
                       <div className="notice notice-error set-error" role="alert">
