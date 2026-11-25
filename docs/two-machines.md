@@ -17,7 +17,7 @@
 
   记下形如 `192.168.1.4` 的地址，下文用 `<A-IP>` 代替。
 - 两台机器都装 ScreenWall（[Releases](https://github.com/kaynai1/screenwall/releases) 里的
-  `ScreenWall_0.1.0_x64-setup.exe`）。安装包需要管理员权限，并会自动加好直连用的防火墙规则。
+  `ScreenWall_0.2.4_x64-setup.exe`）。安装包需要管理员权限，并会自动加好直连用的防火墙规则。
   如果只是直接运行 `screenwall-client.exe`（没安装），A 上要到「设置 → 局域网直连」点一次
   「允许局域网直连」来补规则（会弹一次 UAC）。
 
