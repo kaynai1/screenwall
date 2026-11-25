@@ -772,6 +772,15 @@ button:not(:disabled),
   background: var(--ok);
 }
 
+/* 副标题文字单独一层：small 本身是 flex 容器，text-overflow 对它里面的
+   匿名文本不生效（会直接硬切）。这层负责收缩 + 省略号，空间够时完整显示。 */
+.side-copy-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .account-mini {
   display: flex;
   align-items: center;

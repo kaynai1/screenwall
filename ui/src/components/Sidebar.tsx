@@ -29,8 +29,9 @@ export default function Sidebar({
   const onlineCount = devices.filter((device) => device.online).length;
   const local = devices.find((device) => device.id === account.deviceId);
   const serverHost = account.local
-    ? "局域网直连 · 无服务器"
+    ? "无服务器"
     : account.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const serverHint = account.local ? "局域网直连 · 无服务器" : serverHost;
   // 连接码会话只有一台设备，只保留设置入口。
   const sections = account.quick
     ? NAV_SECTIONS.map((section) => ({
@@ -134,15 +135,17 @@ export default function Sidebar({
                   account.local ? (directOn ? "is-ok" : "") : account.connected ? "is-ok" : ""
                 }
               />
-              {account.local
-                ? directOn
-                  ? "局域网直连已开启"
-                  : "局域网直连已关闭"
-                : account.connected
-                  ? account.quick
-                    ? "连接码会话"
-                    : "本机被控在线"
-                  : "正在连接服务器"}
+              <span className="side-copy-text">
+                {account.local
+                  ? directOn
+                    ? "直连已开启"
+                    : "直连已关闭"
+                  : account.connected
+                    ? account.quick
+                      ? "连接码会话"
+                      : "本机被控在线"
+                    : "连接服务器中"}
+              </span>
             </small>
           </div>
           {account.local && (
@@ -160,7 +163,9 @@ export default function Sidebar({
           </div>
           <div className="account-mini-copy">
             <strong>{account.local ? "局域网模式" : account.username}</strong>
-            <small title={serverHost}>{serverHost || "未配置服务器"}</small>
+            <small title={serverHint}>
+              <span className="side-copy-text">{serverHost || "未配置服务器"}</span>
+            </small>
           </div>
           <button
             type="button"
