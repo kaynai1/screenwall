@@ -49,9 +49,16 @@ pause() { read -rp "按回车返回菜单..." _ || true; }
 
 # ---------- 工具函数 ----------
 ensure_tools() {
+  # /dev/null 必须是正常的字符设备，否则 apt 会报 "cannot create /dev/null: Permission denied"
+  if [[ ! -c /dev/null ]]; then
+    warn "/dev/null 不是正常的字符设备，apt 会报 Permission denied。"
+    warn "请先以 root 执行修复后重跑："
+    warn "  chattr -i /dev/null 2>/dev/null; rm -f /dev/null; mknod -m 666 /dev/null c 1 3"
+    die "修复 /dev/null 后再来。"
+  fi
   info "安装系统依赖…"
   $SUDO apt-get update -y >/dev/null
-  $SUDO apt-get install -y git build-essential pkg-config curl ca-certificates
+  $SUDO apt-get install -y git build-essential pkg-config curl ca-certificates gpgv
   ok "系统依赖就绪。"
 }
 
