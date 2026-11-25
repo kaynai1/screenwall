@@ -76,9 +76,10 @@ scripts\tauri-build.bat build --bundles nsis
 安装包里还包含服务器管理 sidecar `kaypanel.exe`，因此打包机需要 **Go 1.23+**。`scripts\tauri-build.bat` 发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时会自动调用 `scripts\build-kaypanel.bat`；也可以先手动构建：
 
 ```powershell
-cd D:\screenwall
 scripts\build-kaypanel.bat
 ```
+
+> 注意：Tauri 的 build script 会在**编译期**检查 `bundle.resources`，所以任何会编译客户端的命令（`cargo test`、`cargo clippy`、`cargo build`）都要求 sidecar 已存在，不只是打包。新克隆的仓库先跑一次 `scripts\build-kaypanel.bat`（CI 也是这么做的）。
 
 首次构建会联网拉取 Go 模块（脚本在未设置 `GOPROXY` 时默认使用 `https://goproxy.cn,direct`）；Go 不在 `PATH` 时可用 `GO_BIN` 指定其 `bin` 目录。KayPanel 是第三方开源组件（MIT），来源与本地改动见 `third_party\kaypanel\THIRD-PARTY-NOTICE.md`。
 

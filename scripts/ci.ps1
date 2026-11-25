@@ -108,6 +108,22 @@ Write-Host "ScreenWall CI (local)" -ForegroundColor White
 Write-Host "root: $Root"
 Write-Host "time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 
+# --- 0. kaypanel sidecar ------------------------------------------------------
+# Tauri 的 build script 在编译期就会检查 bundle.resources，所以缺
+# third_party\kaypanel\dist\kaypanel.exe 时 clippy / test 都会失败（不只是打包）。
+# 这里按需补建一次，需要 Go 1.23+；已经存在时什么也不做。
+$Sidecar = Join-Path $Root 'third_party\kaypanel\dist\kaypanel.exe'
+if (Test-Path $Sidecar) {
+    $Results.Add([pscustomobject]@{ Step = 'kaypanel sidecar'; Status = 'SKIP'; Seconds = 0; Detail = 'already built' })
+}
+elseif ($SkipClippy -and $SkipTest) {
+    $Results.Add([pscustomobject]@{ Step = 'kaypanel sidecar'; Status = 'SKIP'; Seconds = 0; Detail = 'not needed' })
+}
+else {
+    $BuildSidecar = Join-Path $PSScriptRoot 'build-kaypanel.bat'
+    Invoke-Step 'kaypanel sidecar' { & cmd /c "`"$BuildSidecar`"" }
+}
+
 # --- 1. rustfmt ---------------------------------------------------------------
 if ($SkipFmt) {
     $Results.Add([pscustomobject]@{ Step = 'cargo fmt --check'; Status = 'SKIP'; Seconds = 0; Detail = '-SkipFmt' })

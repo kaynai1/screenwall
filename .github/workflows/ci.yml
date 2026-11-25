@@ -20,6 +20,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # 默认镜像在国内更快；GitHub 的 runner 在境外，直连官方代理更稳。
+  GOPROXY: https://proxy.golang.org,direct
 
 jobs:
   fmt:
@@ -68,6 +70,18 @@ jobs:
         with:
           workspaces: "."
 
+      # tauri.conf.json 把 kaypanel 当 bundle.resources；Tauri 的 build script
+      # 在编译期就会检查这个路径，所以即使只跑 test 也必须先有 sidecar。
+      - name: Setup Go (kaypanel sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: third_party/kaypanel/go.sum
+
+      - name: Build kaypanel sidecar
+        shell: pwsh
+        run: cmd /c "scripts\build-kaypanel.bat"
+
       - name: cargo test --workspace
         shell: pwsh
         run: cargo test --workspace
@@ -114,6 +128,16 @@ jobs:
         with:
           workspaces: "."
           key: clippy
+
+      - name: Setup Go (kaypanel sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: third_party/kaypanel/go.sum
+
+      - name: Build kaypanel sidecar
+        shell: pwsh
+        run: cmd /c "scripts\build-kaypanel.bat"
 
       - name: cargo clippy --workspace --all-targets
         shell: pwsh

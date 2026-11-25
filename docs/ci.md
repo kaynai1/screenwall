@@ -166,47 +166,17 @@ winget install rhysd.actionlint      # 若可用
 .\actionlint.exe .github\workflows\ci.yml
 ```
 
-**没有**声称该 workflow 已在 GitHub 上跑通过。
+该 workflow 已于 2026-11-25 首次在 GitHub 上真实运行：`rustfmt` 通过，`build-and-test` 与 `clippy` 因缺 kaypanel sidecar 失败（见第 5 节）。已给这两个 job 补上 `setup-go` + `build-kaypanel.bat`，等待下一次推送的结果。
 
 ---
 
 ## 5. 服务器管理 sidecar（kaypanel）与 CI
 
-服务器管理模块的 `kaypanel.exe` 是独立编译的 Go 二进制，**不在 cargo workspace 里**。这带来两条结论：
-
-1. `fmt` / `build-and-test` / `clippy` 三个 job 都不会构建、也不会检查它。Go 代码坏了，这三个 job 照样绿。
-2. `bundle` job 需要它——`crates/client/tauri.conf.json` 的 `bundle.resources` 引用了 `third_party\kaypanel\dist\kaypanel.exe`，文件不存在时打包会失败。
+服务器管理模块的 `kaypanel.exe` 是独立编译的 Go 二进制，**不在 cargo workspace 里**，但它的存在是编译客户端的前提：`crates/client/tauri.conf.json` 的 `bundle.resources` 引用了 `third_party\kaypanel\dist\kaypanel.exe`，而 **Tauri 的 build script 在编译期就会检查这个路径**。所以不只是 `bundle`，`cargo test` / `cargo clippy` 在全新 checkout 上也会因为这个文件缺失而失败（首次线上运行踩到的就是这个坑）。
 
 ### 5.1 当前 CI 的实际行为
 
-`.github/workflows/ci.yml` **没有** `actions/setup-go`，也没有显式执行 `scripts\build-kaypanel.bat`。`bundle` job 直接跑：
-
-```powershell
-cmd /c "scripts\tauri-build.bat build --bundles nsis"
-```
-
-而 `scripts\tauri-build.bat` 在发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时，会自动调用 `scripts\build-kaypanel.bat`。也就是说：
-
-- 全新 checkout（没有 `dist\kaypanel.exe`）时，`bundle` job 会隐式依赖 runner 上已有的 Go。
-- GitHub 的 `windows-latest` 镜像通常自带 Go，但版本不由本仓库固定；镜像更新或 Go 被移出后，`bundle` 会在 `[kaypanel] Go toolchain not found` 处失败。
-- 失败是**阻塞**的（`build-kaypanel.bat` 返回 1，`tauri-build.bat` 随即返回 1），不会产出一个缺面板的安装包。
-
-> 目录目前不是 git 仓库，GitHub Actions 从未真正跑过，以上是 workflow 与脚本的静态行为，不是线上实测结果。
-
-### 5.2 建议：给 bundle job 加 setup-go
-
-在 `bundle` job 的 `npm ci` 之前加一步，把 Go 版本固定下来：
-
-```yaml
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-          cache-dependency-path: third_party/kaypanel/go.sum
-```
-
-这样 `tauri-build.bat` 的自动构建就能稳定拿到 Go 1.23+，不必依赖 runner 镜像的默认版本。若希望构建步骤更显式，也可以单独加一步：
+`.github/workflows/ci.yml` 里 `build-and-test`、`clippy`、`bundle` 三个 job 都先 `actions/setup-go@v5`（固定 `1.23`，按 `go.sum` 缓存），再显式执行：
 
 ```yaml
       - name: Build kaypanel sidecar
@@ -214,19 +184,20 @@ cmd /c "scripts\tauri-build.bat build --bundles nsis"
         run: cmd /c "scripts\build-kaypanel.bat"
 ```
 
-再跑 `tauri-build.bat`（此时 `dist\kaypanel.exe` 已存在，不会重复构建）。
+然后才跑 cargo / 打包。`rustfmt` job 不编译，因此不需要 Go。workflow 级 `env` 把 `GOPROXY` 设成 `https://proxy.golang.org,direct`——脚本默认的 `goproxy.cn` 在国内快，但境外 runner 上官方代理更稳。失败是**阻塞**的（`build-kaypanel.bat` 返回 1），不会产出一个缺面板的安装包。
 
-### 5.3 本地打包
+### 5.2 本地检查与打包
 
-`scripts\ci.ps1` 只跑 fmt / clippy / test / tsc / build，**不构建 kaypanel**，所以本地跑 CI 检查不要求装 Go。只有出安装包时才需要：
+`scripts\ci.ps1` 在跑 clippy / test 之前检查 `third_party\kaypanel\dist\kaypanel.exe`，缺失时自动调用 `build-kaypanel.bat` 补建（需要 Go 1.23+）；已经存在就跳过。所以全新 clone 上一条命令仍能跑通，只是第一次要有 Go。
+
+只出安装包时：
 
 ```powershell
-cd D:\screenwall
 scripts\build-kaypanel.bat          # 需要 Go 1.23+，首次会联网拉模块
 scripts\tauri-build.bat build --bundles nsis
 ```
 
-直接跑 `tauri-build.bat` 也可以：它会在 `dist\kaypanel.exe` 缺失时自动调用构建脚本。Go 不在 `PATH` 时用 `GO_BIN` 指定其 `bin` 目录；网络受限时设置 `GOPROXY`（脚本默认 `https://goproxy.cn,direct`）。
+直接跑 `tauri-build.bat` 也可以：它会在 `dist\kaypanel.exe` 缺失时自动调用构建脚本。Go 不在 `PATH` 时用 `GO_BIN` 指定其 `bin` 目录；网络受限时设置 `GOPROXY`。
 
 ---
 
