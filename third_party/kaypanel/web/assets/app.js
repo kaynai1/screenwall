@@ -1,6 +1,6 @@
 'use strict';
 
-const TOP_PAGES = ['overview', 'command', 'topology', 'netmatrix', 'security', 'broadcast', 'rootcause', 'ask', 'drill', 'wrapped', 'personality', 'timeline', 'probes', 'batch', 'changes', 'drift', 'stocks', 'park', 'containers', 'apps', 'files', 'terminal', 'ai', 'cost', 'settings'];
+const TOP_PAGES = ['overview', 'containers', 'apps', 'terminal', 'ai'];
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
 
@@ -439,36 +439,11 @@ function renderShell() {
         <div class="side-brand-text"><b>KayPanel</b><span>${esc(state.version || 'dev')}</span></div>
       </div>
       <nav class="side-nav" id="sideNav">
-        <div class="nav-group">监控</div>
         <button class="nav-item" data-page="overview">${ico('overview')}<span>概览</span></button>
-        <button class="nav-item" data-page="command">${ico('cube')}<span>3D 指挥室</span></button>
-        <button class="nav-item" data-page="topology">${ico('topology')}<span>机房拓扑</span></button>
-        <button class="nav-item" data-page="netmatrix">${ico('network')}<span>网络质量</span></button>
-        <button class="nav-item" data-page="security">${ico('shield')}<span>安全体检</span></button>
-        <button class="nav-item" data-page="personality">${ico('heart')}<span>性格周报</span></button>
-        <button class="nav-item" data-page="timeline">${ico('clock')}<span>故障回放</span></button>
         <button class="nav-item" data-page="containers">${ico('container')}<span>容器</span><span class="nav-badge hidden" id="navCtrBadge"></span></button>
         <button class="nav-item" data-page="apps">${ico('app')}<span>应用</span></button>
-        <div class="nav-group">洞察</div>
-        <button class="nav-item" data-page="broadcast">${ico('broadcast')}<span>AI 播报</span></button>
-        <button class="nav-item" data-page="rootcause">${ico('rootcause')}<span>根因分析</span></button>
-        <button class="nav-item" data-page="ask">${ico('ask')}<span>指标问答</span></button>
-        <button class="nav-item" data-page="drill">${ico('drill')}<span>故障演练</span></button>
-        <div class="nav-group">工具</div>
-        <button class="nav-item" data-page="probes">${ico('probe')}<span>拨测状态</span></button>
-        <button class="nav-item" data-page="batch">${ico('batch')}<span>批量操作</span></button>
-        <button class="nav-item" data-page="changes">${ico('history')}<span>变更记录</span></button>
-        <button class="nav-item" data-page="drift">${ico('diff')}<span>配置漂移</span></button>
-        <button class="nav-item" data-page="files">${ico('folder')}<span>文件</span></button>
         <button class="nav-item" data-page="terminal">${ico('terminal')}<span>终端</span></button>
         <button class="nav-item" data-page="ai">${ico('spark')}<span>AI 助手</span></button>
-        <div class="nav-group">趣味</div>
-        <button class="nav-item" data-page="wrapped">${ico('trophy')}<span>年度 Wrapped</span></button>
-        <button class="nav-item" data-page="stocks">${ico('stocks')}<span>行情</span></button>
-        <button class="nav-item" data-page="park">${ico('park')}<span>服务器乐园</span></button>
-        <div class="nav-group">系统</div>
-        <button class="nav-item" data-page="cost">${ico('coin')}<span>电费账本</span></button>
-        <button class="nav-item" data-page="settings">${ico('settings')}<span>设置</span><span class="nav-dot hidden" id="navUpdDot"></span></button>
       </nav>
       <div class="side-foot">
         <span class="foot-ic">${ico('activity')}</span>
@@ -581,32 +556,8 @@ function refreshCurrentPage() {
   if (state.subview && state.subview.type === 'inspect') { loadInspect(); return; }
   switch (state.page) {
     case 'overview': loadOverview(true); loadProcesses(); break;
-    case 'command':
-      loadOverview(false).then(() => { if (state.page === 'command' && !state.subview) refreshCommandView(); });
-      break;
-    case 'topology': loadTopology(true); break;
-    case 'netmatrix': loadNetMatrix(true); break;
-    case 'security': loadSecurity(true); break;
-    case 'probes': loadProbes(true); break;
-    case 'changes': loadChanges(true); break;
-    case 'drift': loadDrift(true); break;
-    case 'cost': loadCost(true); break;
-    case 'broadcast': loadBroadcast(true); break;
-    case 'rootcause': loadRootCause(true); break;
-    case 'ask':
-      if (state.askResult) askSubmit(state.askResult.query);
-      else renderPage();
-      break;
-    case 'drill': loadDrill(true); break;
-    case 'wrapped': loadWrapped(true); break;
-    case 'batch': renderPage(); break;
-    case 'personality': loadPersonality(true); break;
-    case 'timeline': loadTimeline(true); break;
-    case 'stocks': loadStocks(); break;
-    case 'park': loadPark(); break;
     case 'containers': loadContainers(); break;
     case 'apps': loadStacks(); break;
-    case 'files': loadFiles(state.filePath); break;
     case 'widget': refreshWidget(); break;
     default: renderPage();
   }
@@ -754,9 +705,9 @@ function renderPage() {
   if (state.page === 'ambient') return renderAmbient();
   if (state.page === 'widget') return renderWidget();
   const selNode = currentNode();
-  if (selNode && selNode.sftp_only && ['containers', 'apps', 'terminal'].includes(state.page)) {
-    state.page = 'files';
-    if (location.hash !== '#/files') history.replaceState(null, '', '#/files');
+  if (selNode && selNode.sftp_only && ['containers', 'apps'].includes(state.page)) {
+    state.page = 'overview';
+    if (location.hash !== '#/overview') history.replaceState(null, '', '#/overview');
   }
   updateTabs();
   updateNodePills();
@@ -769,30 +720,10 @@ function renderPage() {
   if (sub && sub.type === 'ai-stack') return renderAIStack();
   switch (state.page) {
     case 'overview': return renderOverview();
-    case 'command': return renderCommand();
-    case 'topology': return renderTopology();
-    case 'netmatrix': return renderNetMatrix();
-    case 'security': return renderSecurity();
-    case 'probes': return renderProbes();
-    case 'changes': return renderChanges();
-    case 'drift': return renderDrift();
-    case 'broadcast': return renderBroadcast();
-    case 'rootcause': return renderRootCause();
-    case 'ask': return renderAsk();
-    case 'drill': return renderDrill();
-    case 'wrapped': return renderWrapped();
-    case 'batch': return renderBatch();
-    case 'cost': return renderCost();
-    case 'personality': return renderPersonality();
-    case 'timeline': return renderTimeline();
-    case 'stocks': return renderStocks();
-    case 'park': return renderPark();
     case 'containers': return renderContainers();
     case 'apps': return renderApps();
-    case 'files': return renderFiles();
     case 'terminal': return renderTerminalPage();
     case 'ai': return renderAI();
-    case 'settings': return renderSettings();
     default: return renderOverview();
   }
 }
@@ -1481,7 +1412,6 @@ function vhostCard(n) {
     <div class="card-head">
       <div><h2>虚拟主机</h2><p>${esc(n.name)} · ${esc(n.user)}@${esc(n.addr)}</p></div>
       <div class="head-actions">
-        <button class="btn sm primary" id="goVhostFiles">文件管理</button>
         <button class="btn sm ghost" id="editVhost">编辑节点</button>
       </div>
     </div>
@@ -1539,8 +1469,6 @@ function drawOverview() {
   if (term) term.addEventListener('click', () => navigate('terminal'));
   const cont = $('#goContainers');
   if (cont) cont.addEventListener('click', () => navigate('containers'));
-  const vfiles = $('#goVhostFiles');
-  if (vfiles) vfiles.addEventListener('click', () => navigate('files'));
   const vedit = $('#editVhost');
   if (vedit && sel) vedit.addEventListener('click', () => openNodeForm(sel.id));
   bindNoNode();
@@ -2672,7 +2600,6 @@ function renderAI() {
       <div><h1>AI 助手</h1><p class="page-sub">${n ? esc(n.name) + ' · ' + esc(n.addr) : '选择节点后提问'}</p></div>
       <div class="head-actions">
         <button class="btn sm ghost" id="aiClear">清空对话</button>
-        <button class="btn sm" id="aiSettings">AI 设置</button>
       </div>
     </section>
     ${state.hasAIKey ? '' : '<div class="banner warn">尚未配置 AI 接口，请先在「设置 → AI 运维助手」填写 Base URL、模型和 API Key。</div>'}
@@ -2685,7 +2612,6 @@ function renderAI() {
       <div class="ai-hint">AI 可提议重启容器、查看日志、分析或清理磁盘；执行前都会弹窗确认，只放行面板内置的白名单命令。</div>
     </div>`;
   $('#aiClear').addEventListener('click', () => { state.aiMessages = []; renderAIChat(); });
-  $('#aiSettings').addEventListener('click', () => navigate('settings'));
   $('#aiSend').addEventListener('click', () => { const el = $('#aiInput'); sendAI(el.value); el.value = ''; });
   $('#aiInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const el = e.target; sendAI(el.value); el.value = ''; }
@@ -4295,31 +4221,11 @@ function renderAmbient() {
 
 const PALETTE_PAGES = [
   ['overview', '概览', '节点状态与资源趋势', 'overview'],
-  ['command', '3D 指挥室', '全息机房指挥台', 'cube'],
-  ['topology', '机房拓扑', '可视化机房连接', 'topology'],
-  ['netmatrix', '网络质量', '节点间延迟与丢包矩阵', 'network'],
-  ['security', '安全体检', 'SSH / 防火墙 / 证书检查', 'shield'],
-  ['broadcast', 'AI 播报', '实时水位写成一段运维播报', 'broadcast'],
-  ['rootcause', '根因分析', '跨节点异常关联与怀疑排序', 'rootcause'],
-  ['ask', '指标问答', '用自然语言查历史指标', 'ask'],
-  ['drill', '故障演练', 'SRE 故障场景模拟考核', 'drill'],
-  ['wrapped', '年度 Wrapped', '这一年的服务器数据故事', 'trophy'],
-  ['probes', '拨测状态', '网站与端口可用性 + 公开状态页', 'probe'],
-  ['changes', '变更记录', '文件与应用修改回滚', 'history'],
-  ['drift', '配置漂移', '对比节点关键配置差异', 'diff'],
-  ['batch', '批量操作', '多机命令 / 更新 / 分发', 'batch'],
-  ['cost', '电费账本', '功率与电费估算', 'coin'],
-  ['personality', '性格周报', '服务器性格与周报', 'heart'],
-  ['timeline', '故障回放', '回放历史事件时间轴', 'clock'],
-  ['stocks', '行情', '服务器健康度股票行情', 'stocks'],
-  ['park', '服务器乐园', '宠物 / 天气 / 成就', 'park'],
   ['containers', '容器', 'Docker 容器管理', 'container'],
   ['apps', '应用', 'Compose 应用栈', 'app'],
-  ['files', '文件', 'SFTP 文件管理', 'folder'],
   ['terminal', '终端', '网页 SSH 终端', 'terminal'],
   ['ai', 'AI 助手', '自然语言运维', 'spark'],
-  ['settings', '设置', '通知 / AI / 节点', 'settings'],
-];
+]
 
 function paletteEntries() {
   const items = PALETTE_PAGES.map(([page, label, hint, icon]) => ({
