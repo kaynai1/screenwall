@@ -1,16 +1,22 @@
 /* 设备页 —— 工具栏 + 单层表格 */
 
+/* 宽屏下也保持参考稿那样的留白，不把表格拉成一整条。 */
+.dev-page {
+  width: 100%;
+  max-width: 1120px;
+}
+
 .dev-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .dev-search {
-  flex: 0 1 280px;
-  height: 34px;
+  flex: 0 1 300px;
+  height: 36px;
   min-width: 180px;
 }
 
@@ -36,26 +42,28 @@
 
 .dev-table {
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
   background: var(--surface);
+  box-shadow: var(--panel-shadow);
 }
 
 .dev-head,
 .dev-row {
   display: grid;
   grid-template-columns:
-    minmax(220px, 1.8fr) 96px 118px 100px 104px 116px;
+    minmax(220px, 1.8fr) 104px 118px 100px 104px 120px;
   align-items: center;
   gap: 10px;
   padding: 0 16px;
 }
 
 .dev-head {
-  height: 36px;
+  height: 46px;
   color: var(--text-3);
-  font-size: 14px;
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .dev-head-actions {
@@ -63,15 +71,15 @@
 }
 
 .dev-row {
-  min-height: 48px;
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-  padding-bottom: 6px;
+  min-height: 60px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 9px;
+  padding-bottom: 9px;
   transition: background-color var(--dur) var(--ease);
 }
 
 .dev-row:hover {
-  background: var(--surface-2);
+  background: var(--bg-soft);
 }
 
 .dev-row.is-expanded {
@@ -122,9 +130,14 @@
 .dev-status {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-self: start;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   color: var(--text-2);
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.4;
   white-space: nowrap;
 }
 
@@ -136,8 +149,20 @@
   background: var(--text-3);
 }
 
+.dev-status.is-online {
+  border-color: var(--green-line);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
 .dev-status.is-online i {
   background: var(--ok);
+}
+
+.dev-status.is-view {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .dev-status.is-view i {
@@ -145,6 +170,8 @@
 }
 
 .dev-status.is-offline {
+  border-color: var(--line-soft);
+  background: var(--surface-2);
   color: var(--text-3);
 }
 
@@ -218,6 +245,21 @@
   display: flex;
   justify-content: flex-end;
   gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.dev-row:hover .dev-actions,
+.dev-row:focus-within .dev-actions,
+.dev-row.is-expanded .dev-actions {
+  opacity: 1;
+}
+
+/* 键盘用户不靠悬停也能看到操作入口。 */
+@media (hover: none) {
+  .dev-actions {
+    opacity: 1;
+  }
 }
 
 .dev-action {
