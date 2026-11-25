@@ -1,0 +1,388 @@
+//! 自托管自动更新：检查版本、下载安装包、启动安装程序。
+//!
+//! 这里不依赖 `crate::Shared`，只接收 `reqwest::Client`、服务器地址与令牌，
+//! 进度通过回调上报，便于在 `main.rs` 里用 `#[tauri::command]` 包装并 emit 事件。
+//!
+//! - 检查更新走 `GET /api/v1/version`（服务器不要求登录）。
+//! - 下载到 `%TEMP%\ScreenWall\updates\<文件名>`，边下边算 SHA256，校验失败即删除。
+//! - 安装只负责启动安装包；是否退出主程序由调用方决定。
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
+
+/// 当前编译版本，与 `Cargo.toml` 保持一致。
+pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 发现的新版本。字段用 camelCase 直接返回给前端。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// 当前运行的版本。
+    pub current: String,
+    /// 服务器发布的最新版本。
+    pub version: String,
+    /// 更新说明（可含换行）。
+    pub notes: String,
+    /// 安装包的绝对下载地址。
+    pub url: String,
+    /// 安装包 SHA256（64 位小写十六进制）。
+    pub sha256: String,
+    /// 发布时间（Unix 毫秒）。
+    pub published_at: i64,
+}
+
+/// 比较两个版本号：`a > b` 时返回 `true`。
+///
+/// 忽略前导 `v`，按 `.` 分段比较前导数字（`1.2.10 > 1.2.9`），
+/// 缺省段视为 0（`2.0 == 2.0.0`），预发布后缀（`-beta`）不参与比较。
+pub fn version_gt(a: &str, b: &str) -> bool {
+    let left = parse_version(a);
+    let right = parse_version(b);
+    let len = left.len().max(right.len());
+    for index in 0..len {
+        let l = left.get(index).copied().unwrap_or(0);
+        let r = right.get(index).copied().unwrap_or(0);
+        if l != r {
+            return l > r;
+        }
+    }
+    false
+}
+
+fn parse_version(raw: &str) -> Vec<u64> {
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
+    // 只取主版本段，丢掉 `-beta.1` / `+build` 之类后缀。
+    let core = trimmed.split(['-', '+']).next().unwrap_or(trimmed);
+    core.split('.')
+        .map(|segment| {
+            let digits: String = segment
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect();
+            digits.parse::<u64>().unwrap_or(0)
+        })
+        .collect()
+}
+
+/// 检查服务器是否发布了新版本；`Ok(None)` 表示已是最新。
+///
+/// `token` 可为空：版本接口不需要登录，传令牌只是兼容未来的鉴权收紧。
+pub async fn check_update(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> Result<Option<UpdateInfo>, String> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{base}/api/v1/version");
+    let mut request = client.get(&url);
+    if !token.is_empty() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("检查更新失败: {error}"))?;
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| Value::Object(Default::default()));
+    if !status.is_success() {
+        let message = body
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("服务器未提供更新");
+        return Err(format!("{message}（HTTP {status}）"));
+    }
+
+    let version = body
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "服务器返回的版本号无效".to_string())?
+        .to_string();
+    let raw_url = body
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "服务器返回的下载地址无效".to_string())?;
+    let sha256 = body
+        .get("sha256")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .ok_or_else(|| "服务器返回的校验值无效".to_string())?;
+    let notes = body
+        .get("notes")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let published_at = body.get("publishedAt").and_then(Value::as_i64).unwrap_or(0);
+
+    if !version_gt(&version, CURRENT_VERSION) {
+        return Ok(None);
+    }
+
+    Ok(Some(UpdateInfo {
+        current: CURRENT_VERSION.to_string(),
+        version,
+        notes,
+        url: absolute_url(base, raw_url),
+        sha256,
+        published_at,
+    }))
+}
+
+/// 相对下载地址拼成绝对地址；已是 `http(s)://` 的原样返回。
+fn absolute_url(base: &str, raw: &str) -> String {
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return raw.to_string();
+    }
+    if raw.starts_with('/') {
+        format!("{base}{raw}")
+    } else {
+        format!("{base}/{raw}")
+    }
+}
+
+/// 更新包存放目录：`%TEMP%\ScreenWall\updates`。
+pub fn update_dir() -> PathBuf {
+    std::env::temp_dir().join("ScreenWall").join("updates")
+}
+
+/// 下载安装包到本地并校验 SHA256，返回本地绝对路径。
+///
+/// `on_progress(received, total)` 会在下载过程中被反复调用，`total` 未知时为 0。
+/// 校验失败会删除已下载文件并返回错误。
+pub async fn download_update<F>(
+    client: &reqwest::Client,
+    url: &str,
+    sha256: &str,
+    mut on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(u64, u64),
+{
+    let expected = sha256.trim().to_ascii_lowercase();
+    if expected.len() != 64 || !expected.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("校验值格式无效".into());
+    }
+
+    let dir = update_dir();
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|error| format!("创建更新目录失败: {error}"))?;
+    let name = file_name_from_url(url);
+    let dest = dir.join(&name);
+    let part = dir.join(format!("{name}.part"));
+
+    // 覆盖客户端默认的短超时：安装包较大，整段下载给足时间。
+    let response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(30 * 60))
+        .send()
+        .await
+        .map_err(|error| format!("下载安装包失败: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载安装包失败（HTTP {status}）"));
+    }
+    let total = response.content_length().unwrap_or(0);
+
+    let mut file = tokio::fs::File::create(&part)
+        .await
+        .map_err(|error| format!("创建下载文件失败: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut received: u64 = 0;
+    let mut last_emit: u64 = 0;
+    let mut response = response;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(format!("下载中断: {error}"));
+            }
+        };
+        if let Err(error) = file.write_all(&chunk).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(format!("写入安装包失败: {error}"));
+        }
+        hasher.update(&chunk);
+        received += chunk.len() as u64;
+        // 每 256 KiB 或下载结束时回报一次，避免事件刷屏。
+        if received - last_emit >= 256 * 1024 || total > 0 && received >= total {
+            last_emit = received;
+            on_progress(received, total);
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("写入安装包失败: {error}"))?;
+    drop(file);
+    on_progress(received, total);
+
+    let actual = hex::encode(hasher.finalize());
+    if actual != expected {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(format!(
+            "安装包校验失败（期望 {expected}，实际 {actual}），已删除下载文件"
+        ));
+    }
+
+    if tokio::fs::rename(&part, &dest).await.is_err() {
+        // 目标已存在时 Windows 上 rename 会失败，删掉旧文件再试一次。
+        let _ = tokio::fs::remove_file(&dest).await;
+        tokio::fs::rename(&part, &dest)
+            .await
+            .map_err(|error| format!("保存安装包失败: {error}"))?;
+    }
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// 启动安装包（NSIS 静默安装 `/S`），成功启动即返回。
+///
+/// perMachine 安装包的清单要求管理员权限：`Command::spawn` 在非提权进程里
+/// 会直接报 ERROR_ELEVATION_REQUIRED（os error 740），所以这里必须走
+/// `ShellExecuteW(runas)`，由用户确认一次 UAC。
+///
+/// 不在这里退出进程：主程序可以在返回 `Ok` 后自行 `exit(0)`。
+pub fn install_update(path: &str) -> Result<(), String> {
+    let file = Path::new(path);
+    if !file.is_file() {
+        return Err(format!("安装包不存在: {path}"));
+    }
+    crate::firewall::shell_execute_runas(file, "/S", false)
+        .map_err(|error| format!("启动安装程序失败: {error}"))?;
+    Ok(())
+}
+
+/// 从下载地址推导本地文件名：去掉查询/锚点，取最后一段并做 Windows 安全清洗。
+pub fn file_name_from_url(url: &str) -> String {
+    let no_fragment = url.split('#').next().unwrap_or(url);
+    let no_query = no_fragment.split('?').next().unwrap_or(no_fragment);
+    let last = no_query.rsplit('/').next().unwrap_or("");
+    let decoded = percent_decode(last);
+
+    let mut cleaned = String::with_capacity(decoded.len());
+    for ch in decoded.chars() {
+        let safe =
+            !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !ch.is_control();
+        cleaned.push(if safe { ch } else { '_' });
+    }
+    let cleaned = cleaned
+        .trim_end_matches(['.', ' '])
+        .trim_start_matches(' ')
+        .to_string();
+    let cleaned = if cleaned.len() > 180 {
+        cleaned[..180].to_string()
+    } else {
+        cleaned
+    };
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return "ScreenWall-update.exe".to_string();
+    }
+    cleaned
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+            if let Some(value) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(value);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_comparison() {
+        assert!(!version_gt("1.2.9", "1.2.9"));
+        assert!(!version_gt("1.2.10", "1.2.10"));
+        assert!(version_gt("1.2.10", "1.2.9"));
+        assert!(!version_gt("1.2.9", "1.2.10"));
+        assert!(version_gt("2.0.0", "1.99.99"));
+        assert!(version_gt("1.10.0", "1.9.0"));
+        assert!(!version_gt("2.0", "2.0.0"));
+        assert!(!version_gt("2.0.0", "2.0"));
+        assert!(version_gt("v1.0.0", "0.9.9"));
+        assert!(version_gt("V1.0.1", "v1.0.0"));
+        assert!(!version_gt("1.2.3-beta", "1.2.3"));
+        assert!(version_gt("1.2.4-beta", "1.2.3"));
+        assert!(!version_gt("0.1.0", "0.1.0"));
+        assert!(version_gt("0.1.1", "0.1.0"));
+    }
+
+    #[test]
+    fn file_names_are_cleaned() {
+        assert_eq!(
+            file_name_from_url("http://host/downloads/ScreenWall_0.1.0_x64-setup.exe"),
+            "ScreenWall_0.1.0_x64-setup.exe"
+        );
+        assert_eq!(
+            file_name_from_url("https://host/downloads/a%20b.exe?token=1#frag"),
+            "a b.exe"
+        );
+        assert_eq!(
+            file_name_from_url("http://host/downloads/a:b*c.exe"),
+            "a_b_c.exe"
+        );
+        // `?` 之后是查询串，不进入文件名。
+        assert_eq!(
+            file_name_from_url("http://host/downloads/setup.exe?x=1"),
+            "setup.exe"
+        );
+        assert_eq!(file_name_from_url("http://host/"), "ScreenWall-update.exe");
+        assert_eq!(file_name_from_url(""), "ScreenWall-update.exe");
+        assert_eq!(
+            file_name_from_url("http://host/x/.."),
+            "ScreenWall-update.exe"
+        );
+        assert_eq!(file_name_from_url("http://host/x/a.exe."), "a.exe");
+        // 路径分隔符会被替换，不会逃出更新目录。
+        assert!(!file_name_from_url("http://host/..%2F..%2Fevil.exe").contains('/'));
+        assert!(!file_name_from_url("http://host/..%5Cevil.exe").contains('\\'));
+    }
+
+    #[test]
+    fn absolute_url_joining() {
+        assert_eq!(
+            absolute_url("http://127.0.0.1:8787", "/downloads/a.exe"),
+            "http://127.0.0.1:8787/downloads/a.exe"
+        );
+        assert_eq!(
+            absolute_url("http://127.0.0.1:8787", "downloads/a.exe"),
+            "http://127.0.0.1:8787/downloads/a.exe"
+        );
+        assert_eq!(
+            absolute_url("http://127.0.0.1:8787", "https://cdn/a.exe"),
+            "https://cdn/a.exe"
+        );
+    }
+}

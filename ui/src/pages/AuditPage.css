@@ -1,0 +1,277 @@
+/* 审计页 —— 概览卡片 + 单层表格 + 分页 */
+
+.audit-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.audit-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.audit-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.audit-stat-label {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.audit-stat strong {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.audit-stat strong.is-live {
+  color: var(--ok);
+}
+
+.audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-search {
+  flex: 0 1 240px;
+  height: 34px;
+  min-width: 170px;
+}
+
+.audit-search input {
+  font-size: 14px;
+}
+
+.audit-device-filter {
+  flex: 0 1 200px;
+  height: 34px;
+  min-width: 150px;
+}
+
+.audit-device-filter select {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  cursor: pointer;
+}
+
+.audit-device-filter select option {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.audit-seg {
+  flex: none;
+}
+
+.audit-toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 表格 */
+
+.audit-table {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.audit-head,
+.audit-row {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 0.9fr) minmax(260px, 2fr) 118px 92px 92px 92px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.audit-head {
+  height: 36px;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.audit-row {
+  min-height: 48px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.audit-row:hover {
+  background: var(--surface-2);
+}
+
+.audit-row.is-live {
+  background: linear-gradient(
+    90deg,
+    var(--green-soft),
+    transparent 40%
+  );
+}
+
+.audit-cell-time {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.audit-cell-time strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.audit-cell-time small {
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.audit-cell-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.audit-device {
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-arrow {
+  flex: none;
+  color: var(--text-mute);
+}
+
+.audit-cell-text {
+  color: var(--text-2);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.audit-live {
+  color: var(--ok);
+}
+
+.audit-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-3);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.audit-state i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.audit-state.is-live {
+  color: var(--ok);
+}
+
+.audit-state.is-live i {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.audit-empty {
+  padding: 32px 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* 骨架 */
+
+.audit-skeleton {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-row-skeleton {
+  pointer-events: none;
+}
+
+.audit-skel-sm {
+  width: 60%;
+  height: 12px;
+}
+
+.audit-skel-wide {
+  width: 85%;
+  height: 12px;
+}
+
+/* 分页 */
+
+.audit-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.audit-foot-meta {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.audit-pager {
+  display: flex;
+  gap: 8px;
+}
+
+.audit-note {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 窄窗口下让出流量两列，保住状态列。 */
+@media (max-width: 1180px) {
+  .audit-head,
+  .audit-row {
+    grid-template-columns:
+      minmax(0, 0.9fr) minmax(0, 1.5fr) 88px 74px;
+  }
+
+  .audit-head span:nth-child(4),
+  .audit-head span:nth-child(5),
+  .audit-row > :nth-child(4),
+  .audit-row > :nth-child(5) {
+    display: none;
+  }
+}

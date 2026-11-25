@@ -1,0 +1,246 @@
+//! ScreenWall 账号与中转服务器。
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use axum::extract::connect_info::Connected;
+use axum::serve::IncomingStream;
+use clap::{Parser, Subcommand};
+use screenwall_server::auth::{hash_password, hash_token, valid_password, valid_username};
+use screenwall_server::config::{Config, LimitsConfig, TlsConfig, UpdateConfig};
+use screenwall_server::db::Db;
+use screenwall_server::router;
+use screenwall_server::state::AppState;
+use screenwall_server::tls::{self, PeerAddr, TlsListener};
+use screenwall_server::update::UpdateState;
+use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "screenwall-server",
+    version,
+    about = "ScreenWall 账号与中转服务器"
+)]
+struct Cli {
+    /// 配置文件路径；不存在时使用默认值。
+    #[arg(long, global = true, default_value = "server.toml")]
+    config: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// 启动服务器。
+    Run,
+    /// 管理账号。
+    User {
+        #[command(subcommand)]
+        action: UserAction,
+    },
+    /// 管理令牌。
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UserAction {
+    /// 创建账号。
+    Add {
+        username: String,
+        /// 直接在命令行给密码（不推荐，会进入 shell 历史）。
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// 列出账号。
+    List,
+    /// 重置密码并吊销该账号的所有令牌。
+    Reset {
+        username: String,
+        #[arg(long)]
+        password: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenAction {
+    /// 吊销一个令牌。
+    Revoke { token: String },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    init_tracing();
+    let cli = Cli::parse();
+    let config = Config::load(&cli.config)?;
+
+    match cli.command {
+        Command::Run => {
+            let tls = TlsConfig::load(&cli.config)?;
+            let update = UpdateConfig::load(&cli.config)?;
+            let limits = LimitsConfig::load(&cli.config)?;
+            run(config, tls, update, limits).await
+        }
+        Command::User { action } => {
+            let db = Db::open(&config.db_path)?;
+            user_action(&db, action)
+        }
+        Command::Token { action } => {
+            let db = Db::open(&config.db_path)?;
+            token_action(&db, action)
+        }
+    }
+}
+
+async fn run(
+    config: Config,
+    tls: Option<TlsConfig>,
+    update: UpdateConfig,
+    limits: LimitsConfig,
+) -> Result<()> {
+    let db = Db::open(&config.db_path)?;
+    let mut state = AppState::with_limits(db, config.clone(), limits);
+    state.update = UpdateState::from_config(&update);
+    let state = Arc::new(state);
+    let app = router(state);
+
+    let listener = tokio::net::TcpListener::bind(&config.bind)
+        .await
+        .with_context(|| format!("监听 {} 失败", config.bind))?;
+
+    match tls {
+        Some(tls) => {
+            let cert = tls.tls_cert.as_ref().context("tls_cert 未配置")?;
+            let key = tls.tls_key.as_ref().context("tls_key 未配置")?;
+            let server_config = tls::load_server_config(cert, key)?;
+            tracing::info!(
+                "ScreenWall 服务器已启动: https://{}（WSS，证书 {}，数据库 {}，公开注册 {}）",
+                config.bind,
+                cert.display(),
+                config.db_path.display(),
+                if config.allow_registration {
+                    "开启"
+                } else {
+                    "关闭"
+                }
+            );
+            serve(TlsListener::new(listener, server_config), app).await
+        }
+        None => {
+            tracing::info!(
+                "ScreenWall 服务器已启动: http://{}（数据库 {}，公开注册 {}）",
+                config.bind,
+                config.db_path.display(),
+                if config.allow_registration {
+                    "开启"
+                } else {
+                    "关闭"
+                }
+            );
+            serve(listener, app).await
+        }
+    }
+}
+
+/// 明文与 TLS 监听共用的启动入口；路由、WS 升级逻辑完全一致。
+async fn serve<L>(listener: L, app: axum::Router) -> Result<()>
+where
+    L: axum::serve::Listener<Addr = SocketAddr> + Send + 'static,
+    for<'a> PeerAddr: Connected<IncomingStream<'a, L>>,
+{
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<PeerAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("收到 Ctrl+C，正在退出");
+    })
+    .await?;
+    Ok(())
+}
+
+fn user_action(db: &Db, action: UserAction) -> Result<()> {
+    match action {
+        UserAction::Add { username, password } => {
+            let username = username.trim();
+            if !valid_username(username) {
+                bail!("用户名需为 3–32 位字母、数字、下划线或连字符");
+            }
+            if db.find_user(username)?.is_some() {
+                bail!("用户 {username} 已存在");
+            }
+            let password = read_password(password)?;
+            if !valid_password(&password) {
+                bail!("密码需为 8–128 位");
+            }
+            let id = db.create_user(username, &hash_password(&password)?)?;
+            println!("已创建用户 {username}（id={id}）");
+        }
+        UserAction::List => {
+            let users = db.list_users()?;
+            if users.is_empty() {
+                println!("还没有账号");
+            }
+            for user in users {
+                println!(
+                    "id={}\t{}\t{}",
+                    user.id,
+                    user.username,
+                    if user.disabled { "已禁用" } else { "正常" }
+                );
+            }
+        }
+        UserAction::Reset { username, password } => {
+            let user = db
+                .find_user(username.trim())?
+                .with_context(|| format!("用户 {username} 不存在"))?;
+            let password = read_password(password)?;
+            if !valid_password(&password) {
+                bail!("密码需为 8–128 位");
+            }
+            db.update_password(user.id, &hash_password(&password)?)?;
+            db.revoke_all_user_tokens(user.id)?;
+            println!("已重置 {username} 的密码，并吊销其全部令牌");
+        }
+    }
+    Ok(())
+}
+
+fn token_action(db: &Db, action: TokenAction) -> Result<()> {
+    match action {
+        TokenAction::Revoke { token } => {
+            let token = token.trim();
+            if db.revoke_token(&hash_token(token))? {
+                println!("令牌已吊销");
+            } else {
+                println!("没有找到该令牌（可能已吊销）");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_password(provided: Option<String>) -> Result<String> {
+    if let Some(password) = provided {
+        return Ok(password);
+    }
+    let password = rpassword::prompt_password("密码: ")?;
+    let confirm = rpassword::prompt_password("再次输入: ")?;
+    if password != confirm {
+        bail!("两次输入的密码不一致");
+    }
+    Ok(password)
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+}

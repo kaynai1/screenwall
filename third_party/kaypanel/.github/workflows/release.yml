@@ -1,0 +1,131 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            name: kaypanel-linux-amd64
+          - goos: linux
+            goarch: arm64
+            name: kaypanel-linux-arm64
+          - goos: windows
+            goarch: amd64
+            name: kaypanel-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Tidy and test
+        run: |
+          go mod tidy
+          go vet ./...
+          go test ./...
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          case "$VERSION" in v*) ;; *) VERSION="v0.0.0-dev" ;; esac
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${{ matrix.name }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+          if-no-files-found: error
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build desktop app
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          case "$VERSION" in v*) ;; *) VERSION="v0.0.0-dev" ;; esac
+          go mod tidy
+          go install github.com/akavel/rsrc@latest
+          "$(go env GOPATH)/bin/rsrc.exe" -arch amd64 -ico installer/app.ico -o desktop/rsrc_windows_amd64.syso
+          mkdir -p build
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o build/kaypanel.exe .
+          go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o build/KayPanel.exe ./desktop
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: Build installer
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $ref = $env:REF_NAME
+          if ($ref -match '^v(\d+(?:\.\d+){0,3})$') {
+            $ver = $Matches[1]
+            $name = $ref
+          } else {
+            $ver = "0.0.0"
+            $name = "v0.0.0-dev"
+          }
+          $iscc = @(Get-ChildItem "C:\Program Files (x86)\Inno Setup*\ISCC.exe", "C:\Program Files\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue) | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          & $iscc.FullName "/DMyAppVersion=$ver" "/DMyAppVerName=$name" "installer\kaypanel.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KayPanel-Setup-windows
+          path: installer/Output/*.exe
+          if-no-files-found: error
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image tar
+        run: |
+          docker build -t kaypanel:${GITHUB_REF_NAME} .
+          docker tag kaypanel:${GITHUB_REF_NAME} kaypanel:latest
+          docker save kaypanel:${GITHUB_REF_NAME} kaypanel:latest | gzip -9 > kaypanel-image-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaypanel-image-amd64.tar.gz
+          path: kaypanel-image-amd64.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, docker, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

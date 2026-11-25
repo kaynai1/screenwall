@@ -1,0 +1,211 @@
+name: CI
+
+# Windows-only project: the client links against the MSVC toolchain and bundles
+# through NSIS, so every job runs on windows-latest.
+#
+# All four jobs are BLOCKING. As of 2026-11-24 the workspace is rustfmt-clean and
+# clippy-clean (`cargo fmt --all -- --check` and
+# `cargo clippy --workspace --all-targets` both exit 0 with no output), so clippy
+# now runs with `-D warnings` and no longer tolerates failures. See docs/ci.md.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Checked per workspace member rather than via `cargo fmt --all` so the
+      # failure output names the offending crate directly.
+      - name: cargo fmt --check
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($crate in 'proto', 'server', 'agent', 'client') {
+            Write-Host "::group::fmt $crate"
+            cargo fmt -p "screenwall-$crate" -- --check
+            if ($LASTEXITCODE -ne 0) { $failed += $crate }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::rustfmt is not clean in: $($failed -join ', '). Run 'cargo fmt --all' locally."
+            exit 1
+          }
+
+  build-and-test:
+    name: build-and-test
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: cargo test --workspace
+        shell: pwsh
+        run: cargo test --workspace
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: npm ci
+        working-directory: ui
+        shell: pwsh
+        run: npm ci
+
+      - name: TypeScript typecheck
+        working-directory: ui
+        shell: pwsh
+        run: npx tsc --noEmit
+
+      - name: Vite build
+        working-directory: ui
+        shell: pwsh
+        run: npm run build
+
+  clippy:
+    name: clippy
+    runs-on: windows-latest
+    # Blocking: the workspace is clippy-clean as of 2026-11-24, so warnings are
+    # errors here. Keep it that way — a new lint should fail CI, not pile up.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          key: clippy
+
+      - name: cargo clippy --workspace --all-targets
+        shell: pwsh
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  bundle:
+    name: bundle (NSIS installer)
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # scripts\tauri-build.bat runs tauri from ui\node_modules\.bin, and the
+      # Tauri beforeBuildCommand rebuilds the frontend.
+      - name: npm ci
+        working-directory: ui
+        shell: pwsh
+        run: npm ci
+
+      # The bundle embeds the kaypanel sidecar (server management panel).
+      # scripts\tauri-build.bat builds it on demand, so Go must be present.
+      - name: Setup Go (kaypanel sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: third_party/kaypanel/go.sum
+
+      - name: Build kaypanel sidecar
+        shell: pwsh
+        run: cmd /c "scripts\build-kaypanel.bat"
+
+      # windows-latest normally ships NSIS; install explicitly so the step does
+      # not depend on the runner image contents.
+      - name: Ensure NSIS
+        shell: pwsh
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            choco install nsis -y --no-progress
+          }
+          if (-not (Test-Path $makensis)) { throw "NSIS not found at $makensis" }
+
+      - name: Build NSIS bundle
+        shell: pwsh
+        run: cmd /c "scripts\tauri-build.bat build --bundles nsis"
+
+      - name: SHA256 of installer
+        id: hash
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "target\release\bundle\nsis\*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No installer produced under target\release\bundle\nsis" }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          $size = [math]::Round($exe.Length / 1MB, 2)
+          Write-Host "Installer: $($exe.Name) ($size MiB)"
+          Write-Host "SHA256: $hash"
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "name=$($exe.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenwall-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          @'
+          ### ScreenWall installer
+
+          - File: `${{ steps.hash.outputs.name }}`
+          - SHA256: `${{ steps.hash.outputs.sha256 }}`
+          - Commit: `${{ github.sha }}`
+          '@ >> $env:GITHUB_STEP_SUMMARY

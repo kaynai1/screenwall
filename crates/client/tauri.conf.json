@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ScreenWall",
+  "version": "0.1.0",
+  "identifier": "dev.screenwall.client",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ScreenWall",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "theme": "Dark",
+        "backgroundColor": "#0b0c0e",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-lcd-text --disable-font-subpixel-positioning"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../third_party/kaypanel/dist/kaypanel.exe": "kaypanel.exe"
+    },
+    "publisher": "ScreenWall",
+    "shortDescription": "同账号互控的远程桌面工作台",
+    "longDescription": "ScreenWall：同一账号下的设备互相远程控制，支持实时画面、键鼠直通、文件传输与自适应画质。",
+    "category": "Productivity",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/installer-hooks.nsh",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+/target
+/ui/node_modules
+/ui/dist
+/crates/client/gen
+*.log
+
+# 本机运行数据：数据库、证书、日志、截图，绝不进仓库
+/dev-data
+/server.toml
+/server.dev.toml
+
+# 本机工具与编辑器状态
+/.claude
+/.vscode
+
+# 构建产物（Go sidecar 由 scripts/build-kaypanel.bat 重建）
+/third_party/kaypanel/dist

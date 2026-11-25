@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/proto", "crates/agent", "crates/server", "crates/client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# 调试构建里也把采集和 JPEG 编码优化一下，否则实时画面会被 debug 代码拖慢。
+[profile.dev.package.screenwall-agent]
+opt-level = 2
+
+[profile.dev.package.jpeg-encoder]
+opt-level = 3

@@ -1,0 +1,47 @@
+# ScreenWall 服务器配置示例。
+# 复制为 server.toml 后按需修改。
+
+# 默认只监听本机，由 Caddy / Nginx 反向代理并处理 TLS。
+bind = "127.0.0.1:8787"
+
+# 可选：由服务器自己提供 HTTPS + WSS。
+# 两个都配置时启用 TLS；都留空时保持明文 HTTP/WS（适合本机开发，
+# 或前面已有 Caddy / Nginx 终结 TLS）。只配置其中一个会启动失败。
+# 相对路径按本配置文件所在目录解析。
+#
+# 自签证书（客户端需要信任该证书，且 SAN 必须包含实际访问的地址）：
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout server.key -out server.crt \
+#     -subj "/CN=localhost" \
+#     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+#
+# Windows 的 Git Bash 自带 openssl。改成公网域名时，把 DNS:localhost
+# 换成实际域名（也可继续追加 IP 条目）。
+#
+# tls_cert = "server.crt"
+# tls_key = "server.key"
+
+# SQLite 数据库路径；相对路径按配置文件所在目录解析。
+db_path = "screenwall.db"
+
+# 是否允许客户端自助注册。自用建议关闭，用
+#   screenwall-server user add <用户名>
+# 创建账号。
+allow_registration = false
+
+# 登录令牌有效期（天）。
+token_ttl_days = 30
+
+# 单个会话帧的最大负载（字节）。
+max_frame_bytes = 1048576
+
+# 自托管自动更新（可选）。没有本段或文件不存在时，客户端检查更新会得到 404。
+# dir 是安装包所在目录，相对路径按本配置文件所在目录解析；
+# file 必须位于 dir 下，下载接口只按此文件名精确匹配（不接受其它路径）。
+# 客户端通过 GET /api/v1/version 获取版本、SHA256 与下载地址。
+#
+# [update]
+# dir = "target/release/bundle/nsis"
+# version = "0.1.0"
+# file = "ScreenWall_0.1.0_x64-setup.exe"
+# notes = "修复若干问题，提升稳定性。"

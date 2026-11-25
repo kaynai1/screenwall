@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScreenWall · WebCodecs 检测</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0e10;
+        --panel: #10171a;
+        --border: #1f2b30;
+        --text: #e6eef1;
+        --dim: #8fa1a9;
+        --faint: #5f7078;
+        --ok: #3ddc97;
+        --bad: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px 18px;
+        background: radial-gradient(900px 500px at 80% -10%, rgba(61,220,151,.09), transparent 60%), var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      .panel {
+        width: min(720px, 100%);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      header {
+        padding: 20px 22px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      h1 { margin: 0; font-size: 17px; font-weight: 640; }
+      header p { margin: 6px 0 0; color: var(--dim); font-size: 12.5px; line-height: 1.6; }
+      ul { list-style: none; margin: 0; padding: 8px 22px 16px; }
+      li {
+        display: grid;
+        grid-template-columns: 190px 64px 1fr;
+        gap: 10px;
+        align-items: baseline;
+        padding: 11px 0;
+        border-bottom: 1px solid rgba(255,255,255,.045);
+        font-size: 13px;
+      }
+      li:last-child { border-bottom: none; }
+      .name { color: var(--text); }
+      .flag { font-weight: 650; font-size: 12px; }
+      .flag.ok { color: var(--ok); }
+      .flag.bad { color: var(--bad); }
+      .flag.pending { color: var(--faint); }
+      .detail {
+        color: var(--faint);
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 11px;
+        word-break: break-all;
+        line-height: 1.5;
+      }
+      footer {
+        padding: 14px 22px 18px;
+        border-top: 1px solid var(--border);
+        color: var(--faint);
+        font-size: 11.5px;
+        line-height: 1.7;
+      }
+      code { color: var(--dim); }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <header>
+        <h1>WebCodecs 能力检测</h1>
+        <p>验证当前运行环境（WebView2 / Edge / Chrome）能否用 WebCodecs 解码 H.264。M0 只需确认支持，M2 再做真实画面解码。</p>
+      </header>
+      <ul id="rows"></ul>
+      <footer>
+        在客户端开发模式下访问 <code>http://localhost:1420/webcodecs.html</code>，或直接用 Edge 打开本文件。
+        页面只做能力查询，不向网络发送任何数据。
+      </footer>
+    </div>
+
+    <script>
+      const rows = document.getElementById("rows");
+
+      function addRow(name, state, detail) {
+        const li = document.createElement("li");
+        const flag = state === true ? "ok" : state === false ? "bad" : "pending";
+        const label =
+          state === true ? "支持" : state === false ? "不支持" : state === "info" ? "信息" : "检测中";
+        li.innerHTML = `
+          <span class="name"></span>
+          <span class="flag ${flag}">${label}</span>
+          <span class="detail"></span>
+        `;
+        li.querySelector(".name").textContent = name;
+        li.querySelector(".detail").textContent = detail ?? "";
+        rows.appendChild(li);
+      }
+
+      async function checkConfig(name, config) {
+        if (!("VideoDecoder" in window)) {
+          addRow(name, false, "VideoDecoder 不存在");
+          return;
+        }
+        try {
+          const result = await VideoDecoder.isConfigSupported(config);
+          addRow(name, result.supported === true, JSON.stringify(result.config ?? result));
+        } catch (error) {
+          addRow(name, false, String(error));
+        }
+      }
+
+      async function run() {
+        addRow("VideoDecoder", "VideoDecoder" in window, "WebCodecs 视频解码入口");
+        addRow("VideoFrame", "VideoFrame" in window, "解码输出帧");
+        addRow("VideoEncoder", "VideoEncoder" in window, "编码（客户端暂不需要）");
+        addRow("安全上下文", window.isSecureContext, location.origin);
+
+        await checkConfig("H.264 / Annex-B", {
+          codec: "avc1.42E01E",
+          codedWidth: 1280,
+          codedHeight: 720,
+          avc: { format: "annexb" },
+          optimizeForLatency: true,
+        });
+
+        await checkConfig("H.264 / AVCC", {
+          codec: "avc1.42E01E",
+          codedWidth: 1280,
+          codedHeight: 720,
+          optimizeForLatency: true,
+        });
+
+        await checkConfig("VP8（对照）", {
+          codec: "vp8",
+          codedWidth: 1280,
+          codedHeight: 720,
+        });
+
+        addRow("User-Agent", "info", navigator.userAgent);
+      }
+
+      run();
+    </script>
+  </body>
+</html>
