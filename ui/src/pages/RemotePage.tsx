@@ -45,7 +45,11 @@ const TTL_OPTIONS: { value: PasswordTtl; label: string }[] = [
  * 这一页取代了散落在设置里的连接码与局域网直连 —— 它们都是**日常要用**的，
  * 埋在设置里每次都要点三层才能拿到码，不合适。
  */
-export default function RemotePage({ notify, onOpenDevice }: RemotePageProps) {
+export default function RemotePage({
+  notify,
+  onOpenDevice,
+  active,
+}: RemotePageProps) {
   const [connect, setConnect] = useState<ConnectCodeView | null>(null);
   const [direct, setDirect] = useState<DirectState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -82,11 +86,13 @@ export default function RemotePage({ notify, onOpenDevice }: RemotePageProps) {
   }, []);
 
   useEffect(() => {
+    if (!active) return;
     void load();
     // 配对码 10 分钟一换，界面上要跟着走。
+    // 隐藏时停轮询（见 PageProps.active 的说明）。回显时先 load 一次再续。
     const timer = window.setInterval(() => void load(), 5000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, active]);
 
   useEffect(
     () => () => {

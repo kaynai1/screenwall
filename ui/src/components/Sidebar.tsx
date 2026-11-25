@@ -1,4 +1,4 @@
-import { LogOut, Monitor, Wifi } from "lucide-react";
+import { LogOut, Monitor, Settings2, Wifi } from "lucide-react";
 import { NAV_SECTIONS } from "../nav";
 import type { AccountView, DeviceView, PageKey } from "../types";
 
@@ -9,6 +9,7 @@ export default function Sidebar({
   devices,
   selectedCount,
   onLogout,
+  onOpenSettings,
   directOn,
   directBusy,
   onToggleDirect,
@@ -19,6 +20,7 @@ export default function Sidebar({
   devices: DeviceView[];
   selectedCount: number;
   onLogout: () => void;
+  onOpenSettings: () => void;
   /** 局域网直连当前是否开启（只在本机模式下有意义）。 */
   directOn: boolean;
   directBusy: boolean;
@@ -57,7 +59,18 @@ export default function Sidebar({
         </div>
         <div className="brand-text">
           <strong>ScreenWall</strong>
-          <small>远程工作台</small>
+          {/* 「远程工作台」副标题让位给局域网直连状态胶囊：一样的符号+字体，
+              直连开着绿色常显；局域网模式下关着灰色也显示；账号模式下
+              没开直连就不占位（退回静默）。 */}
+          {(account.local || directOn) && (
+            <span
+              className={`brand-direct ${directOn ? "is-on" : "is-off"}`}
+              title={directOn ? "局域网直连已开启" : "局域网直连已关闭"}
+            >
+              <Wifi size={12} strokeWidth={2} aria-hidden="true" />
+              局域网直连
+            </span>
+          )}
         </div>
       </div>
 
@@ -149,6 +162,15 @@ export default function Sidebar({
             <strong>{account.local ? "局域网模式" : account.username}</strong>
             <small title={serverHost}>{serverHost || "未配置服务器"}</small>
           </div>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onOpenSettings}
+            title="账号设置"
+            aria-label="账号设置"
+          >
+            <Settings2 size={15} strokeWidth={1.75} />
+          </button>
           <button
             type="button"
             className="icon-btn"

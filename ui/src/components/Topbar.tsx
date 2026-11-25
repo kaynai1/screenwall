@@ -1,6 +1,6 @@
-import { FlaskConical, Wifi } from "lucide-react";
+import { FlaskConical } from "lucide-react";
 import { PAGE_META } from "../nav";
-import type { AccountView, PageKey } from "../types";
+import type { PageKey } from "../types";
 import WindowChrome from "./WindowChrome";
 
 /**
@@ -24,15 +24,7 @@ async function beginDrag(event: React.MouseEvent) {
   }
 }
 
-export default function Topbar({
-  page,
-  account,
-  onOpenSettings,
-}: {
-  page: PageKey;
-  account: AccountView;
-  onOpenSettings: () => void;
-}) {
+export default function Topbar({ page }: { page: PageKey }) {
   const meta = PAGE_META[page];
 
   return (
@@ -51,20 +43,6 @@ export default function Topbar({
             预览
           </span>
         )}
-
-        <button
-          type="button"
-          className="top-avatar"
-          onClick={onOpenSettings}
-          title="账号设置"
-          aria-label={`账号设置（${account.local ? "局域网模式" : account.username || "未登录"}）`}
-        >
-          {account.local ? (
-            <Wifi size={14} strokeWidth={1.75} />
-          ) : (
-            account.username.slice(0, 1).toUpperCase()
-          )}
-        </button>
       </div>
 
       <WindowChrome />

@@ -88,6 +88,14 @@ export type PageProps = {
   account: AccountView;
   devices: DeviceView[];
   notify: Notify;
+  /**
+   * 本页是否为当前可见页。App 把所有访问过的页面保活在 DOM 里
+   * （display:none 切换，组件并不卸载），页面的 effect 照跑 ——
+   * 隐藏页每 5 秒拉一次列表、setInterval 不会因为 display:none
+   * 而减速，几个隐藏页的轮询和当前页的点击都是同一批 invoke。
+   * 各页拿到它之后，隐藏时要停掉轮询/心跳。
+   */
+  active: boolean;
 };
 
 export type WallPageProps = PageProps & {

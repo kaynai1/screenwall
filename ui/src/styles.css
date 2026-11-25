@@ -542,6 +542,30 @@ button:not(:disabled),
   font-size: 14px;
 }
 
+/* 品牌区副标题位的局域网直连胶囊：替换掉原来的「远程工作台」。
+   环境描边的小胶囊，开着绿色、关着灰色，同底部「这台电脑」的语义。 */
+.brand-direct {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  align-self: flex-start;
+  padding: 2px 7px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  background: var(--green-soft);
+  color: var(--green);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.brand-direct.is-off {
+  background: var(--fill-2);
+  color: var(--text-3);
+}
+
 .nav {
   display: flex;
   flex: 1;
@@ -761,8 +785,7 @@ button:not(:disabled),
   flex: 1;
 }
 
-.avatar,
-.top-avatar {
+.avatar {
   display: grid;
   flex: none;
   place-items: center;
@@ -787,6 +810,8 @@ button:not(:disabled),
 
 /* 顶部工具栏：iOS 的半透明 chrome 材质，内容滚到下面时透出模糊。 */
 /* 顶栏也不画下边框：内容和顶栏融成一片，靠间距而不是线来分层。 */
+/* 无边框：不再用半透明材质条，顶栏和内容区同一底色直接相连，
+   只靠标题与按钮的对齐引导视线；窗口按钮是唯一带 chrome 的视觉锚点。 */
 .topbar {
   display: flex;
   flex: none;
@@ -795,9 +820,7 @@ button:not(:disabled),
   gap: 16px;
   height: var(--topbar);
   padding: 0 8px 0 28px;
-  background: var(--chrome-bg);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: transparent;
   user-select: none;
 }
 
@@ -886,18 +909,6 @@ button:not(:disabled),
 
 .win-restore {
   transform: scaleX(-1) rotate(90deg);
-}
-
-.top-avatar {
-  margin-left: 4px;
-  transition:
-    border-color var(--dur) var(--ease),
-    background-color var(--dur) var(--ease);
-}
-
-.top-avatar:hover {
-  border-color: var(--line-hover);
-  background: var(--surface-3);
 }
 
 /* 状态胶囊：iOS 的 tinted badge，无边框、浅色底。 */
@@ -2068,6 +2079,7 @@ button:not(:disabled),
   }
 
   .brand-text,
+  .brand-direct,
   .nav-label,
   .nav-item span,
   .nav-item em,

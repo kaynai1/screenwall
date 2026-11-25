@@ -19,7 +19,7 @@
         "minHeight": 640,
         "resizable": true,
         "decorations": false,
-        "shadow": false,
+        "shadow": true,
         "theme": "Light",
         "backgroundColor": "#ffffff",
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-lcd-text --disable-font-subpixel-positioning"

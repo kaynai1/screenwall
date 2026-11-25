@@ -20,10 +20,13 @@ import { errorLine } from "../errors";
  *
  * 所以页面本身留空，只放一个加载态与错误态，等子 webview 盖上来。
  */
-export default function ServerPage() {
+export default function ServerPage({ active }: { active: boolean }) {
   const anchor = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  // 面板是否「应该」可见：页面在 DOM 里但被 display 隐藏时（is-hidden），
+  // 组件不会卸载，隐藏必须由我们自己翻一次面。
+  const [visible, setVisible] = useState(active);
 
   /** 量出锚点元素在窗口坐标系里的矩形（CSS 像素）。 */
   function measure(): PanelBounds | null {
@@ -72,12 +75,38 @@ export default function ServerPage() {
       }
     })();
 
+    // 注意：这里不能把「离开本页就 hide」放进 cleanup。
+    //
+    // App 把访问过的页面保活（display:none 切换），页面切走时组件并不会卸载，
+    // cleanup 只在真正的卸载（退出登录等）时才跑。如果依赖它隐藏面板，
+    // 切出「服务器管理」后子 webview 会一直盖在主界面上 —— 其他的页全都
+    // 点不了，只能被困在面板里，这就是那个「卡死」。
     return () => {
       alive = false;
-      // 离开本页：把子 webview 藏起来，别盖在别的页面上。
+      // 真正的卸载也收拾干净，别留个 webview 悬空。
       void hideServerPanel().catch(() => {});
     };
   }, []);
+
+  // 可见性翻转：App 把本页 display:none 时（is-hidden，组件并不卸载），
+  // 子 webview 必须一起隐藏，否则它盖住侧栏和顶栏。回来后重新显示。
+  // 显示用的是同一个 show_embedded —— 它幂等复用已有 webview，秒开。
+  //
+  // active 从 App 的当前页而来：切走时才需要 hide，千万不要放在
+  // 卸载路径上（保活 DOM 里不会卸载）。
+  useEffect(() => {
+    setVisible(active);
+  }, [active]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (visible) {
+      const bounds = measure();
+      if (bounds) void showServerPanel(bounds).catch(() => {});
+    } else {
+      void hideServerPanel().catch(() => {});
+    }
+  }, [visible, ready]);
 
   // 内容区尺寸/位置变化：重新量并同步位置。
   // 不能只听 window.resize —— 侧边栏折叠、顶栏高度变化都不触发它，

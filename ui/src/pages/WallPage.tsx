@@ -391,6 +391,7 @@ export default function WallPage(props: WallPageProps) {
     account,
     devices,
     notify,
+    active,
     selectedIds,
     onToggleSelect,
     onClearSelection,
@@ -438,8 +439,11 @@ export default function WallPage(props: WallPageProps) {
   }, [account.quick, account.local, account.deviceId]);
 
   // 本机模式的引导信息来自直连状态（地址 + 配对码），不是服务器设备 ID。
+  // 隐藏时（切到别的页面）停掉轮询：页面还保活在 DOM 里，但 display:none
+  // 不会让 setInterval 变慢，几个隐藏页轮询和当前页点击抢同一条 invoke。
   useEffect(() => {
     if (!account.local) return;
+    if (!active) return;
     let alive = true;
     const load = () => {
       getDirectState()
@@ -454,7 +458,7 @@ export default function WallPage(props: WallPageProps) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [account.local]);
+  }, [account.local, active]);
 
   async function rotateCode() {
     if (connectBusy) return;

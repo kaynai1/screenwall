@@ -11,6 +11,7 @@ import {
   connectByLink as apiConnectByLink,
   enterLocalMode as apiEnterLocalMode,
   getDirectState,
+  prewarmPanel,
   setDirectEnabled,
   subscribeAccount,
   subscribeConnectLink,
@@ -138,6 +139,13 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [account?.loggedIn, account?.local]);
+
+  // 后台预启动服务器管理面板子进程：用户第一次点「服务器管理」时
+  // 后端复用已启动进程直接返回握手，省掉首次 spawn + 握手的等待。
+  useEffect(() => {
+    if (!account?.loggedIn || account.quick) return;
+    void prewarmPanel().catch(() => {});
+  }, [account?.loggedIn, account?.quick]);
 
   // 被控端授权：事件 + 启动时补拉，避免窗口挂载前的事件丢失。
   useEffect(() => {
@@ -496,13 +504,16 @@ export default function App() {
       : null;
 
   function renderPage(target: PageKey = currentPage) {
+    // 保活的页面里只有当前页是活跃的：轮询/心跳隐藏时停掉，回显时恢复。
+    const active = target === currentPage;
     switch (target) {
       case "remote":
-        return <RemotePage {...common} onOpenDevice={openDevice} />;
+        return <RemotePage {...common} active={active} onOpenDevice={openDevice} />;
       case "wall":
         return (
           <WallPage
             {...common}
+            active={active}
             selectedIds={selectedIds}
             onToggleSelect={toggleSelect}
             onClearSelection={() => setSelectedIds([])}
@@ -519,6 +530,7 @@ export default function App() {
         return (
           <GroupPage
             {...common}
+            active={active}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             onOpenDevice={openDevice}
@@ -528,20 +540,22 @@ export default function App() {
         return (
           <FilesPage
             {...common}
+            active={active}
             initialDeviceId={activeId}
             onOpenWall={() => navigate("wall")}
           />
         );
       case "devices":
-        return <DevicesPage {...common} onOpenDevice={openDevice} />;
+        return <DevicesPage {...common} active={active} onOpenDevice={openDevice} />;
       case "audit":
-        return <AuditPage {...common} />;
+        return <AuditPage {...common} active={active} />;
       case "server":
-        return <ServerPage />;
+        return <ServerPage active={active} />;
       case "settings":
         return (
           <SettingsPage
             {...common}
+            active={active}
             onLogout={handleLogout}
             busy={busy}
           />
@@ -550,6 +564,7 @@ export default function App() {
         return controlDeviceId ? (
           <ControlPage
             {...common}
+            active={active}
             deviceId={controlDeviceId}
             onBack={() => {
               if (quick) {
@@ -578,17 +593,14 @@ export default function App() {
         devices={devices}
         selectedCount={selectedIds.length}
         onLogout={handleLogout}
+        onOpenSettings={() => navigate("settings")}
         directOn={directOn}
         directBusy={directBusy}
         onToggleDirect={() => void toggleDirect()}
       />
 
       <div className="app-main">
-        <Topbar
-          page={currentPage}
-          account={account}
-          onOpenSettings={() => navigate("settings")}
-        />
+        <Topbar page={currentPage} />
         <div
           className={`page-shell ${
             currentPage === "control" || currentPage === "server" ? "is-flush" : ""

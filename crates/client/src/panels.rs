@@ -382,6 +382,24 @@ pub async fn show_server_panel(
         .map_err(|error| format!("显示面板任务失败: {error}"))?
 }
 
+/// 后台预启动面板进程（不显示）。用户真正点「服务器管理」时 `ensure_started`
+/// 直接复用已启动的进程返回握手，省掉首次点进去时 spawn + 读握手的等待。
+/// 幂等：进程已在跑则直接返回。
+#[tauri::command]
+pub async fn prewarm_panel(
+    app: AppHandle,
+    hub: State<'_, std::sync::Arc<Hub>>,
+) -> Result<(), String> {
+    let app = app.clone();
+    let hub = hub.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = ensure_started(&app, &hub);
+    })
+    .await
+    .map_err(|error| format!("预启动面板任务失败: {error}"))?;
+    Ok(())
+}
+
 /// 隐藏面板（切到别的页面时调用）。不销毁 webview，下次显示更快。
 #[tauri::command]
 pub async fn hide_server_panel(hub: State<'_, std::sync::Arc<Hub>>) -> Result<(), String> {

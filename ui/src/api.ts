@@ -1842,6 +1842,16 @@ export function getPanelStatus(): Promise<PanelStatus> {
   return invoke<PanelStatus>("get_panel_status");
 }
 
+/**
+ * 后台预启动服务器管理面板（kaypanel），不显示。
+ *
+ * 用户真正点「服务器管理」时 backend 复用已启动的进程直接返回握手，
+ * 省掉首次点进去时 spawn 子进程 + 读握手的等待。
+ */
+export function prewarmPanel(): Promise<void> {
+  return invoke<void>("prewarm_panel");
+}
+
 export type PanelBounds = {
   x: number;
   y: number;

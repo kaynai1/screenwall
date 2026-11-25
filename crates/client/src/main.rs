@@ -3331,6 +3331,33 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 把窗口四角切成 Windows 11 的圆角（`DWMWA_WINDOW_CORNER_PREFERENCE`）。
+///
+/// `decorations: false` 的无边框窗口默认是直角；KayPanel 是圆角，我们
+/// 也切成圆角保持一致。`hwnd` 是主窗口的原生句柄（isize）。
+/// 只在 Windows 上有效，非 Windows 直接忽略。
+#[cfg(windows)]
+fn apply_round_corners(hwnd: isize) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    // SAFETY: DwmSetWindowAttribute 只在该窗口句柄仍有效时调用；
+    // app.setup 里窗口刚建好，#[cfg(windows)] 下 hwnd 一定有效。
+    unsafe {
+        let pref: u32 = DWMWCP_ROUND as u32;
+        // 后两个参数是属性值指针与大小。值为枚举，这里转成原生类型。
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &pref as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_round_corners(_hwnd: isize) {}
+
 fn emit_control_state(
     app: &AppHandle,
     phase: &str,
@@ -4863,6 +4890,11 @@ fn main() {
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_zoom(ui_zoom);
+                // Windows 11 把窗口四角切成圆角，和 KayPanel 的视觉对齐。
+                // decorations:false 的窗口默认是直角，需要显式开 DWM 圆角。
+                if let Ok(hwnd) = window.hwnd() {
+                    apply_round_corners(hwnd.0 as isize);
+                }
                 // 关闭窗口默认缩到托盘；用户可在设置里关掉，或在托盘菜单退出。
                 let close_shared = initial.clone();
                 let win = window.clone();
@@ -4977,6 +5009,7 @@ fn main() {
             firewall::get_direct_firewall_state,
             firewall::allow_direct_firewall,
             panels::get_panel_status,
+            panels::prewarm_panel,
             panels::show_server_panel,
             panels::hide_server_panel,
             panels::resize_server_panel
