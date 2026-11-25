@@ -1074,6 +1074,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "document-features"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
+dependencies = [
+ "litrs",
+]
+
+[[package]]
 name = "dom_query"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1244,6 +1253,18 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
+name = "fast_image_resize"
+version = "6.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f056f6b866ac980e0ebf973c6579170fa03285cb79d448435bd4d8fa2a74b511"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "fastrand"
@@ -2410,6 +2431,12 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+
+[[package]]
+name = "litrs"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02b614978e47ce529faee66579f2b2fe19c94aa96d910a6a9a8043b2b02d8175"
 
 [[package]]
 name = "lock_api"
@@ -3736,12 +3763,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screenwall-agent"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "audiopus",
  "axum",
  "base64 0.22.1",
+ "fast_image_resize",
  "futures-util",
  "getrandom 0.2.17",
  "hex",
@@ -3769,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-client"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3797,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-proto"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -3806,7 +3834,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-server"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "argon2",

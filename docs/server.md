@@ -563,28 +563,33 @@ Linux 上编译运行。
 #### 0. 一键部署（Ubuntu / 无域名 / 直绑公网，最快路径）
 
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
-`scripts/deploy-server.sh`：跑起来是一个菜单，输入编号选择操作。选「1. 安装」
-后依次填写账号名、密码、监听端口、是否允许自助注册，确认后自动完成装依赖、
-装 Rust、编译、写配置、建账号、装 systemd，最后打印中转服务器地址并做健康检查。
+`scripts/deploy-server.sh`。**一条命令、无需交互**：
 
 ```bash
-git clone --depth 1 https://github.com/kaynai1/screenwall.git /tmp/sw \
-  && bash /tmp/sw/scripts/deploy-server.sh
+curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh \
+  | bash -s -- --yes --account kay --password '至少8位密码'
 ```
 
-国内服务器 GitHub 不通时，换镜像地址（脚本 clone 失败也会自动切镜像）：
+脚本会自己处理这些容易失败的环节：
+
+- **自动修复 `/dev/null`**：它被换成普通文件/软链接时，`apt`、`gpgv`、`cargo`
+  会全部报 `cannot create /dev/null: Permission denied`。脚本检测到就直接重建
+  字符设备（`chattr -i` → `rm` → `mknod`），不再让你手工修。
+- **依赖安装带重试**：`apt-get update` 有失败项不阻断，`install` 失败自动重试 3 次；
+  缺什么装什么（curl/tar/git/编译工具/pkg-config/gpgv）。
+- **源码用 tarball 优先**：不依赖 git，GitHub 不通时自动切镜像，最后才退回 `git clone`。
+- **Rust 与 crates 走 rsproxy.cn 镜像**，国内编译快。
+- 编译、写配置、建账号、装 systemd、放行 ufw，最后打印中转地址并做健康检查。
+
+可选参数：`--port 8787`、`--allow-register`。想用菜单管理模式（更新 / 状态 /
+日志 / 重启 / 备份 / 卸载）：
 
 ```bash
-git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/sw \
-  && bash /tmp/sw/scripts/deploy-server.sh
+curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh | bash
 ```
 
-菜单包含：安装、更新到最新版、查看状态、查看日志、重启服务、备份数据、卸载、退出。
-安装跑完会打印客户端连接地址，记得去云控制台 **安全组** 放行 TCP 端口 `8787`。
-Rust 与 crates 走 `rsproxy.cn` 镜像，国内机器编译快。
-
-> 该脚本与下方分步流程同源，首次在真实机器上部署时若遇编译或环境问题，
-> 请把报错反馈回来。需要域名 + HTTPS / WSS 的完整分步（含 Caddy）见下文。
+装完记得去云控制台 **安全组** 放行 TCP 端口 `8787`。需要域名 + HTTPS / WSS 的
+完整分步（含 Caddy）见下文。
 
 #### 1. 装工具链（Arch 为例）
 

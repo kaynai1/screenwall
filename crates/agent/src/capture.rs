@@ -20,6 +20,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use jpeg_encoder::{ColorType, Encoder};
 use screenwall_proto::cloud::TUNNEL_MAX_PAYLOAD;
 use screenwall_proto::{
@@ -1524,7 +1526,45 @@ fn encode_jpeg(
 }
 
 /// 双线性缩放 BGRA。源和目标都是紧凑行（stride = width * 4）。
+///
+/// 走 `fast_image_resize` 的 SIMD 实现：4K→1080p 从纯 Rust 的 ~35ms 降到
+/// 几毫秒，这是高分辨率机器能不能跑满 30/60 fps 的关键。它要求缓冲区按
+/// 像素对齐；万一构造失败（极端尺寸/对齐），退回下面的标量实现，画面不能丢。
 fn scale_bgra(src: &[u8], sw: usize, sh: usize, dst: &mut Vec<u8>, dw: usize, dh: usize) {
+    if sw > 0 && sh > 0 && dw > 0 && dh > 0 {
+        let dst_len = dw.saturating_mul(dh).saturating_mul(4);
+        dst.clear();
+        dst.resize(dst_len, 0);
+        let src_view = ImageRef::new(sw as u32, sh as u32, src, PixelType::U8x4);
+        if let Ok(src_view) = src_view {
+            if let Ok(mut dst_view) =
+                Image::from_slice_u8(dw as u32, dh as u32, dst.as_mut_slice(), PixelType::U8x4)
+            {
+                // 双线性与原来的实现一致；alpha 恒为 255，关掉 alpha 预乘省时间。
+                let mut options = ResizeOptions::default();
+                options.algorithm = ResizeAlg::Convolution(FilterType::Bilinear);
+                options.mul_div_alpha = false;
+                let done = RESIZER.with(|cell| {
+                    cell.borrow_mut()
+                        .resize(&src_view, &mut dst_view, &options)
+                        .is_ok()
+                });
+                if done {
+                    return;
+                }
+            }
+        }
+    }
+    scale_bgra_scalar(src, sw, sh, dst, dw, dh);
+}
+
+thread_local! {
+    /// `Resizer` 内部带可复用缓冲区，按线程缓存，避免每帧重新分配。
+    static RESIZER: std::cell::RefCell<Resizer> = std::cell::RefCell::new(Resizer::new());
+}
+
+/// 标量双线性：SIMD 路径不可用时的兜底。
+fn scale_bgra_scalar(src: &[u8], sw: usize, sh: usize, dst: &mut Vec<u8>, dw: usize, dh: usize) {
     let dst_len = dw.saturating_mul(dh).saturating_mul(4);
     dst.clear();
     dst.resize(dst_len, 0);
@@ -1682,6 +1722,25 @@ mod tests {
             let started = Instant::now();
             encode_jpeg(&frame, w, h, 65, &mut out).unwrap();
             println!("encode 1080p q65: {:?}", started.elapsed());
+        }
+    }
+
+    /// 手动跑：`cargo test -p screenwall-agent --release bench_scale -- --ignored --nocapture`
+    ///
+    /// 4K 屏默认把画面缩到 1920 宽；这一步是纯 CPU 双线性，高分辨率机器上
+    /// 往往比 JPEG 编码还贵，直接决定能不能跑满 30/60 fps。
+    #[test]
+    #[ignore]
+    fn bench_scale_4k() {
+        let (sw, sh) = (3840usize, 2160usize);
+        let src = vec![17u8; sw * sh * 4];
+        let mut dst = Vec::new();
+        for (dw, dh) in [(1920usize, 1080usize), (1280, 720)] {
+            for _ in 0..3 {
+                let started = Instant::now();
+                scale_bgra(&src, sw, sh, &mut dst, dw, dh);
+                println!("scale 4K->{dw}x{dh}: {:?}", started.elapsed());
+            }
         }
     }
 

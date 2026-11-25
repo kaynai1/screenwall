@@ -447,3 +447,14 @@ sidecar 模式下：
 | 诊断脱敏 | `cargo test -p screenwall-client logging` | `export_scrubs_peer_tokens` 通过：`knownPeers[].token` 与 `directTokens[]` 都变成 `<已脱敏>`，地址与设备名保留 |
 | 全量测试 | `cargo test --workspace` | 214 passed / 0 failed（2026-11-25 实测） |
 | CI | `powershell -File scripts\ci.ps1` | 六步全 PASS（fmt / clippy / test / tsc / build） |
+
+## v0.2.7（2026-11-26）
+
+| 项目 | 内容 |
+| --- | --- |
+| 控制页空白（回归） | v0.2.4 的页面保活只渲染 `visited` 集合，`openDevice()` / 登录进控制页走裸 `setPage("control")` 没登记，点设备进控制页整块空白（顶栏「远程控制」、内容区空）。修法：任何切页都登记 `visited`，且当前页始终在渲染集合里。浏览器演示模式 A/B 复现：回退 `App.tsx` 必现空白，恢复后正常渲染 |
+| 局域网直连画面 | 直连本来就支持画面与键鼠（`crates/client/src/direct.rs` 监听 → `screenwall_agent::direct` → `cloud::session_task`）；`crates/agent/src/session.rs` 里「直连不提供画面/键鼠」只属于独立 Agent 服务入口，不是客户端直连。`direct_end_to_end` 10/10 通过（含 `video.sub` 回包） |
+| 检查更新 | 局域网模式（无服务器）不再把 GitHub 失败静默成「已是最新」；GitHub 请求单独 30s 超时并如实报网络原因 |
+| 侧栏裁切 | 「这台电脑」「局域网模式」副标题在 212px 侧栏里硬切；文案缩短 + `.side-copy-text` 省略号层，完整说明进 `title` |
+| 缩放性能 | `fast_image_resize`（SIMD）替换纯 Rust 浮点双线性；release 实测 4K→1080p 由 32–48 ms 降到 9–15 ms，SIMD 路径失败自动回退。JPEG 编码 1080p Q65 约 12.5 ms/帧（`jpeg-encoder` SIMD 4:2:0） |
+| 服务端一键安装 | `scripts/deploy-server.sh` 重写：自动修复异常 `/dev/null`、依赖安装 3 次重试、tarball 优先（git 兜底、镜像切换）、支持 `--yes --account --password [--port] [--allow-register]` 无交互安装 |
