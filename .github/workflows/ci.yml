@@ -82,9 +82,29 @@ jobs:
         shell: pwsh
         run: cmd /c "scripts\build-kaypanel.bat"
 
+      # --no-fail-fast：一个测试二进制失败后仍跑完其余 crate，红一次就能看到全部失败。
+      # 运行日志要用令牌才能下载，而 check-run annotation 是公开可读的；失败时把
+      # 失败用例名和 panic 行塞进 annotation，这样没有账号也能从 API 定位问题
+      # （见 docs/ci.md 第 5.3 节）。
       - name: cargo test --workspace
         shell: pwsh
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace --no-fail-fast 2>&1 | Tee-Object -FilePath test-output.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $text = Get-Content test-output.log -Raw
+            $failed = [regex]::Matches($text, '(?m)^test (\S+) \.\.\. FAILED\s*$') |
+              ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+            $hint = (Select-String -Path test-output.log -Pattern 'panicked at|assertion .* failed|^error(\[|:)' |
+              Select-Object -Last 12 | ForEach-Object { $_.Line.Trim() }) -join "`n"
+            $names = if ($failed) { $failed -join ', ' } else { 'unknown (see log)' }
+            $message = "failed: $names`n$hint"
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            if ($message.Length -gt 6000) { $message = $message.Substring(0, 6000) }
+            Write-Host "::error title=cargo test failed::$message"
+            Write-Host $hint
+          }
+          exit $code
 
       - name: Setup Node
         uses: actions/setup-node@v4

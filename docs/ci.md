@@ -166,7 +166,14 @@ winget install rhysd.actionlint      # 若可用
 .\actionlint.exe .github\workflows\ci.yml
 ```
 
-该 workflow 已于 2026-11-25 首次在 GitHub 上真实运行：`rustfmt` 通过，`build-and-test` 与 `clippy` 因缺 kaypanel sidecar 失败（见第 5 节）。已给这两个 job 补上 `setup-go` + `build-kaypanel.bat`，等待下一次推送的结果。
+该 workflow 已于 2026-11-25 在 GitHub 上真实运行两次：
+
+| 运行 | 结果 |
+| --- | --- |
+| 第一次（`4b7579b` 之前） | `rustfmt` 通过；`build-and-test` 与 `clippy` 因缺 kaypanel sidecar 在**编译期**失败（见第 5 节） |
+| 第二次（`4b7579b`） | `rustfmt`、`clippy` 通过；`build-and-test` 仍在 `cargo test --workspace` 这一步失败（4 分钟，非超时），`bundle` 随之跳过 |
+
+第二次的失败原因还没定位：Actions 的运行日志要仓库权限才能下载，匿名访问返回 403。因此给测试步骤加了 `--no-fail-fast`，并在失败时把失败用例名和 panic 行写成 **check-run annotation**——那是公开可读的，用下面的命令即可取到，不需要令牌（见第 5.3 节）。
 
 ---
 
@@ -198,6 +205,20 @@ scripts\tauri-build.bat build --bundles nsis
 ```
 
 直接跑 `tauri-build.bat` 也可以：它会在 `dist\kaypanel.exe` 缺失时自动调用构建脚本。Go 不在 `PATH` 时用 `GO_BIN` 指定其 `bin` 目录；网络受限时设置 `GOPROXY`。
+
+### 5.3 测试失败时怎么不看日志也能定位
+
+`cargo test --workspace` 失败时，步骤脚本会把每个 `test ... FAILED` 的用例名和最后十几行 `panicked at` / `error[...]` 拼成一条 `::error::` 注解。check-run annotation 走公开 API，不需要令牌：
+
+```powershell
+# 先拿到失败的 job id
+curl -s "https://api.github.com/repos/<owner>/<repo>/actions/runs/<run_id>/jobs"
+# 再读注解
+curl -s "https://api.github.com/repos/<owner>/<repo>/check-runs/<job_id>/annotations"
+```
+
+注解里 `message` 字段就是失败用例名与 panic 行。注意每条注解上限约 6000 字符；失败用例超过这个长度时只保留前面的部分，完整输出仍在运行日志里（需要登录）。
+
 
 ---
 
