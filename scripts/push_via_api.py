@@ -238,11 +238,14 @@ def main():
     # 但通过 API 推上去的提交本地没有对象，祖先检查会失败；这时按目录树
     # 找等价的本地提交（树相同即内容相同），再从它往后推。
     ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", remote_head, head]
+        ["git", "merge-base", "--is-ancestor", remote_head, head],
+        capture_output=True,
     )
     if ancestor.returncode == 0:
         base = remote_head
     else:
+        # 本地没有这个提交对象时 git 会往 stderr 打 "Not a valid commit name"，
+        # 那是预期内的，别让它看起来像失败。
         base = None
         for candidate in git("rev-list", head).split():
             tree = git("rev-parse", f"{candidate}^{{tree}}").strip()
@@ -257,6 +260,9 @@ def main():
         print(f"远端提交是 API 创建的，对应本地 {base[:8]}（目录树一致）")
 
     commits = git("rev-list", "--reverse", f"{base}..{head}").split()
+    if not commits:
+        print("远端内容已是最新，无需推送")
+        return
     print(f"待推送 {len(commits)} 个提交")
 
     tree = remote_tree

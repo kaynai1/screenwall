@@ -12,11 +12,11 @@
 import argparse
 import json
 import mimetypes
-import os
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
@@ -86,7 +86,7 @@ class Client:
             payload = handle.read()
         # upload_url 形如 https://uploads.github.com/repos/o/r/releases/1/assets{?name,label}
         base = upload_url.split("{", 1)[0]
-        url = f"{base}?name={urllib.request.quote(name)}"
+        url = f"{base}?name={urllib.parse.quote(name)}"
         return self.request(
             "POST",
             url,
