@@ -56,8 +56,9 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (user_id, id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_connect_code
-    ON devices(connect_code) WHERE connect_code <> '';
+-- idx_devices_connect_code 不写在这里：老库里 devices 还没有 connect_code 列，
+-- 建索引会直接报 "no such column"，导致服务器根本起不来。它统一在 migrate()
+-- 里补完列之后再建（新库也一样，因为 SCHEMA 先建表，migrate 随后执行）。
 
 CREATE TABLE IF NOT EXISTS audits (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1065,6 +1066,55 @@ mod tests {
 
         let relay_row = rows.iter().find(|row| row.id == relay).unwrap();
         assert_eq!(relay_row.mode, "relay");
+    }
+
+    /// 0.2.0 时代的库（devices 没有 connect_code 列）能被新版本打开。
+    ///
+    /// 这是个真实的升级事故：索引原本写在 `SCHEMA` 里，先于 `migrate()` 执行，
+    /// 老库上直接报 `no such column: connect_code`，服务器起不来。测试走文件库
+    /// 而不是内存库，因为要复现的是「库里已经有旧表」这条路径。
+    #[test]
+    fn opens_database_created_before_connect_code_column() {
+        let path = std::env::temp_dir().join(format!(
+            "screenwall-old-schema-{}-{}.db",
+            std::process::id(),
+            crate::auth::now_ms()
+        ));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    pass_hash TEXT NOT NULL,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE devices (
+                    id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    os TEXT NOT NULL DEFAULT '',
+                    version TEXT NOT NULL DEFAULT '',
+                    last_seen INTEGER NOT NULL DEFAULT 0,
+                    controllable INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (user_id, id)
+                );
+                INSERT INTO users (username, pass_hash, created_at)
+                VALUES ('kay', 'hash', 1);
+                INSERT INTO devices (id, user_id, name) VALUES ('dev-a', 1, '书房');",
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).expect("老库必须能打开");
+        let user = db.find_user("kay").unwrap().expect("用户还在");
+        assert_eq!(user.username, "kay");
+        // 补列之后连接码能正常分配，说明迁移完整。
+        let code = db.ensure_connect_code(user.id, "dev-a").unwrap();
+        assert_eq!(code.len(), 9);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 旧库（没有 mode 列）打开时能补上列，且历史记录默认是 relay。

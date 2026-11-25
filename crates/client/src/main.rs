@@ -3778,6 +3778,62 @@ fn reconnect_allowed(control: &ControlSession, wanted: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn update_info(version: &str) -> update::UpdateInfo {
+        update::UpdateInfo {
+            current: "0.2.3".into(),
+            version: version.into(),
+            notes: String::new(),
+            url: format!("https://example.com/{version}.exe"),
+            sha256: "a".repeat(64),
+            published_at: 0,
+        }
+    }
+
+    #[test]
+    fn update_takes_newer_of_the_two_sources() {
+        // 服务器还是旧版、GitHub 已发新版：必须报 GitHub 那个，
+        // 否则用户永远停在服务器滞后时的那一版。
+        let merged = merge_update_sources(
+            Ok(Some(update_info("0.2.4"))),
+            Ok(Some(update_info("0.2.5"))),
+        )
+        .expect("两边都成功");
+        assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
+
+        // 反过来也一样。
+        let merged = merge_update_sources(
+            Ok(Some(update_info("0.2.6"))),
+            Ok(Some(update_info("0.2.5"))),
+        )
+        .expect("两边都成功");
+        assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.6"));
+    }
+
+    #[test]
+    fn update_survives_one_source_being_down() {
+        // 纯内网：GitHub 不可达，服务器说有新版。
+        let merged = merge_update_sources(Ok(Some(update_info("0.2.5"))), Err("网络不通".into()))
+            .expect("一边失败不算错");
+        assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
+
+        // 服务器挂了，GitHub 说有新版。
+        let merged = merge_update_sources(Err("服务器超时".into()), Ok(Some(update_info("0.2.5"))))
+            .expect("一边失败不算错");
+        assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
+
+        // 服务器说已是最新、GitHub 连不上：按已是最新处理，不弹错。
+        assert!(merge_update_sources(Ok(None), Err("网络不通".into()))
+            .expect("一边成功")
+            .is_none());
+    }
+
+    #[test]
+    fn update_reports_error_only_when_both_fail() {
+        let err = merge_update_sources(Err("服务器超时".into()), Err("GitHub 不可达".into()))
+            .expect_err("两边都失败应报错");
+        assert!(err.contains("服务器超时"), "应保留服务器侧的原始原因");
+    }
+
     fn direct_session(reconnectable: bool) -> ControlSession {
         ControlSession {
             session: 1,
@@ -4599,7 +4655,16 @@ fn export_diagnostics() -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-/// 检查服务器上是否有新版本（`GET /api/v1/version`）。
+/// 检查是否有新版本：同时问自建服务器和 GitHub Releases，取较新的那个。
+///
+/// 为什么不能「服务器说有就没有」：自建服务器上的更新包要手动发布
+/// （`scripts/publish-update.ps1`）并重启才生效，只要漏了这一步，服务器
+/// 就会一直回「已是最新」，用户明明在 GitHub 上看到发了新版却更新不了。
+/// 反过来，纯内网环境连不上 GitHub，也不能因此报错 —— 两边任一给出
+/// 好消息就算数。
+///
+/// 两个请求并发发出，总耗时取较慢的那条，不会叠加；GitHub 不可达时
+/// 只是少一个信息源。
 #[tauri::command]
 async fn check_update(
     shared: State<'_, Arc<Shared>>,
@@ -4609,18 +4674,42 @@ async fn check_update(
         let config = shared.config.read().await;
         (config.server_url.clone(), config.token.clone())
     };
-    // 没有自建服务器（局域网模式）时回退到 GitHub Releases：
-    // 「不用服务器」不该等于「永远收不到新版本」。
-    if base.is_empty() {
-        return update::check_update_github(&shared.http).await;
-    }
-    match update::check_update(&shared.http, &base, &token).await {
-        Ok(found) => Ok(found),
-        // 自建服务器不可达时也退到 GitHub：用户至少还能知道有没有新版。
-        Err(error) => match update::check_update_github(&shared.http).await {
-            Ok(found) => Ok(found),
-            Err(_) => Err(error),
-        },
+
+    let from_server = async {
+        if base.is_empty() {
+            // 局域网模式没有自建服务器，直接看 GitHub。
+            return Ok(None);
+        }
+        update::check_update(&shared.http, &base, &token).await
+    };
+    let (server, github) = tokio::join!(from_server, update::check_update_github(&shared.http));
+    merge_update_sources(server, github)
+}
+
+/// 合并「自建服务器」和「GitHub」两个信息源的结论。
+///
+/// 抽成纯函数是为了能测：这里的分支决定了用户到底会不会看到更新，
+/// 出错的代价是「明明有新版却一直显示已是最新」。
+fn merge_update_sources(
+    server: Result<Option<update::UpdateInfo>, String>,
+    github: Result<Option<update::UpdateInfo>, String>,
+) -> Result<Option<update::UpdateInfo>, String> {
+    let newest = |a: update::UpdateInfo, b: update::UpdateInfo| {
+        if update::version_gt(&b.version, &a.version) {
+            b
+        } else {
+            a
+        }
+    };
+    match (server, github) {
+        (Ok(server), Ok(github)) => Ok(match (server, github) {
+            (Some(a), Some(b)) => Some(newest(a, b)),
+            (Some(one), None) | (None, Some(one)) => Some(one),
+            (None, None) => None,
+        }),
+        // 一边不可达就用另一边的结论；只有两边都失败才算真的查不了。
+        (Ok(found), Err(_)) | (Err(_), Ok(found)) => Ok(found),
+        (Err(error), Err(_)) => Err(error),
     }
 }
 

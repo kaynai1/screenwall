@@ -78,7 +78,7 @@ cd D:\screenwall
 scripts\tauri-build.bat build --bundles nsis
 ```
 
-产物在 `target\release\bundle\nsis\ScreenWall_0.2.4_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
+产物在 `target\release\bundle\nsis\ScreenWall_0.2.5_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
 
 安装包里还包含服务器管理 sidecar `kaypanel.exe`，因此打包机需要 **Go 1.23+**。`scripts\tauri-build.bat` 发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时会自动调用 `scripts\build-kaypanel.bat`；也可以先手动构建：
 
@@ -109,12 +109,12 @@ CI 与代码签名的完整说明见 [CI 文档](docs/ci.md) 和 [签名文档](
 
 ```powershell
 # A. GitHub：局域网模式（没配服务器）的用户从这里拿更新
-gh release create v0.2.4 target\release\bundle\nsis\ScreenWall_0.2.4_x64-setup.exe --title "ScreenWall 0.2.4" --notes "更新说明"
+gh release create v0.2.5 target\release\bundle\nsis\ScreenWall_0.2.5_x64-setup.exe --title "ScreenWall 0.2.5" --notes "更新说明"
 ```
 
 ```powershell
 # B. 自建服务器：账号 / 连接码模式的用户从这里拿更新
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.4
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.5
 ```
 
 4. 走 B 的话重启服务器（或让它重读配置）后生效。
