@@ -229,6 +229,10 @@ Agent 回复 `error` 后以对应关闭码断开：
 Agent 会把 `fps` 夹到 ≤2、`maxWidth` 夹到 ≤480，并忽略输入、文件、剪贴板等控制类消息，
 只接受 `video.sub`。
 
+连接码会话（服务器转发的 `open` 带 `"trusted": true`）同样跳过授权弹窗：身份已经由
+9 位连接码 + 密码在 `POST /api/v1/quick/connect` 验证过。直连（局域网）的 `open` 不带
+这个字段，仍然每次弹窗。见 [连接码连接](quick-connect.md)。
+
 ### 5.2 确认、取消、关键帧
 
 ```json

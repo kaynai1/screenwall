@@ -186,6 +186,12 @@ pub struct LimitsConfig {
     /// 会话建立限流的突发容量（桶大小；默认等于每分钟速率）。
     #[serde(default = "default_session_open_burst")]
     pub session_open_burst: u32,
+    /// `POST /api/v1/quick/connect` 每个客户端 IP 每分钟允许的尝试次数。
+    #[serde(default = "default_quick_connects_per_minute")]
+    pub quick_connects_per_minute: u32,
+    /// 连接码尝试限流的突发容量（桶大小；默认等于每分钟速率）。
+    #[serde(default = "default_quick_connect_burst")]
+    pub quick_connect_burst: u32,
 }
 
 impl Default for LimitsConfig {
@@ -200,6 +206,8 @@ impl Default for LimitsConfig {
             view_connect_burst: default_view_connect_burst(),
             session_opens_per_minute: default_session_opens_per_minute(),
             session_open_burst: default_session_open_burst(),
+            quick_connects_per_minute: default_quick_connects_per_minute(),
+            quick_connect_burst: default_quick_connect_burst(),
         }
     }
 }
@@ -275,6 +283,14 @@ fn default_session_opens_per_minute() -> u32 {
 
 fn default_session_open_burst() -> u32 {
     60
+}
+
+fn default_quick_connects_per_minute() -> u32 {
+    10
+}
+
+fn default_quick_connect_burst() -> u32 {
+    10
 }
 
 #[cfg(test)]

@@ -144,6 +144,9 @@ pub struct Auth {
     pub user_id: i64,
     pub device_id: String,
     pub token_hash: String,
+    /// 连接码换来的受限令牌：只能打开 `target_device_id`。
+    pub quick: bool,
+    pub target_device_id: String,
 }
 
 pub fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Auth, ApiError> {
@@ -164,7 +167,22 @@ pub fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Auth, ApiError
         user_id: row.user_id,
         device_id: row.device_id,
         token_hash,
+        quick: row.quick,
+        target_device_id: row.target_device_id,
     })
+}
+
+/// 账号接口不接受连接码令牌：受限令牌只用于 `/ws/view`。
+pub fn authorize_account(state: &AppState, headers: &HeaderMap) -> Result<Auth, ApiError> {
+    let auth = authorize(state, headers)?;
+    if auth.quick {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "quick_token",
+            "连接码令牌不能访问账号接口",
+        ));
+    }
+    Ok(auth)
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,13 +369,22 @@ pub async fn login(
         .create_token(&hash_token(&token), user.id, &device_id, expires_at)
         .map_err(internal)?;
 
+    // 登录时顺手确保连接码存在，客户端可以直接显示「本机 ID」。
+    let connect_code = state
+        .db
+        .ensure_connect_code(user.id, &device_id)
+        .unwrap_or_else(|error| {
+            tracing::warn!("分配连接码失败: {error:#}");
+            String::new()
+        });
+
     state.broadcast_devices(user.id).await;
 
     Ok(Json(json!({
         "token": token,
         "expiresAt": expires_at,
         "user": { "id": user.id, "username": user.username },
-        "device": { "id": device_id, "name": name }
+        "device": { "id": device_id, "name": name, "connectCode": connect_code }
     })))
 }
 
@@ -365,7 +392,7 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     let user = state
         .db
         .user_by_id(auth.user_id)
@@ -380,7 +407,7 @@ pub async fn logout(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     state.db.revoke_token(&auth.token_hash).map_err(internal)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -389,7 +416,7 @@ pub async fn devices(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     let devices = state.device_views(auth.user_id).await;
     Ok(Json(json!({ "devices": devices })))
 }
@@ -408,7 +435,7 @@ pub async fn patch_device(
     Path(device_id): Path<String>,
     Json(req): Json<PatchDeviceReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     if state
         .db
         .device(auth.user_id, &device_id)
@@ -444,7 +471,7 @@ pub async fn delete_device(
     headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     // 本机设备不允许删除：删掉自己的设备等于把自己从账号里摘出去，
     // 而请求方正是这台设备 —— 它之后再也没法用同一份令牌登录回来。
     // 客户端界面已经隐藏了「移除」按钮，这里必须同样拦住，不能只靠界面。
@@ -486,7 +513,7 @@ pub async fn revoke_device(
     headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     if !valid_device_id(&device_id) {
         return Err(bad_request("设备 ID 格式无效"));
     }
@@ -543,7 +570,7 @@ pub async fn audits(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
     let limit = query.limit.clamp(1, 500);
     let offset = query.offset.max(0);
     // 空字符串按未传处理，避免把 `deviceId=` 当成过滤空设备。
@@ -580,7 +607,7 @@ pub async fn report_direct_audit(
     headers: HeaderMap,
     Json(body): Json<DirectAuditReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = authorize(&state, &headers)?;
+    let auth = authorize_account(&state, &headers)?;
 
     let controller = body.controller_device_id.trim();
     let controlled = body.controlled_device_id.trim();
@@ -619,7 +646,7 @@ pub async fn metrics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize_account(&state, &headers)?;
     let (active_sessions, online_devices) = state.live_counts().await;
     let accounts = state.db.count_users().map_err(internal)?.max(0) as u64;
     Ok(Json(state.metrics.snapshot(
@@ -636,7 +663,7 @@ pub async fn metrics_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize_account(&state, &headers)?;
     let (active_sessions, online_devices) = state.live_counts().await;
     Ok(Json(json!({
         "onlineDevices": online_devices,
@@ -646,6 +673,263 @@ pub async fn metrics_legacy(
     })))
 }
 
+// ---------------------------------------------------------------- 连接码（ID + 密码）
+
+/// 归一化连接码：只保留数字，允许用户按 `123 456 789` 分组输入。
+fn normalize_connect_code(raw: &str) -> Option<String> {
+    if !raw
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || ch == ' ' || ch == '-')
+    {
+        return None;
+    }
+    let digits: String = raw.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    if digits.len() != 9 || digits.starts_with('0') {
+        return None;
+    }
+    Some(digits)
+}
+
+/// 读本机的连接码与开关状态（被控端设置页用）。
+pub async fn quick_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    let code = state
+        .db
+        .ensure_connect_code(auth.user_id, &auth.device_id)
+        .map_err(internal)?;
+    let (_, enabled, hash) = state
+        .db
+        .device_access(auth.user_id, &auth.device_id)
+        .map_err(internal)?
+        .ok_or_else(not_found)?;
+    Ok(Json(json!({
+        "code": code,
+        "enabled": enabled,
+        "hasPassword": !hash.is_empty()
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QuickUpdateReq {
+    /// 新密码；省略或空字符串表示只改开关，不动原密码。
+    #[serde(default)]
+    pub password: Option<String>,
+    pub enabled: bool,
+}
+
+/// 打开/关闭连接码连接，可选地同时更新密码。
+pub async fn quick_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<QuickUpdateReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    let password = req
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let hash = match password {
+        Some(password) => {
+            let length = password.chars().count();
+            if !(6..=64).contains(&length) {
+                return Err(bad_request("连接密码需要 6–64 位"));
+            }
+            let password = password.to_string();
+            Some(
+                tokio::task::spawn_blocking(move || hash_password(&password))
+                    .await
+                    .map_err(internal)?
+                    .map_err(internal)?,
+            )
+        }
+        None => None,
+    };
+
+    if req.enabled && hash.is_none() {
+        let (_, _, existing) = state
+            .db
+            .device_access(auth.user_id, &auth.device_id)
+            .map_err(internal)?
+            .ok_or_else(not_found)?;
+        if existing.is_empty() {
+            return Err(bad_request("请先设置连接密码"));
+        }
+    }
+
+    let changed = state
+        .db
+        .set_device_access(auth.user_id, &auth.device_id, hash.as_deref(), req.enabled)
+        .map_err(internal)?;
+    if !changed {
+        return Err(not_found());
+    }
+    tracing::info!(
+        "连接码连接: user_id={} device={} enabled={}",
+        auth.user_id,
+        auth.device_id,
+        req.enabled
+    );
+    Ok(Json(json!({ "enabled": req.enabled })))
+}
+
+/// 换一个新的连接码，旧码立即失效。
+pub async fn quick_rotate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    let code = state
+        .db
+        .rotate_connect_code(auth.user_id, &auth.device_id)
+        .map_err(internal)?;
+    tracing::info!(
+        "连接码已更换: user_id={} device={}",
+        auth.user_id,
+        auth.device_id
+    );
+    Ok(Json(json!({ "code": code })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QuickConnectReq {
+    pub code: String,
+    pub password: String,
+    /// 主控端显示名，写进被控端日志与审计。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// 用「连接码 + 密码」换一个只能打开这台设备的受限令牌。
+///
+/// 不需要账号：这正是它和账号登录的区别。密码错误与连接码不存在返回同一句
+/// 提示，避免把「这个码存在」泄露给扫描者。
+pub async fn quick_connect(
+    State(state): State<Arc<AppState>>,
+    client: ClientIp,
+    Json(req): Json<QuickConnectReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ip = client
+        .0
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if let Some(seconds) = state.quick_connect_rate.check(&ip) {
+        tracing::warn!("连接码尝试过于频繁，已限流: ip={ip} retry_after={seconds}s");
+        state.metrics.add_error();
+        return Err(too_many_requests("连接尝试", seconds));
+    }
+
+    let Some(code) = normalize_connect_code(&req.code) else {
+        return Err(bad_request("连接码是 9 位数字"));
+    };
+    // 同一连接码 + IP 连续输错也锁一段时间，抑制逐个猜密码。
+    let lock_key = format!("quick:{code}");
+    if let Some(seconds) = state.login_limiter.locked_for(&lock_key, &ip) {
+        state.metrics.add_error();
+        return Err(rate_limited(seconds));
+    }
+
+    let Some(device) = state.db.device_by_connect_code(&code).map_err(internal)? else {
+        state.metrics.add_error();
+        let locked = state.login_limiter.record_failure(&lock_key, &ip);
+        return Err(locked.map(rate_limited).unwrap_or_else(quick_auth_failed));
+    };
+
+    if !device.access_enabled || device.access_hash.is_empty() {
+        state.metrics.add_error();
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "quick_disabled",
+            "这台设备没有开启连接码连接",
+        ));
+    }
+    if !device.controllable {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "control_disabled",
+            "这台设备已关闭被控",
+        ));
+    }
+
+    let password = req.password.clone();
+    let hash = device.access_hash.clone();
+    let ok = tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .map_err(internal)?;
+    if !ok {
+        state.metrics.add_error();
+        let locked = state.login_limiter.record_failure(&lock_key, &ip);
+        return Err(locked.map(rate_limited).unwrap_or_else(quick_auth_failed));
+    }
+    state.login_limiter.record_success(&lock_key, &ip);
+
+    let device_key = AppState::device_key(device.user_id, &device.id);
+    if !state.devices.read().await.contains_key(&device_key) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "device_offline",
+            "这台设备当前不在线",
+        ));
+    }
+
+    // 受限令牌只活 15 分钟：连接本身是临时的，不需要长期凭据。
+    let token = new_token();
+    let expires_at = now_ms() + 15 * 60 * 1000;
+    state
+        .db
+        .create_quick_token(&hash_token(&token), device.user_id, &device.id, expires_at)
+        .map_err(internal)?;
+    tracing::info!(
+        "连接码会话签发: device={} ip={} name={}",
+        device.id,
+        ip,
+        req.name.as_deref().unwrap_or("")
+    );
+
+    Ok(Json(json!({
+        "token": token,
+        "expiresAt": expires_at,
+        "device": { "id": device.id, "name": device.name }
+    })))
+}
+
+fn quick_auth_failed() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "quick_auth_failed",
+        "连接码或密码不正确",
+    )
+}
+
 pub async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_connect_code;
+
+    #[test]
+    fn connect_code_accepts_grouped_digits() {
+        assert_eq!(
+            normalize_connect_code("572 955 600").as_deref(),
+            Some("572955600")
+        );
+        assert_eq!(
+            normalize_connect_code("572-955-600").as_deref(),
+            Some("572955600")
+        );
+        assert_eq!(
+            normalize_connect_code("572955600").as_deref(),
+            Some("572955600")
+        );
+        assert!(normalize_connect_code("57295560").is_none());
+        assert!(normalize_connect_code("5729556001").is_none());
+        assert!(normalize_connect_code("057295560").is_none());
+        assert!(normalize_connect_code("57295560a").is_none());
+    }
 }

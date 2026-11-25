@@ -512,6 +512,8 @@ async fn serve(
                                 session,
                                 viewer,
                                 false,
+                                // 直连保持「每次确认」，不做免弹窗。
+                                false,
                                 &task_out,
                                 &task_sessions,
                             )

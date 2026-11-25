@@ -4,8 +4,16 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
+use rand::Rng;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+
+/// 9 位十进制连接码，首位不为 0（避免被当成数字时丢位）。
+fn random_connect_code() -> String {
+    let mut rng = rand::thread_rng();
+    let value: u32 = rng.gen_range(100_000_000..1_000_000_000);
+    value.to_string()
+}
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS users (
@@ -22,7 +30,11 @@ CREATE TABLE IF NOT EXISTS tokens (
     device_id   TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
-    revoked     INTEGER NOT NULL DEFAULT 0
+    revoked     INTEGER NOT NULL DEFAULT 0,
+    -- 'account'（账号登录）或 'quick'（连接码 + 密码换来的受限令牌）
+    kind        TEXT NOT NULL DEFAULT 'account',
+    -- kind = 'quick' 时只能打开这一台设备
+    target_device_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON tokens(user_id, device_id);
@@ -35,8 +47,17 @@ CREATE TABLE IF NOT EXISTS devices (
     version      TEXT NOT NULL DEFAULT '',
     last_seen    INTEGER NOT NULL DEFAULT 0,
     controllable INTEGER NOT NULL DEFAULT 1,
+    -- 9 位数字连接码；空字符串表示还没分配
+    connect_code TEXT NOT NULL DEFAULT '',
+    -- 连接密码的 Argon2 哈希；空字符串表示没有设置
+    access_hash  TEXT NOT NULL DEFAULT '',
+    -- 是否允许用连接码 + 密码连接本机
+    access_enabled INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_connect_code
+    ON devices(connect_code) WHERE connect_code <> '';
 
 CREATE TABLE IF NOT EXISTS audits (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,20 +80,72 @@ CREATE INDEX IF NOT EXISTS idx_audits_user ON audits(user_id, started_at DESC);
 /// 旧库补列。`CREATE TABLE IF NOT EXISTS` 不会给已存在的表加字段，
 /// 所以新字段要在这里显式迁移一次；重复执行是安全的。
 fn migrate(conn: &Connection) -> Result<()> {
-    let has_mode: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('audits') WHERE name = 'mode'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|count| count > 0)?;
-    if !has_mode {
+    if !has_column(conn, "audits", "mode")? {
         conn.execute(
             "ALTER TABLE audits ADD COLUMN mode TEXT NOT NULL DEFAULT 'relay'",
             [],
         )?;
     }
+    // 连接码 + 密码：账号令牌与受限令牌共用 tokens 表，用 kind 区分。
+    // 旧库测试可能只有部分表，逐表判断，缺表就跳过。
+    if table_exists(conn, "tokens")? {
+        if !has_column(conn, "tokens", "kind")? {
+            conn.execute(
+                "ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'account'",
+                [],
+            )?;
+        }
+        if !has_column(conn, "tokens", "target_device_id")? {
+            conn.execute(
+                "ALTER TABLE tokens ADD COLUMN target_device_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "devices")? {
+        if !has_column(conn, "devices", "connect_code")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN connect_code TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !has_column(conn, "devices", "access_hash")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN access_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !has_column(conn, "devices", "access_enabled")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN access_enabled INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_connect_code
+                ON devices(connect_code) WHERE connect_code <> ''",
+            [],
+        )?;
+    }
     Ok(())
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +160,10 @@ pub struct UserRow {
 pub struct AuthRow {
     pub user_id: i64,
     pub device_id: String,
+    /// `true` 表示这是连接码换来的受限令牌。
+    pub quick: bool,
+    /// 受限令牌唯一允许打开的设备 ID。
+    pub target_device_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +174,18 @@ pub struct DeviceRow {
     pub version: String,
     pub last_seen: i64,
     pub controllable: bool,
+}
+
+/// 连接码查询结果：设备所属账号、设备本身，以及访问设置。
+#[derive(Debug, Clone)]
+pub struct QuickDeviceRow {
+    pub user_id: i64,
+    pub id: String,
+    pub name: String,
+    pub controllable: bool,
+    pub connect_code: String,
+    pub access_hash: String,
+    pub access_enabled: bool,
 }
 
 /// 一次远程会话的审计记录。
@@ -246,11 +335,34 @@ impl Db {
         Ok(())
     }
 
+    /// 写入连接码换来的受限令牌：只能打开 `target_device_id` 这一台设备。
+    pub fn create_quick_token(
+        &self,
+        token_hash: &str,
+        user_id: i64,
+        target_device_id: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        self.lock()?.execute(
+            "INSERT INTO tokens
+                (token_hash, user_id, device_id, created_at, expires_at, revoked, kind, target_device_id)
+             VALUES (?1, ?2, 'quick', ?3, ?4, 0, 'quick', ?5)",
+            params![
+                token_hash,
+                user_id,
+                crate::auth::now_ms(),
+                expires_at,
+                target_device_id
+            ],
+        )?;
+        Ok(())
+    }
+
     /// 返回有效的账号信息；过期、吊销、账号禁用都返回 `None`。
     pub fn validate_token(&self, token_hash: &str) -> Result<Option<AuthRow>> {
         let conn = self.lock()?;
         conn.query_row(
-            "SELECT t.user_id, t.device_id
+            "SELECT t.user_id, t.device_id, t.kind, t.target_device_id
              FROM tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ?1
                AND t.revoked = 0
@@ -258,9 +370,12 @@ impl Db {
                AND u.disabled = 0",
             params![token_hash, crate::auth::now_ms()],
             |row| {
+                let kind: String = row.get(2)?;
                 Ok(AuthRow {
                     user_id: row.get(0)?,
                     device_id: row.get(1)?,
+                    quick: kind == "quick",
+                    target_device_id: row.get(3)?,
                 })
             },
         )
@@ -317,6 +432,137 @@ impl Db {
             params![device_id, user_id, name, os, version, crate::auth::now_ms()],
         )?;
         Ok(())
+    }
+
+    /// 确保设备有一个 9 位连接码，返回当前值。
+    ///
+    /// 已有码直接返回；没有就生成一个全局唯一的码写回去。极端情况下连续撞码
+    /// （比如随机源被固定）会重试 20 次后放弃，返回错误。
+    pub fn ensure_connect_code(&self, user_id: i64, device_id: &str) -> Result<String> {
+        let conn = self.lock()?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT connect_code FROM devices WHERE user_id = ?1 AND id = ?2",
+                params![user_id, device_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(existing) = existing else {
+            return Err(anyhow!("设备不存在"));
+        };
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+        for _ in 0..20 {
+            let code = random_connect_code();
+            let taken: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM devices WHERE connect_code = ?1",
+                params![&code],
+                |row| row.get(0),
+            )?;
+            if taken > 0 {
+                continue;
+            }
+            conn.execute(
+                "UPDATE devices SET connect_code = ?1 WHERE user_id = ?2 AND id = ?3",
+                params![&code, user_id, device_id],
+            )?;
+            return Ok(code);
+        }
+        Err(anyhow!("生成连接码失败：连续冲突"))
+    }
+
+    /// 换一个新的连接码（旧码立即失效）。
+    pub fn rotate_connect_code(&self, user_id: i64, device_id: &str) -> Result<String> {
+        let conn = self.lock()?;
+        for _ in 0..20 {
+            let code = random_connect_code();
+            let taken: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM devices WHERE connect_code = ?1",
+                params![&code],
+                |row| row.get(0),
+            )?;
+            if taken > 0 {
+                continue;
+            }
+            let changed = conn.execute(
+                "UPDATE devices SET connect_code = ?1 WHERE user_id = ?2 AND id = ?3",
+                params![&code, user_id, device_id],
+            )?;
+            if changed == 0 {
+                return Err(anyhow!("设备不存在"));
+            }
+            return Ok(code);
+        }
+        Err(anyhow!("生成连接码失败：连续冲突"))
+    }
+
+    /// 读取设备的连接码与访问设置。
+    pub fn device_access(
+        &self,
+        user_id: i64,
+        device_id: &str,
+    ) -> Result<Option<(String, bool, String)>> {
+        self.lock()?
+            .query_row(
+                "SELECT connect_code, access_enabled, access_hash
+                 FROM devices WHERE user_id = ?1 AND id = ?2",
+                params![user_id, device_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// 更新访问密码与开关；`hash = None` 表示保持原密码不变。
+    pub fn set_device_access(
+        &self,
+        user_id: i64,
+        device_id: &str,
+        hash: Option<&str>,
+        enabled: bool,
+    ) -> Result<bool> {
+        let changed = match hash {
+            Some(hash) => self.lock()?.execute(
+                "UPDATE devices SET access_hash = ?1, access_enabled = ?2
+                 WHERE user_id = ?3 AND id = ?4",
+                params![hash, enabled as i64, user_id, device_id],
+            )?,
+            None => self.lock()?.execute(
+                "UPDATE devices SET access_enabled = ?1 WHERE user_id = ?2 AND id = ?3",
+                params![enabled as i64, user_id, device_id],
+            )?,
+        };
+        Ok(changed > 0)
+    }
+
+    /// 按连接码查设备（跨账号）。
+    pub fn device_by_connect_code(&self, code: &str) -> Result<Option<QuickDeviceRow>> {
+        self.lock()?
+            .query_row(
+                "SELECT user_id, id, name, controllable, connect_code, access_hash, access_enabled
+                 FROM devices WHERE connect_code = ?1",
+                params![code],
+                |row| {
+                    Ok(QuickDeviceRow {
+                        user_id: row.get(0)?,
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        controllable: row.get::<_, i64>(3)? != 0,
+                        connect_code: row.get(4)?,
+                        access_hash: row.get(5)?,
+                        access_enabled: row.get::<_, i64>(6)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn touch_device(&self, user_id: i64, device_id: &str) -> Result<()> {
@@ -564,6 +810,37 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().unwrap()
+    }
+
+    /// 连接码：首次分配后保持稳定，换码后旧码失效；快速令牌只指向目标设备。
+    #[test]
+    fn connect_code_and_quick_token_roundtrip() {
+        let db = db();
+        let user = db.create_user("kay", "hash").unwrap();
+        db.upsert_device(user, "dev-a", "书房", "Windows", "0.1.0")
+            .unwrap();
+
+        let code = db.ensure_connect_code(user, "dev-a").unwrap();
+        assert_eq!(code.len(), 9);
+        assert!(!code.starts_with('0'));
+        assert_eq!(db.ensure_connect_code(user, "dev-a").unwrap(), code);
+
+        let found = db.device_by_connect_code(&code).unwrap().unwrap();
+        assert_eq!(found.id, "dev-a");
+        assert_eq!(found.user_id, user);
+
+        let rotated = db.rotate_connect_code(user, "dev-a").unwrap();
+        assert_ne!(rotated, code);
+        assert!(db.device_by_connect_code(&code).unwrap().is_none());
+        assert!(db.device_by_connect_code(&rotated).unwrap().is_some());
+
+        let expires = crate::auth::now_ms() + 60_000;
+        db.create_quick_token("hash-1", user, "dev-a", expires)
+            .unwrap();
+        let auth = db.validate_token("hash-1").unwrap().unwrap();
+        assert!(auth.quick);
+        assert_eq!(auth.target_device_id, "dev-a");
+        assert_eq!(auth.user_id, user);
     }
 
     #[test]

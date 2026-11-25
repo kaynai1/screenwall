@@ -9,6 +9,7 @@ export const mockAccount: AccountView = {
   loggedIn: true,
   connected: true,
   error: null,
+  quick: false,
 };
 
 export const mockDevices: DeviceView[] = [

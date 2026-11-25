@@ -99,6 +99,15 @@ struct ClientConfig {
     /// 间接显示驱动，第三方组件，可能弹一次广告页）。默认关闭。
     #[serde(default)]
     virtual_display: bool,
+    /// 允许别人用「9 位连接码 + 密码」连接本机（不需要同一账号）。
+    #[serde(default)]
+    connect_enabled: bool,
+    /// 本机连接密码：明文只留在本机，登录时把哈希同步给服务器。
+    #[serde(default)]
+    connect_password: String,
+    /// 服务器分配的 9 位连接码（缓存，离线时也能显示）。
+    #[serde(default)]
+    connect_code: String,
 }
 
 fn default_direct_port() -> u16 {
@@ -131,6 +140,9 @@ impl Default for ClientConfig {
             max_bitrate: None,
             ca_path: None,
             virtual_display: false,
+            connect_enabled: false,
+            connect_password: String::new(),
+            connect_code: String::new(),
         }
     }
 }
@@ -219,6 +231,8 @@ struct AccountView {
     logged_in: bool,
     connected: bool,
     error: Option<String>,
+    /// 这次是「连接码」临时会话，不是账号登录：界面上隐藏账号相关入口。
+    quick: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -520,6 +534,8 @@ struct Shared {
     control_wanted: AtomicBool,
     /// 局域网直连状态：配对码、监听、当前直连会话。
     direct: StdMutex<direct::DirectHub>,
+    /// 连接码模式：只跑主控端（view），不跑被控端（host），令牌也不写盘。
+    quick_mode: AtomicBool,
 }
 
 /// 主控连接断开期间暂存的重连计划。
@@ -647,8 +663,11 @@ async fn login(
     shared.files.lock().unwrap().reset();
     wall::clear(&shared);
     group::clear(&shared);
+    shared.quick_mode.store(false, Ordering::Relaxed);
     spawn_tasks(app.clone(), shared.clone());
     emit_devices(&app, &shared).await;
+    // 把本机保存的连接密码/开关补同步给服务器（首次登录时服务器还没有）。
+    sync_connect_settings(&shared).await;
     let view = account_view(&shared).await;
     let _ = app.emit("account", view.clone());
     Ok(view)
@@ -657,6 +676,10 @@ async fn login(
 #[tauri::command]
 async fn logout(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<AccountView, String> {
     let shared = shared.inner().clone();
+    // 连接码会话没有账号可退，直接结束临时会话。
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        return Ok(end_quick_session(&app, &shared).await);
+    }
     let (base, token) = {
         let config = shared.config.read().await;
         (config.server_url.clone(), config.token.clone())
@@ -697,6 +720,289 @@ async fn logout(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<Accoun
     let view = account_view(&shared).await;
     let _ = app.emit("account", view.clone());
     Ok(view)
+}
+
+// ---------------------------------------------------------------- 连接码（ID + 密码）
+
+/// 设置页「连接码」卡片的数据。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectCodeView {
+    code: String,
+    enabled: bool,
+    has_password: bool,
+    /// 本机保存的明文密码（只通过本地 IPC 返回给设置页显示）。
+    password: Option<String>,
+}
+
+async fn get_api(client: &reqwest::Client, url: String, token: &str) -> Result<Value, String> {
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|error| format!("连接服务器失败: {error}"))?;
+    let status = response.status();
+    let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
+    if status.is_success() {
+        Ok(value)
+    } else {
+        let message = value
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("请求失败");
+        Err(format!("{message}（HTTP {status}）"))
+    }
+}
+
+/// 登录后把本机保存的连接码设置补同步给服务器，并缓存服务器分配的连接码。
+async fn sync_connect_settings(shared: &Arc<Shared>) {
+    let (base, token, enabled, password) = {
+        let config = shared.config.read().await;
+        (
+            config.server_url.clone(),
+            config.token.clone(),
+            config.connect_enabled,
+            config.connect_password.clone(),
+        )
+    };
+    if token.is_empty() || base.is_empty() {
+        return;
+    }
+    if !password.is_empty() || enabled {
+        let mut body = json!({ "enabled": enabled });
+        if !password.is_empty() {
+            body["password"] = json!(password);
+        }
+        if let Err(error) = post_api(
+            &shared.http,
+            format!("{base}/api/v1/quick"),
+            &body,
+            Some(&token),
+        )
+        .await
+        {
+            tracing::warn!("同步连接码设置失败: {error}");
+        }
+    }
+    match get_api(&shared.http, format!("{base}/api/v1/quick"), &token).await {
+        Ok(value) => {
+            let code = value["code"].as_str().unwrap_or_default().to_string();
+            let mut config = shared.config.write().await;
+            config.connect_code = code;
+            let _ = config.save();
+        }
+        Err(error) => tracing::warn!("读取连接码失败: {error}"),
+    }
+}
+
+#[tauri::command]
+async fn get_connect_code(shared: State<'_, Arc<Shared>>) -> Result<ConnectCodeView, String> {
+    let (base, token) = {
+        let config = shared.config.read().await;
+        (config.server_url.clone(), config.token.clone())
+    };
+    if token.is_empty() {
+        return Err("尚未登录".into());
+    }
+    let value = get_api(&shared.http, format!("{base}/api/v1/quick"), &token).await?;
+    let mut config = shared.config.write().await;
+    let view = ConnectCodeView {
+        code: value["code"].as_str().unwrap_or_default().to_string(),
+        enabled: value["enabled"].as_bool().unwrap_or(false),
+        has_password: value["hasPassword"].as_bool().unwrap_or(false),
+        password: if config.connect_password.is_empty() {
+            None
+        } else {
+            Some(config.connect_password.clone())
+        },
+    };
+    config.connect_code = view.code.clone();
+    let _ = config.save();
+    Ok(view)
+}
+
+#[tauri::command]
+async fn set_connect_code(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+    password: Option<String>,
+) -> Result<ConnectCodeView, String> {
+    let (base, token) = {
+        let config = shared.config.read().await;
+        (config.server_url.clone(), config.token.clone())
+    };
+    if token.is_empty() {
+        return Err("尚未登录".into());
+    }
+    let password = password
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    post_api(
+        &shared.http,
+        format!("{base}/api/v1/quick"),
+        &json!({ "enabled": enabled, "password": password.as_deref() }),
+        Some(&token),
+    )
+    .await?;
+
+    {
+        let mut config = shared.config.write().await;
+        config.connect_enabled = enabled;
+        if let Some(password) = password {
+            config.connect_password = password;
+        }
+        config
+            .save()
+            .map_err(|error| format!("保存配置失败: {error}"))?;
+    }
+    get_connect_code(shared).await
+}
+
+#[tauri::command]
+async fn rotate_connect_code(shared: State<'_, Arc<Shared>>) -> Result<ConnectCodeView, String> {
+    let (base, token) = {
+        let config = shared.config.read().await;
+        (config.server_url.clone(), config.token.clone())
+    };
+    if token.is_empty() {
+        return Err("尚未登录".into());
+    }
+    post_api(
+        &shared.http,
+        format!("{base}/api/v1/quick/rotate"),
+        &json!({}),
+        Some(&token),
+    )
+    .await?;
+    get_connect_code(shared).await
+}
+
+/// 用「连接码 + 密码」临时连接一台设备：不登录账号、不写盘、不启动被控端。
+#[tauri::command]
+async fn quick_connect(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    server_url: String,
+    code: String,
+    password: String,
+) -> Result<AccountView, String> {
+    let shared = shared.inner().clone();
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        return Err("已经在一个连接码会话里".into());
+    }
+    {
+        let config = shared.config.read().await;
+        if !config.token.is_empty() {
+            return Err("请先退出当前账号，再使用连接码连接".into());
+        }
+    }
+    let base = normalize_server_url(&server_url)?;
+    let code = code.trim().to_string();
+    if code.is_empty() {
+        return Err("请填写连接码".into());
+    }
+    if password.is_empty() {
+        return Err("请填写连接密码".into());
+    }
+
+    let value = post_api(
+        &shared.http,
+        format!("{base}/api/v1/quick/connect"),
+        &json!({ "code": code, "password": password, "name": hostname() }),
+        None,
+    )
+    .await?;
+    let token = value["token"]
+        .as_str()
+        .ok_or_else(|| "服务器没有返回连接令牌".to_string())?
+        .to_string();
+    let device_id = value["device"]["id"]
+        .as_str()
+        .ok_or_else(|| "服务器没有返回设备 ID".to_string())?
+        .to_string();
+    let device_name = value["device"]["name"]
+        .as_str()
+        .unwrap_or("远程设备")
+        .to_string();
+
+    // 与登录共用同一套清理：旧的重连、挂起会话都不能留着。
+    cancel_reconnect(&shared, None);
+    *shared.pending_resume.lock().unwrap() = None;
+    shared.control_wanted.store(false, Ordering::Relaxed);
+    stop_tasks(&shared);
+    *shared.view_tx.write().await = None;
+    *shared.control.write().await = None;
+    shared.pending_opens.lock().unwrap().clear();
+    shared.files.lock().unwrap().reset();
+    wall::clear(&shared);
+    group::clear(&shared);
+
+    shared.quick_mode.store(true, Ordering::Relaxed);
+    {
+        let mut config = shared.config.write().await;
+        config.server_url = base;
+        // 受限令牌只放在内存里，不落盘；重启后自然失效。
+        config.token = token;
+        config.username.clear();
+        config.device_id = device_id.clone();
+    }
+    *shared.connected.write().await = false;
+    *shared.error.write().await = None;
+    *shared.devices.write().await = vec![DeviceView {
+        id: device_id,
+        name: device_name,
+        os: "Windows".to_string(),
+        version: String::new(),
+        online: true,
+        last_seen: chrono::Utc::now().timestamp_millis(),
+        controllable: true,
+    }];
+    spawn_tasks(app.clone(), shared.clone());
+    emit_devices(&app, &shared).await;
+    let view = account_view(&shared).await;
+    let _ = app.emit("account", view.clone());
+    Ok(view)
+}
+
+async fn end_quick_session(app: &AppHandle, shared: &Arc<Shared>) -> AccountView {
+    cancel_reconnect(shared, None);
+    *shared.pending_resume.lock().unwrap() = None;
+    shared.control_wanted.store(false, Ordering::Relaxed);
+    stop_tasks(shared);
+    *shared.view_tx.write().await = None;
+    *shared.control.write().await = None;
+    shared.pending_opens.lock().unwrap().clear();
+    shared.files.lock().unwrap().reset();
+    wall::clear(shared);
+    group::clear(shared);
+    shared.quick_mode.store(false, Ordering::Relaxed);
+    {
+        let mut config = shared.config.write().await;
+        config.token.clear();
+        config.username.clear();
+        config.device_id.clear();
+    }
+    shared.devices.write().await.clear();
+    *shared.connected.write().await = false;
+    *shared.error.write().await = None;
+    emit_devices(app, shared).await;
+    let view = account_view(shared).await;
+    let _ = app.emit("account", view.clone());
+    view
+}
+
+/// 结束连接码会话，回到登录页。
+#[tauri::command]
+async fn quick_disconnect(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+) -> Result<AccountView, String> {
+    let shared = shared.inner().clone();
+    if !shared.quick_mode.load(Ordering::Relaxed) {
+        return Ok(account_view(&shared).await);
+    }
+    Ok(end_quick_session(&app, &shared).await)
 }
 
 #[tauri::command]
@@ -2715,6 +3021,26 @@ async fn end_session(
 
 fn spawn_tasks(app: AppHandle, shared: Arc<Shared>) {
     shared.pending_control_requests.lock().unwrap().clear();
+
+    // 连接码模式只做「主控端」：绝不能启动 host 任务，否则会拿受限令牌
+    // 去连 /ws/device，把目标设备的在线连接顶掉。
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        let view_shared = shared.clone();
+        let view_app = app.clone();
+        let view = tauri::async_runtime::spawn(async move {
+            view_loop(view_app, view_shared).await;
+        });
+        let adapt_shared = shared.clone();
+        let adapt_app = app.clone();
+        let adapt = tauri::async_runtime::spawn(async move {
+            adapt_loop(adapt_app, adapt_shared).await;
+        });
+        let mut tasks = shared.tasks.lock().unwrap();
+        tasks.view = Some(view);
+        tasks.adapt = Some(adapt);
+        return;
+    }
+
     let host_shared = shared.clone();
     let host_app = app.clone();
     let host = tauri::async_runtime::spawn(async move {
@@ -3809,13 +4135,19 @@ fn to_ws_base(base: &str) -> String {
 
 async fn account_view(shared: &Shared) -> AccountView {
     let config = shared.config.read().await.clone();
+    let quick = shared.quick_mode.load(Ordering::Relaxed);
     AccountView {
         server_url: config.server_url.clone(),
-        username: config.username.clone(),
+        username: if quick {
+            "连接码会话".to_string()
+        } else {
+            config.username.clone()
+        },
         device_id: config.device_id.clone(),
         logged_in: !config.token.is_empty(),
         connected: *shared.connected.read().await,
         error: shared.error.read().await.clone(),
+        quick,
     }
 }
 
@@ -3979,6 +4311,7 @@ fn main() {
         pending_resume: StdMutex::new(None),
         control_wanted: AtomicBool::new(false),
         direct: StdMutex::new(direct::DirectHub::default()),
+        quick_mode: AtomicBool::new(false),
     });
 
     let initial = shared.clone();
@@ -4032,6 +4365,11 @@ fn main() {
             list_devices,
             login,
             logout,
+            quick_connect,
+            quick_disconnect,
+            get_connect_code,
+            set_connect_code,
+            rotate_connect_code,
             start_control,
             stop_control,
             send_control_input,

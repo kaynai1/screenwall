@@ -236,6 +236,11 @@ async fn handle_control(
 
             // wall 是屏幕墙上的只读缩略图，不需要逐次授权；控制会话仍然要人点「允许」。
             let view_only = value.get("mode").and_then(Value::as_str) == Some("wall");
+            // 连接码会话（trusted）已经用密码验证过身份，不再逐次弹窗。
+            let trusted = value
+                .get("trusted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             // 授权要等人点按钮，必须放到独立任务里，否则会卡住整条服务器连接。
             let viewer = value
                 .get("viewer")
@@ -246,7 +251,7 @@ async fn handle_control(
             let out = out.clone();
             let sessions = sessions.clone();
             tokio::spawn(async move {
-                open_session(&state, session, viewer, view_only, &out, &sessions).await;
+                open_session(&state, session, viewer, view_only, trusted, &out, &sessions).await;
             });
         }
         "close" => {
@@ -268,10 +273,11 @@ pub(crate) async fn open_session(
     session: u32,
     viewer: String,
     view_only: bool,
+    auto_approve: bool,
     out: &mpsc::UnboundedSender<WsMessage>,
     sessions: &Sessions,
 ) {
-    if !view_only {
+    if !view_only && !auto_approve {
         if let Some(approval) = &state.approval {
             let (tx, rx) = tokio::sync::oneshot::channel();
             approval(ApprovalRequest {

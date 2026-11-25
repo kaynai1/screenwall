@@ -7,6 +7,7 @@ import {
   listDevices,
   login as apiLogin,
   logout as apiLogout,
+  quickConnect as apiQuickConnect,
   subscribeAccount,
   subscribeControlRequest,
   subscribeDevices,
@@ -205,6 +206,47 @@ export default function App() {
     }
   }
 
+  async function handleQuickConnect(input: {
+    serverUrl: string;
+    code: string;
+    password: string;
+  }) {
+    if (busy) return;
+    setBusy(true);
+    setLoginError(null);
+    try {
+      const next = await apiQuickConnect(input);
+      setAccount(next);
+      const list = await listDevices().catch(() => [] as DeviceView[]);
+      setDevices(list);
+      const target = list[0] ?? null;
+      setActiveId(target?.id ?? null);
+      setPage("control");
+      notify(
+        target ? `已连接 ${target.name}` : "已连接到远程设备",
+        "success",
+      );
+
+      // 主控 WebSocket 可能还在建连，稍后再刷新一次状态。
+      window.setTimeout(() => {
+        Promise.all([getAccount(), listDevices()])
+          .then(([fresh, freshDevices]) => {
+            setAccount(fresh);
+            setDevices(freshDevices);
+            if (freshDevices[0]) {
+              setActiveId((current) => current ?? freshDevices[0].id);
+            }
+          })
+          .catch(() => {});
+      }, 1200);
+    } catch (error) {
+      const { title, detail } = describeError(error);
+      setLoginError(`${title}：${detail}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleLogout() {
     if (busy) return;
     setBusy(true);
@@ -282,17 +324,31 @@ export default function App() {
         busy={busy}
         error={loginError ?? bootError ?? account?.error ?? null}
         onLogin={handleLogin}
+        onQuickConnect={handleQuickConnect}
       />
     );
   }
 
   const common = { account, devices, notify };
+  const quick = Boolean(account.quick);
   const activeDevice =
     devices.find((device) => device.id === activeId) ?? null;
   // 直连设备的合成 ID 不在设备列表里，但控制页能复用已有会话，不能回退到屏幕墙。
   const activeKnown =
     activeDevice !== null || (activeId !== null && isDirectDeviceId(activeId));
-  const currentPage = page === "control" && !activeKnown ? "wall" : page;
+  // 连接码会话只有一台设备，也没有屏幕墙/设备页可去：除设置外都停在控制页。
+  const currentPage = quick
+    ? page === "settings"
+      ? "settings"
+      : "control"
+    : page === "control" && !activeKnown
+      ? "wall"
+      : page;
+  const controlDeviceId = quick
+    ? (activeId ?? devices[0]?.id ?? null)
+    : activeKnown
+      ? activeId
+      : null;
 
   function renderPage() {
     switch (currentPage) {
@@ -344,12 +400,20 @@ export default function App() {
           />
         );
       case "control":
-        return activeKnown && activeId ? (
+        return controlDeviceId ? (
           <ControlPage
             {...common}
-            deviceId={activeId}
-            onBack={() => navigate("wall")}
-            onFiles={() => navigate("files")}
+            deviceId={controlDeviceId}
+            onBack={() => {
+              if (quick) {
+                void handleLogout();
+              } else {
+                navigate("wall");
+              }
+            }}
+            onFiles={() => {
+              if (!quick) navigate("files");
+            }}
             onOpenDevice={openDevice}
           />
         ) : null;

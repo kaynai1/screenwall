@@ -18,3 +18,6 @@
 
 # 偶尔被复制到仓库根目录的独立 exe（客户端 / sidecar / 卸载器）
 /*.exe
+
+# 自托管更新产物（scripts/publish-update.ps1 复制安装包到这里）
+/dist

@@ -119,7 +119,10 @@ pub async fn view_ws(
         return too_many_requests(seconds);
     }
     state.metrics.handshake_ok();
-    ws.on_upgrade(move |socket| handle_view(socket, state, auth.user_id, auth.device_id))
+    let restricted = auth.quick.then(|| auth.target_device_id.clone());
+    ws.on_upgrade(move |socket| {
+        handle_view(socket, state, auth.user_id, auth.device_id, restricted)
+    })
 }
 
 async fn handle_device(
@@ -318,6 +321,7 @@ async fn handle_view(
     state: Arc<AppState>,
     user_id: i64,
     viewer_device_id: String,
+    restricted: Option<String>,
 ) {
     let viewer_id = state.alloc_viewer();
     let (tx, rx) = mpsc::unbounded_channel::<WsOut>();
@@ -326,6 +330,7 @@ async fn handle_view(
         ViewerConn {
             user_id,
             device_id: viewer_device_id.clone(),
+            restricted: restricted.clone(),
             tx: tx.clone(),
         },
     );
@@ -333,7 +338,11 @@ async fn handle_view(
     let _ = tx.send(WsOut::Text(
         json!({ "t": "ready", "serverTime": now_ms() }).to_string(),
     ));
-    let _ = tx.send(WsOut::Text(state.devices_message(user_id).await));
+    let devices = match &restricted {
+        Some(device_id) => state.quick_devices_message(user_id, device_id).await,
+        None => state.devices_message(user_id).await,
+    };
+    let _ = tx.send(WsOut::Text(devices));
 
     let (sink, stream) = socket.split();
     let writer = tokio::spawn(write_loop(sink, rx));
@@ -351,6 +360,7 @@ async fn handle_view(
                     viewer_id,
                     user_id,
                     &viewer_device_id,
+                    restricted.as_deref(),
                     &tx,
                     text.as_str(),
                 )
@@ -378,6 +388,7 @@ async fn handle_view_text(
     viewer_id: u64,
     user_id: i64,
     viewer_device_id: &str,
+    restricted: Option<&str>,
     tx: &mpsc::UnboundedSender<WsOut>,
     text: &str,
 ) {
@@ -428,6 +439,13 @@ async fn handle_view_text(
                 send_open_err(state, tx, request, &device_id, 4200, "invalid device id");
                 return;
             }
+            // 连接码令牌只能打开自己换来的那一台设备。
+            if let Some(allowed) = restricted {
+                if device_id != allowed {
+                    send_open_err(state, tx, request, &device_id, 4200, "device not allowed");
+                    return;
+                }
+            }
             match state.db.device(user_id, &device_id) {
                 Ok(Some(device)) => {
                     if !device.controllable {
@@ -470,7 +488,9 @@ async fn handle_view_text(
                 "t": "open",
                 "session": session_id,
                 "viewer": viewer_name,
-                "mode": mode
+                "mode": mode,
+                // 连接码 + 密码已经验证过身份，被控端不再逐次弹窗。
+                "trusted": restricted.is_some()
             })
             .to_string();
             if !state.send_to_device(&key, WsOut::Text(message)).await {

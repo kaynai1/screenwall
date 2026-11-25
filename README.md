@@ -17,6 +17,7 @@
 - [界面设计说明](docs/ui.md) — 新版工作台的设计系统、页面结构与浏览器演示模式
 - [两台机器试用](docs/two-machines.md) — 同一局域网内起服务器、两台机器互控与直连的完整步骤
 - [局域网直连](docs/direct.md) — 同网段不经过服务器直接控制、配对码与安全边界
+- [连接码连接](docs/quick-connect.md) — 9 位 ID + 密码、不用账号的跨网连接与安全边界
 - [局域网自动发现](docs/lan-discovery.md) — UDP 广播扫描同网段开启了直连的设备
 - [服务器管理](docs/server-panel.md) — 内嵌 KayPanel：sidecar + 子 webview 的架构、构建与排障
 
@@ -58,6 +59,8 @@ M6 已落地：协议能力协商（`hello` / `welcome` 的可选 `caps`，15 �
 
 界面视觉与 [KayPanel](https://github.com/kaynai1/kaypanel) 对齐：同一套字体栈、同一组中性层与语义色、同一档圆角（浅色 `#f4f5f7`/`#ffffff`、深色 `#0a0f17`/`#121a26`、强调色 `#2563eb`/`#60a5fa`），浅色与深色双主题在设置 → 连接 → 外观里切换并持久化。样式规则已全部 token 化，页面里不再出现字面色值。字号保持 15px 整数阶梯（KayPanel 的 14.5px 半像素在 Windows 上会糊边，见 [设计文档](ui/DESIGN.md)）。
 
+连接码连接已落地（0.2.0）：被控端在 设置 → 安全 里设置密码并打开开关后，本机显示一个 9 位连接码；主控端在登录页选「连接码连接」，输入码和密码就能进入远程桌面，**不需要登录账号**。服务器给主控端的是 15 分钟、只能打开这一台设备的受限令牌，不能调账号接口，也不写盘；密码用 Argon2 哈希存在服务器，明文只留在被控端本机；连接码尝试按 IP 限流、同一码连错 5 次锁 60 秒。跨网段可用，画面仍走自建服务器中转。详见 [连接码连接](docs/quick-connect.md)。
+
 局域网直连已落地：同网段的两台机器可以完全不经过账号服务器直接控制。被控端在设置里打开开关后监听 `47900`，界面显示 6 位配对码（10 分钟有效，到期自动换新码，配对成功也立刻换码）；主控端在设备页点「直连」填地址和配对码即可。配对成功后保存长期令牌与证书指纹，之后免配对码、并靠指纹固定防冒充；设置页能看到「已授权 N 台设备」并一键清除。认证失败按来源 IP 限流（60 秒内 5 次后指数退避，封顶 30 秒，超限连 TLS 握手都不做）。协议、能力协商、授权、文件、音频、剪贴板全部复用中转那套代码——被控端本地放一个「服务器桩」把 tunnel 帧直接交给 `session_task`。真机实测 1920×1080 / 30 FPS / 37 Mbps / 零丢帧。详见 [局域网直连](docs/direct.md)。
 
 服务器管理已落地：侧边栏「管理 → 服务器管理」打开的不是另一个应用，也不是浏览器标签，而是**嵌在同一个主窗口内容区里的 KayPanel 面板**。KayPanel（上游 v0.14.1，MIT 许可）的源码 vendor 在 `third_party/kaypanel/`，构建成 `kaypanel.exe` 后随安装包分发；Rust 侧在首次进入页面时拉起这个 sidecar，读取它写在 stdout 的一行握手 JSON（回环随机端口 + 一次性登录令牌 + PID），再用 Tauri 子 webview 把面板铺在内容区。切到别的页面只隐藏、不销毁，主程序退出时子进程读到 stdin EOF 自行结束。面板通过 SSH 管理 **Linux** 主机（目标机器无需安装 Agent），提供系统监控、Docker / Compose、文件管理、Web 终端、告警推送、AI 运维助手、多节点与审计日志；**不能管理 Windows 主机**，首次使用需要在面板里「添加节点」。来源、改动与构建方式见 [服务器管理](docs/server-panel.md)。
@@ -71,7 +74,7 @@ cd D:\screenwall
 scripts\tauri-build.bat build --bundles nsis
 ```
 
-产物在 `target\release\bundle\nsis\ScreenWall_0.1.0_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
+产物在 `target\release\bundle\nsis\ScreenWall_0.2.0_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
 
 安装包里还包含服务器管理 sidecar `kaypanel.exe`，因此打包机需要 **Go 1.23+**。`scripts\tauri-build.bat` 发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时会自动调用 `scripts\build-kaypanel.bat`；也可以先手动构建：
 
@@ -90,5 +93,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 
 CI 与代码签名的完整说明见 [CI 文档](docs/ci.md) 和 [签名文档](docs/signing.md)。目前**没有商业代码签名证书**，安装包发布时仍会被 SmartScreen 提示；自签名证书只能证明包未被篡改，消不掉警告，要消除必须买 OV/EV 证书。
+
+### 发布一次更新
+
+客户端「设置 → 关于 → 检查更新」读的是服务器 `GET /api/v1/version`。**显示「已是最新版本」不是没接上，而是服务器 `[update].version` 与当前客户端版本相同或更低**。发新版：
+
+1. 升版本号：根 `Cargo.toml` 的 `workspace.package.version`、`ui/package.json`、`crates/client/tauri.conf.json`。
+2. 重新打包：`scripts\tauri-build.bat build --bundles nsis`。
+3. 发布：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.0`
+   —— 复制安装包到 `dist/update`，改写 `server.toml` 的 `[update]` 段（dir / version / file / notes）。
+4. 重启服务器后，旧客户端点「检查更新」就能看到新版本、下载并校验 SHA256。
 
 正式使用还需要一台有公网地址的服务器（轻量云 VPS 即可），由 Caddy 提供 HTTPS；本机开发用 `http://127.0.0.1:8787`。

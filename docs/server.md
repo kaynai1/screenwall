@@ -89,10 +89,11 @@ Authorization: Bearer <token>
   "token": "……",
   "expiresAt": 1790000000000,
   "user": { "id": 1, "username": "kay" },
-  "device": { "id": "……", "name": "客厅电脑" }
+  "device": { "id": "……", "name": "客厅电脑", "connectCode": "572955600" }
 }
 ```
 
+- `device.connectCode` 是 9 位连接码，登录时按需分配，之后保持不变（换码走 1.8 节）。
 - `device.id` 首次登录时由客户端生成并持久化，之后不变；服务器按 `(user_id, device_id)` 更新设备信息。
 - 如果客户端没有 `device.id`，服务器会生成一个并在响应里返回。
 - 登录有两道限流（见 6.2 节）：按 IP 的请求频率令牌桶，以及「用户名 + IP」连续失败
@@ -153,7 +154,57 @@ Authorization: Bearer <token>
 
 吊销当前令牌。客户端同时清除本地 `account_token`。
 
-### 1.8 版本检查（不需要登录）
+### 1.8 连接码（ID + 密码）
+
+以下三个接口需要账号令牌，操作的是**当前登录设备**（令牌里的 `device_id`）：
+
+`GET /api/v1/quick` —— 读连接码与开关状态：
+
+```json
+{ "code": "572955600", "enabled": true, "hasPassword": true }
+```
+
+`POST /api/v1/quick` —— 设置开关，可选同时改密码：
+
+```json
+{ "enabled": true, "password": "至少 6 位；省略表示不改" }
+```
+
+密码用 Argon2 哈希存 `devices.access_hash`。开启时如果服务器上还没有密码，返回
+`400 invalid_input`。
+
+`POST /api/v1/quick/rotate` —— 换一个新的 9 位连接码，旧码立即失效：
+
+```json
+{ "code": "903118245" }
+```
+
+`POST /api/v1/quick/connect`（**不需要登录**）—— 用连接码 + 密码换受限令牌：
+
+```json
+{ "code": "572955600", "password": "……", "name": "主控端显示名" }
+```
+
+成功：
+
+```json
+{
+  "token": "……",
+  "expiresAt": 1790000900000,
+  "device": { "id": "……", "name": "客厅电脑" }
+}
+```
+
+- 令牌 15 分钟有效，`kind = 'quick'`，只能连这一台设备的 `/ws/view`；调账号接口返回
+  `403 quick_token`。
+- 设备必须在线（`409 device_offline`）、已开启连接码（`403 quick_disabled`）、且没有
+  关闭被控（`403 control_disabled`）。
+- 密码错误、连接码不存在统一返回 `401 quick_auth_failed`，不区分原因。
+- 限流：按 IP 每分钟 `[limits].quick_connects_per_minute`（默认 10）次；同一连接码 +
+  IP 连续失败 5 次锁定 60 秒。
+- 服务器发给被控端的 `open` 消息带 `"trusted": true`，被控端据此跳过「允许控制」弹窗。
+
+### 1.9 版本检查（不需要登录）
 
 `GET /api/v1/version`
 
@@ -178,7 +229,7 @@ Authorization: Bearer <token>
 { "msg": "未配置更新" }
 ```
 
-### 1.9 下载安装包
+### 1.10 下载安装包
 
 `GET /downloads/{file}`
 
@@ -423,6 +474,8 @@ view_connects_per_minute = 30    # 每个账号每分钟允许建立的 /ws/view
 view_connect_burst = 30          # 建连限流的桶容量
 session_opens_per_minute = 60    # 每个账号每分钟允许发起的会话数
 session_open_burst = 60          # 会话建立限流的桶容量
+quick_connects_per_minute = 10   # 每个 IP 每分钟允许的连接码尝试次数
+quick_connect_burst = 10         # 连接码尝试限流的桶容量
 ```
 
 - **设备上限**：登录绑定设备与 `/ws/device` 上线都受 `max_devices_per_account` 约束。

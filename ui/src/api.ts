@@ -12,6 +12,8 @@ export const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const DEMO_KEY = "screenwall.demo.loggedOut";
+/** 浏览器演示模式：记住当前是不是连接码会话。 */
+let demoQuick = false;
 
 export type ControlInfo = {
   session: number;
@@ -201,13 +203,14 @@ function demoLoggedIn(): boolean {
 export async function getAccount(): Promise<AccountView> {
   if (isTauri) return invoke<AccountView>("get_account");
   await delay(120);
-  return { ...mockAccount, loggedIn: demoLoggedIn() };
+  return { ...mockAccount, loggedIn: demoLoggedIn(), quick: demoQuick };
 }
 
 export async function listDevices(): Promise<DeviceView[]> {
   if (isTauri) return invoke<DeviceView[]>("list_devices");
   await delay(120);
-  return mockDevices;
+  // 连接码会话只有一台设备，演示模式也保持同样的形状。
+  return demoQuick ? [mockDevices[0]] : mockDevices;
 }
 
 export async function login(input: {
@@ -225,6 +228,7 @@ export async function login(input: {
     });
   }
   await delay(650);
+  demoQuick = false;
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem(DEMO_KEY);
   }
@@ -233,16 +237,92 @@ export async function login(input: {
     serverUrl: input.serverUrl || mockAccount.serverUrl,
     username: input.username || mockAccount.username,
     loggedIn: true,
+    quick: false,
+  };
+}
+
+// ---------------------------------------------------------------- 连接码（ID + 密码）
+
+export type ConnectCodeView = {
+  code: string;
+  enabled: boolean;
+  hasPassword: boolean;
+  /** 本机保存的明文密码；别的机器登录时可能为空。 */
+  password: string | null;
+};
+
+/** 不登录账号，直接用 9 位连接码 + 密码连接一台设备。 */
+export async function quickConnect(input: {
+  serverUrl: string;
+  code: string;
+  password: string;
+}): Promise<AccountView> {
+  if (isTauri) {
+    return invoke<AccountView>("quick_connect", input);
+  }
+  await delay(600);
+  demoQuick = true;
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem(DEMO_KEY);
+  }
+  return {
+    ...mockAccount,
+    serverUrl: input.serverUrl || mockAccount.serverUrl,
+    username: "连接码会话",
+    loggedIn: true,
+    quick: true,
+  };
+}
+
+export async function quickDisconnect(): Promise<AccountView> {
+  if (isTauri) return invoke<AccountView>("quick_disconnect");
+  demoQuick = false;
+  return { ...mockAccount, loggedIn: false, quick: false };
+}
+
+export async function getConnectCode(): Promise<ConnectCodeView> {
+  if (isTauri) return invoke<ConnectCodeView>("get_connect_code");
+  return {
+    code: "572955600",
+    enabled: true,
+    hasPassword: true,
+    password: "926454",
+  };
+}
+
+export async function setConnectCode(
+  enabled: boolean,
+  password?: string,
+): Promise<ConnectCodeView> {
+  if (isTauri) {
+    return invoke<ConnectCodeView>("set_connect_code", { enabled, password });
+  }
+  return {
+    code: "572955600",
+    enabled,
+    hasPassword: true,
+    password: password || "926454",
+  };
+}
+
+export async function rotateConnectCode(): Promise<ConnectCodeView> {
+  if (isTauri) return invoke<ConnectCodeView>("rotate_connect_code");
+  return {
+    code: String(Math.floor(100000000 + Math.random() * 900000000)),
+    enabled: true,
+    hasPassword: true,
+    password: "926454",
   };
 }
 
 export async function logout(): Promise<AccountView> {
   if (isTauri) return invoke<AccountView>("logout");
   await delay(260);
+  demoQuick = false;
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(DEMO_KEY, "1");
   }
-  return { ...mockAccount, loggedIn: false };
+  return { ...mockAccount, loggedIn: false, quick: false };
 }
 
 export function subscribeAccount(

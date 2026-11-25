@@ -4,7 +4,9 @@ import {
   ChevronDown,
   Copy,
   Download,
+  Hash,
   Info,
+  KeyRound,
   Loader2,
   LogOut,
   Palette,
@@ -20,15 +22,19 @@ import {
   getAutostart,
   getDirectFirewallState,
   getDirectState,
+  getConnectCode,
   getLocalSettings,
   regeneratePairingCode,
+  rotateConnectCode,
   setAllowControl,
   setAutostart,
   setCaPath,
+  setConnectCode,
   setDirectEnabled,
   setUiZoom,
   setVirtualDisplay,
   testServer,
+  type ConnectCodeView,
 } from "../api";
 import { Modal, Progress, Segmented, Switch } from "../components/ui";
 import {
@@ -56,6 +62,13 @@ type TestState =
   | { kind: "error"; message: string };
 
 type SectionKey = "account" | "connection" | "security" | "about";
+
+/** 9 位连接码按 `572 955 600` 分组显示，方便口头转述。 */
+function formatConnectCode(code: string): string {
+  const digits = code.replace(/\D/g, "");
+  if (digits.length !== 9) return code;
+  return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+}
 
 const ZOOM_OPTIONS = [
   { value: "90", label: "90%" },
@@ -164,6 +177,13 @@ export default function SettingsPage({
   const [download, setDownload] = useState<DownloadPhase>({ kind: "idle" });
   const installRef = useRef(false);
 
+  // 连接码（ID + 密码）：开关和密码都即时生效，不参与保存按钮。
+  const [connect, setConnect] = useState<ConnectCodeView | null>(null);
+  const [connectPasswordDraft, setConnectPasswordDraft] = useState("");
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connectCopied, setConnectCopied] = useState(false);
+
   // 局域网直连：开关即时生效，不参与下面的 dirty / saved 机制。
   const [direct, setDirect] = useState<DirectState | null>(null);
   const [directBusy, setDirectBusy] = useState(false);
@@ -250,6 +270,24 @@ export default function SettingsPage({
       });
     })().catch(() => {});
   }, []);
+
+  // 连接码：需要账号令牌，连接码临时会话里不显示这一组。
+  useEffect(() => {
+    if (account.quick) return;
+    let alive = true;
+    getConnectCode()
+      .then((value) => {
+        if (!alive) return;
+        setConnect(value);
+        setConnectPasswordDraft(value.password ?? "");
+      })
+      .catch(() => {
+        if (alive) setConnect(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [account.quick]);
 
   // 直连状态由后端持有：进页面读一次，之后只按命令返回值更新。
   useEffect(() => {
@@ -369,6 +407,77 @@ export default function SettingsPage({
       notify(errorLine(error), "error");
     } finally {
       setVirtualDisplayBusy(false);
+    }
+  }
+
+  function applyConnect(value: ConnectCodeView) {
+    setConnect(value);
+    if (value.password) setConnectPasswordDraft(value.password);
+  }
+
+  /** 连接码开关：开启前必须先有密码。 */
+  async function toggleConnectCode(next: boolean) {
+    if (connectBusy) return;
+    const password = connectPasswordDraft.trim();
+    if (next && !password && !connect?.hasPassword) {
+      setConnectError("请先设置一个连接密码（至少 6 位）");
+      return;
+    }
+    setConnectBusy(true);
+    setConnectError(null);
+    try {
+      applyConnect(await setConnectCode(next, password || undefined));
+      notify(next ? "已开启连接码连接" : "已关闭连接码连接", "success");
+    } catch (error) {
+      setConnectError(errorLine(error));
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
+  /** 单独保存密码，不动开关。 */
+  async function saveConnectPassword() {
+    const password = connectPasswordDraft.trim();
+    if (password.length < 6) {
+      setConnectError("连接密码至少 6 位");
+      return;
+    }
+    if (connectBusy) return;
+    setConnectBusy(true);
+    setConnectError(null);
+    try {
+      applyConnect(await setConnectCode(connect?.enabled ?? false, password));
+      notify("连接密码已更新", "success");
+    } catch (error) {
+      setConnectError(errorLine(error));
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
+  async function rotateCode() {
+    if (connectBusy) return;
+    setConnectBusy(true);
+    setConnectError(null);
+    try {
+      applyConnect(await rotateConnectCode());
+      notify("已换新的连接码，旧码立即失效", "success");
+    } catch (error) {
+      setConnectError(errorLine(error));
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
+  async function copyConnectCode() {
+    if (!connect?.code) return;
+    try {
+      await navigator.clipboard.writeText(connect.code);
+      setConnectCopied(true);
+      window.setTimeout(() => setConnectCopied(false), 1600);
+      notify("连接码已复制", "success");
+    } catch {
+      notify("复制失败，请手动选择连接码", "error");
     }
   }
 
@@ -1088,13 +1197,121 @@ export default function SettingsPage({
                     <div className="set-row-copy">
                       <span className="set-row-label">允许来源</span>
                       <span className="set-row-hint">
-                        只有同一账号下的设备能发起控制请求，中转服务器不允许跨账号转发
+                        {account.quick
+                          ? "同账号设备，或验证过连接码和密码的设备"
+                          : "同账号设备，或开启下方「连接码连接」后验证过密码的设备"}
                       </span>
                     </div>
-                    <span className="set-row-value">同账号设备</span>
+                    <span className="set-row-value">
+                      {connect?.enabled ? "同账号 + 连接码" : "同账号设备"}
+                    </span>
                   </div>
                 </div>
               </section>
+
+              {!account.quick && (
+                <section className="set-group" aria-labelledby="set-connect-code">
+                  <h3 className="set-group-title" id="set-connect-code">
+                    连接码连接
+                  </h3>
+                  <div className="set-rows">
+                    <div className="set-field">
+                      <span className="set-field-label">本机连接码</span>
+                      <div className="set-server-row">
+                        <div className="field-control">
+                          <Hash size={15} strokeWidth={1.75} />
+                          <input
+                            value={connect ? formatConnectCode(connect.code) : ""}
+                            readOnly
+                            className="mono"
+                            placeholder={connect ? "" : "尚未从服务器取到连接码"}
+                            aria-label="本机连接码"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          onClick={() => void copyConnectCode()}
+                          title="复制连接码"
+                          aria-label="复制连接码"
+                          disabled={!connect?.code}
+                        >
+                          {connectCopied ? (
+                            <Check size={15} strokeWidth={1.75} />
+                          ) : (
+                            <Copy size={15} strokeWidth={1.75} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => void rotateCode()}
+                          disabled={connectBusy || !connect}
+                        >
+                          <RefreshCw
+                            size={14}
+                            className={connectBusy ? "spin" : ""}
+                          />
+                          换一个
+                        </button>
+                      </div>
+                      <p className="set-field-hint">
+                        别人在登录页选「连接码连接」，输入这 9 位数字和下面的密码，
+                        不需要同一个账号，也不需要知道对方 IP。
+                      </p>
+                    </div>
+
+                    <div className="set-field">
+                      <span className="set-field-label">连接密码</span>
+                      <div className="set-server-row">
+                        <div className="field-control">
+                          <KeyRound size={15} strokeWidth={1.75} />
+                          <input
+                            type="text"
+                            value={connectPasswordDraft}
+                            onChange={(event) =>
+                              setConnectPasswordDraft(event.target.value)
+                            }
+                            placeholder={
+                              connect?.hasPassword
+                                ? "已设置（本机不显示时可直接改）"
+                                : "至少 6 位"
+                            }
+                            spellCheck={false}
+                            autoComplete="off"
+                            aria-label="连接密码"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => void saveConnectPassword()}
+                          disabled={connectBusy}
+                        >
+                          保存
+                        </button>
+                      </div>
+                      <p className="set-field-hint">
+                        明文只保存在本机配置里，服务器只存 Argon2 哈希。
+                      </p>
+                    </div>
+
+                    <Switch
+                      label="允许连接码连接"
+                      hint="开启后，知道连接码和密码的人可以直接连入本机，不再弹「允许控制」确认框；可随时关闭或换码"
+                      checked={connect?.enabled ?? false}
+                      disabled={connectBusy || !connect}
+                      onChange={(next) => void toggleConnectCode(next)}
+                    />
+
+                    {connectError && (
+                      <div className="notice notice-error set-error" role="alert">
+                        {connectError}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
             </div>
           )}
 

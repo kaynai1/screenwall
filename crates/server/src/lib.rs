@@ -37,6 +37,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/audits", get(api::audits))
         .route("/api/v1/audits/direct", post(api::report_direct_audit))
+        .route(
+            "/api/v1/quick",
+            get(api::quick_state).post(api::quick_update),
+        )
+        .route("/api/v1/quick/rotate", post(api::quick_rotate))
+        .route("/api/v1/quick/connect", post(api::quick_connect))
         .route("/api/v1/metrics", get(api::metrics))
         .route("/api/v1/version", get(update::version))
         .route("/downloads/{file}", get(update::download))

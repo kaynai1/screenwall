@@ -23,6 +23,8 @@ export type AccountView = {
   loggedIn: boolean;
   connected: boolean;
   error: string | null;
+  /** 连接码临时会话：不是账号登录，隐藏账号相关入口。 */
+  quick?: boolean;
 };
 
 /** 局域网直连状态（对应客户端的 get_direct_state 等命令）。 */

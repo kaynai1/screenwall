@@ -20,6 +20,13 @@ export default function Sidebar({
   const onlineCount = devices.filter((device) => device.online).length;
   const local = devices.find((device) => device.id === account.deviceId);
   const serverHost = account.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  // 连接码会话只有一台设备，只保留设置入口。
+  const sections = account.quick
+    ? NAV_SECTIONS.map((section) => ({
+        ...section,
+        items: section.items.filter((item) => item.key === "settings"),
+      })).filter((section) => section.items.length > 0)
+    : NAV_SECTIONS;
 
   return (
     <aside className="sidebar">
@@ -36,7 +43,7 @@ export default function Sidebar({
       </div>
 
       <nav className="nav">
-        {NAV_SECTIONS.map((section) => (
+        {sections.map((section) => (
           <div className="nav-section" key={section.label}>
             <div className="nav-label">{section.label}</div>
             {section.items.map((item) => {
@@ -74,10 +81,14 @@ export default function Sidebar({
             <Monitor size={15} strokeWidth={1.75} />
           </div>
           <div className="local-device-copy">
-            <strong>{local?.name ?? "这台电脑"}</strong>
+            <strong>{local?.name ?? (account.quick ? "远程设备" : "这台电脑")}</strong>
             <small>
               <i className={account.connected ? "is-ok" : ""} />
-              {account.connected ? "本机被控在线" : "正在连接服务器"}
+              {account.connected
+                ? account.quick
+                  ? "连接码会话"
+                  : "本机被控在线"
+                : "正在连接服务器"}
             </small>
           </div>
         </div>
@@ -92,8 +103,8 @@ export default function Sidebar({
             type="button"
             className="icon-btn"
             onClick={onLogout}
-            title="退出登录"
-            aria-label="退出登录"
+            title={account.quick ? "断开连接" : "退出登录"}
+            aria-label={account.quick ? "断开连接" : "退出登录"}
           >
             <LogOut size={15} strokeWidth={1.75} />
           </button>

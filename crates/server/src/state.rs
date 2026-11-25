@@ -36,6 +36,8 @@ pub struct ViewerConn {
     pub user_id: i64,
     /// 主控端设备 ID（来自登录/连接令牌），用于审计与按设备吊销。
     pub device_id: String,
+    /// 连接码令牌只允许看见/打开这一台设备。
+    pub restricted: Option<String>,
     pub tx: mpsc::UnboundedSender<WsOut>,
 }
 
@@ -126,6 +128,8 @@ pub struct AppState {
     pub view_connect_rate: RateLimiter,
     /// 会话建立频率（按主控连接）。
     pub session_open_rate: RateLimiter,
+    /// 连接码尝试频率（按客户端 IP）。
+    pub quick_connect_rate: RateLimiter,
     pub metrics: Metrics,
     /// 自托管更新源（`[update]` 段）；未配置时相关接口返回 404。
     pub update: UpdateState,
@@ -161,6 +165,11 @@ impl AppState {
             std::time::Duration::from_secs(60),
             limits.session_open_burst,
         );
+        let quick_connect_rate = RateLimiter::new(
+            limits.quick_connects_per_minute,
+            std::time::Duration::from_secs(60),
+            limits.quick_connect_burst,
+        );
         Self {
             db,
             config,
@@ -176,6 +185,7 @@ impl AppState {
             register_rate,
             view_connect_rate,
             session_open_rate,
+            quick_connect_rate,
             metrics: Metrics::default(),
             update: UpdateState::default(),
             next_session: AtomicU32::new(1),
@@ -289,18 +299,33 @@ impl AppState {
         json!({ "t": "devices", "devices": devices }).to_string()
     }
 
+    /// 受限会话（连接码）只看得见它被允许打开的那一台设备。
+    pub async fn quick_devices_message(&self, user_id: i64, device_id: &str) -> String {
+        let devices: Vec<DeviceView> = self
+            .device_views(user_id)
+            .await
+            .into_iter()
+            .filter(|device| device.id == device_id)
+            .collect();
+        json!({ "t": "devices", "devices": devices }).to_string()
+    }
+
     pub async fn broadcast_devices(&self, user_id: i64) {
         let text = self.devices_message(user_id).await;
-        let targets: Vec<mpsc::UnboundedSender<WsOut>> = {
+        let targets: Vec<(Option<String>, mpsc::UnboundedSender<WsOut>)> = {
             let viewers = self.viewers.read().await;
             viewers
                 .values()
                 .filter(|viewer| viewer.user_id == user_id)
-                .map(|viewer| viewer.tx.clone())
+                .map(|viewer| (viewer.restricted.clone(), viewer.tx.clone()))
                 .collect()
         };
-        for tx in targets {
-            let _ = tx.send(WsOut::Text(text.clone()));
+        for (restricted, tx) in targets {
+            let payload = match restricted {
+                Some(device_id) => self.quick_devices_message(user_id, &device_id).await,
+                None => text.clone(),
+            };
+            let _ = tx.send(WsOut::Text(payload));
         }
     }
 
