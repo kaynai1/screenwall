@@ -12,9 +12,11 @@ import {
   MousePointerClick,
   Server,
   UserRound,
+  Wifi,
 } from "lucide-react";
 import type { AccountView } from "../types";
 import { isTauri } from "../api";
+import WindowChrome from "../components/WindowChrome";
 
 const DEFAULT_SERVER = "http://127.0.0.1:8787";
 
@@ -22,7 +24,7 @@ const FACTS = [
   {
     icon: LayoutGrid,
     title: "屏幕墙",
-    text: "同账号设备自动上线，实时预览每一块屏幕。",
+    text: "局域网里的设备直接连，实时预览每一块屏幕。",
   },
   {
     icon: MousePointerClick,
@@ -42,6 +44,7 @@ export default function LoginPage({
   error,
   onLogin,
   onQuickConnect,
+  onLocalMode,
 }: {
   account: AccountView;
   busy: boolean;
@@ -57,6 +60,7 @@ export default function LoginPage({
     code: string;
     password: string;
   }) => void;
+  onLocalMode: () => void;
 }) {
   const [mode, setMode] = useState<"login" | "register" | "code">("login");
   const [serverUrl, setServerUrl] = useState(account.serverUrl || DEFAULT_SERVER);
@@ -92,6 +96,7 @@ export default function LoginPage({
 
   return (
     <div className="login-screen">
+      <WindowChrome />
       <aside className="login-aside" data-tauri-drag-region>
         <div className="login-brand">
           <div className="brand-mark" aria-hidden="true">
@@ -108,8 +113,8 @@ export default function LoginPage({
         <div className="login-intro">
           <h1>把每台电脑，放在同一张桌上。</h1>
           <p>
-            登录同一个账号，异地设备自动上线。屏幕墙、群控、文件传输和远程控制，
-            都收在一个窗口里。
+            同一网段的两台机器直接互连，不经过任何中转服务器。屏幕墙、群控、
+            文件传输和远程控制，都收在一个窗口里。
           </p>
 
           <ul className="login-facts">
@@ -129,11 +134,37 @@ export default function LoginPage({
         </div>
 
         <div className="login-aside-foot">
-          自建账号服务器 · 数据只在你的设备与服务器之间传输
+          局域网直连不需要服务器 · 走服务器时数据只在你和自建服务器之间
         </div>
       </aside>
 
       <main className="login-main">
+        <div className="login-local">
+          <div className="login-local-copy">
+            <strong>
+              <Wifi size={16} strokeWidth={1.75} />
+              不用服务器，直接连
+            </strong>
+            <p>
+              两台电脑在同一网段时，一台开直连、另一台输地址和 6 位配对码就能互连。
+              没有账号，画面不经过任何中转服务器。
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={onLocalMode}
+          >
+            进入局域网模式
+            <ArrowRight size={15} strokeWidth={1.75} />
+          </button>
+        </div>
+
+        <div className="login-or">
+          <span>或者用账号 / 连接码走服务器</span>
+        </div>
+
         <form className="login-form" onSubmit={submit}>
           <div className="login-form-head">
             <h2>
@@ -182,20 +213,30 @@ export default function LoginPage({
             </button>
           </div>
 
-          <label className="field">
-            <span>服务器地址</span>
-            <div className="field-control">
-              <Server size={15} strokeWidth={1.75} />
-              <input
-                className="mono"
-                value={serverUrl}
-                onChange={(event) => setServerUrl(event.target.value)}
-                placeholder={DEFAULT_SERVER}
-                spellCheck={false}
-                autoComplete="off"
-              />
+          <details className="login-server">
+            <summary>
+              <Server size={14} strokeWidth={1.75} />
+              服务器地址
+              <span className="login-server-value">{serverUrl || DEFAULT_SERVER}</span>
+            </summary>
+            <div className="login-server-body">
+              <div className="field-control">
+                <Server size={15} strokeWidth={1.75} />
+                <input
+                  className="mono"
+                  value={serverUrl}
+                  onChange={(event) => setServerUrl(event.target.value)}
+                  placeholder={DEFAULT_SERVER}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-label="服务器地址"
+                />
+              </div>
+              <span className="field-hint">
+                只有走账号或连接码时才需要。局域网直连不用填。
+              </span>
             </div>
-          </label>
+          </details>
 
           {mode === "code" ? (
             <>

@@ -2,7 +2,7 @@
 
 自用的多机屏幕墙远程控制软件：一屏看全、点开即控、群控同步、拖拽传文件、远程开机；同一窗口内还内置服务器管理面板（通过 SSH 管理 Linux 主机）。
 
-技术栈：Rust + Tauri 2 + React，自有账号 + 自建中转服务器。
+技术栈：Rust + Tauri 2 + React。默认形态是**局域网点对点**——两台机器直接互连，不需要账号，也不需要任何服务器；跨网段时才需要可选的账号 + 自建中转服务器。
 
 ## 文档
 
@@ -20,32 +20,34 @@
 - [连接码连接](docs/quick-connect.md) — 9 位 ID + 密码、不用账号的跨网连接与安全边界
 - [局域网自动发现](docs/lan-discovery.md) — UDP 广播扫描同网段开启了直连的设备
 - [服务器管理](docs/server-panel.md) — 内嵌 KayPanel：sidecar + 子 webview 的架构、构建与排障
+- [更新与分发](docs/update.md) — 用户在哪里检查更新、你自己在哪里发新版（GitHub / 自建服务器两条路线）
 
 ## 快速开始
 
 ```powershell
-# 1. 服务器（本机开发配置，开启公开注册）
-cd D:\screenwall
-copy server.dev.toml server.toml
-scripts\cargo.bat run -p screenwall-server -- run --config server.toml
-```
-
-```powershell
-# 2. 前端开发服务器
+# 1. 前端开发服务器
 cd D:\screenwall\ui
 npm install
 npm run dev
 ```
 
 ```powershell
-# 3. 客户端
+# 2. 客户端
 cd D:\screenwall
 scripts\cargo.bat run -p screenwall-client
 ```
 
-首次使用在客户端里注册账号，服务器地址填 `http://127.0.0.1:8787`。登录后本机会自动作为被控端上线；另一台电脑装同一个客户端、登录同一账号，就能在设备列表里互相看到。
+**两台机器在同一网段（推荐）**：两台都装客户端，打开后点登录页的「进入局域网模式」。被控端在「屏幕墙 → 添加设备」里看到本机地址和 6 位配对码，主控端在「设备」页点「直连」填进去即可。全程没有账号、没有服务器，画面和操作只在这两台机器之间传输。详见 [局域网直连](docs/direct.md)。
 
-同一个局域网内也可以完全不用服务器：设置 → 连接 → 局域网直连 打开后，本机会显示一个 6 位配对码，另一台电脑在设备页点「直连」填地址和配对码即可。详见 [局域网直连](docs/direct.md)。
+**跨网段**才需要服务器：
+
+```powershell
+cd D:\screenwall
+copy server.dev.toml server.toml
+scripts\cargo.bat run -p screenwall-server -- run --config server.toml
+```
+
+然后在客户端登录页用「账号」或「连接码」走服务器，服务器地址填 `http://127.0.0.1:8787`。
 
 ## 当前状态
 
@@ -76,7 +78,7 @@ cd D:\screenwall
 scripts\tauri-build.bat build --bundles nsis
 ```
 
-产物在 `target\release\bundle\nsis\ScreenWall_0.2.1_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
+产物在 `target\release\bundle\nsis\ScreenWall_0.2.3_x64-setup.exe`（按机器安装到 `Program Files\ScreenWall`，需要管理员；安装器会自动添加局域网直连的防火墙规则）。这个脚本会先进 MSVC 环境，避免 Git Bash 的 `link.exe` 遮蔽链接器。
 
 安装包里还包含服务器管理 sidecar `kaypanel.exe`，因此打包机需要 **Go 1.23+**。`scripts\tauri-build.bat` 发现 `third_party\kaypanel\dist\kaypanel.exe` 不存在时会自动调用 `scripts\build-kaypanel.bat`；也可以先手动构建：
 
@@ -98,12 +100,27 @@ CI 与代码签名的完整说明见 [CI 文档](docs/ci.md) 和 [签名文档](
 
 ### 发布一次更新
 
-客户端「设置 → 关于 → 检查更新」读的是服务器 `GET /api/v1/version`。**显示「已是最新版本」不是没接上，而是服务器 `[update].version` 与当前客户端版本相同或更低**。发新版：
+**用户在哪里更新**：客户端 → 设置 → 关于 → 软件更新 → 「检查更新」→「下载并安装」。
+**你自己在哪里发**：两条路线，按用户用的模式选。
 
-1. 升版本号：根 `Cargo.toml` 的 `workspace.package.version`、`ui/package.json`、`crates/client/tauri.conf.json`。
+1. 升版本号（三处必须一致）：根 `Cargo.toml` 的 `workspace.package.version`、`ui/package.json`、`crates/client/tauri.conf.json`。
 2. 重新打包：`scripts\tauri-build.bat build --bundles nsis`。
-3. 发布：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.1`
-   —— 复制安装包到 `dist/update`，改写 `server.toml` 的 `[update]` 段（dir / version / file / notes）。
-4. 重启服务器后，旧客户端点「检查更新」就能看到新版本、下载并校验 SHA256。
+3. 发布，二选一或都做：
+
+```powershell
+# A. GitHub：局域网模式（没配服务器）的用户从这里拿更新
+gh release create v0.2.3 target\release\bundle\nsis\ScreenWall_0.2.3_x64-setup.exe --title "ScreenWall 0.2.3" --notes "更新说明"
+```
+
+```powershell
+# B. 自建服务器：账号 / 连接码模式的用户从这里拿更新
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.3
+```
+
+4. 走 B 的话重启服务器（或让它重读配置）后生效。
+
+客户端的更新源选择：配了服务器就读 `GET /api/v1/version`，没配（局域网模式）就回退到 GitHub Releases，服务器不可达时也退到 GitHub。**显示「已是最新版本」不是没接上**，而是那个源的版本号不高于当前客户端。
+
+完整说明（含手动更新、校验规则、注意事项）见 [更新与分发](docs/update.md)。
 
 正式使用还需要一台有公网地址的服务器（轻量云 VPS 即可），由 Caddy 提供 HTTPS；本机开发用 `http://127.0.0.1:8787`。

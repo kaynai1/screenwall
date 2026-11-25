@@ -817,7 +817,7 @@ export default function DevicesPage({
       >
         <div className="dev-direct-form">
           <p className="dev-direct-hint">
-            对方在「设置 → 连接 → 局域网直连」里能看到本机地址和配对码。
+            对方的直连地址和配对码在「屏幕墙 → 添加设备」里可以看到。
             首次连接需要配对码，配对过的设备下次可直接连接。
           </p>
 

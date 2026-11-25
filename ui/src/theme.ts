@@ -30,17 +30,15 @@ function write(key: string, value: string) {
   }
 }
 
-/** 没有存过偏好时跟随系统；系统也不支持时用浅色（KayPanel 的默认）。 */
+/**
+ * 没有存过偏好时一律用浅色。
+ *
+ * 之前跟随系统 `prefers-color-scheme`，系统是深色时软件一打开就是全黑，
+ * 与「打开即纯白」的预期不符；深色仍可在设置 → 外观里手动选。
+ */
 export function storedTheme(): Theme {
   const saved = read(THEME_KEY);
   if (saved === "light" || saved === "dark") return saved;
-  try {
-    if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
-      return "dark";
-    }
-  } catch {
-    // matchMedia 不可用，按浅色处理。
-  }
   return "light";
 }
 

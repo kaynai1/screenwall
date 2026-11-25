@@ -1359,7 +1359,9 @@ export default function SettingsPage({
                       <span className="set-row-hint">
                         {update.kind === "latest"
                           ? "已是最新版本"
-                          : "从自建服务器检查并安装新版本"}
+                          : account.local
+                            ? "从 GitHub Releases 检查并安装新版本"
+                            : "从自建服务器检查并安装新版本"}
                       </span>
                     </div>
                     <div className="set-inline-control">

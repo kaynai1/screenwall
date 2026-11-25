@@ -50,10 +50,11 @@
   align-items: center;
   gap: 7px;
   height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  color: var(--text-3);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--fill-1);
+  color: var(--text-2);
   font-size: 14px;
   white-space: nowrap;
 }
@@ -82,10 +83,10 @@
   align-items: center;
   gap: 8px;
   height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
+  padding: 0 12px;
+  border: 0;
   border-radius: var(--r);
-  background: transparent;
+  background: var(--fill-2);
   color: var(--text-2);
   cursor: pointer;
   transition:
@@ -167,9 +168,10 @@
   width: 320px;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--panel-shadow);
 }
 
 .group-picker-head {
@@ -357,9 +359,10 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--panel-shadow);
 }
 
 .group-console-head {

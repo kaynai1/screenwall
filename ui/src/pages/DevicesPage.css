@@ -463,11 +463,11 @@
   align-items: center;
   min-width: 0;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--r);
-  background: var(--surface-2);
+  background: var(--fill-2);
   color: var(--text-2);
   font-family: inherit;
   font-size: 14px;
@@ -549,9 +549,9 @@
   justify-content: space-between;
   gap: 10px;
   padding: 9px 11px;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--r);
-  background: var(--surface-2);
+  background: var(--fill-2);
   color: var(--text);
   font: inherit;
   text-align: left;
@@ -560,8 +560,7 @@
 }
 
 .dev-scan-item:hover {
-  border-color: var(--accent-line);
-  background: var(--surface-3);
+  background: var(--fill-1);
 }
 
 .dev-scan-item.is-active {

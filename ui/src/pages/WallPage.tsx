@@ -37,6 +37,7 @@ import {
   createConnectLink,
   getConnectCode,
   getControlInfo,
+  getDirectState,
   isTauri,
   offerFiles,
   rotateConnectCode,
@@ -51,6 +52,7 @@ import {
   uploadChunk,
   type ConnectCodeView,
   type ConnectLinkView,
+  type DirectState,
   type FileTransferEvent,
 } from "../api";
 import { formatConnectCode } from "../connect";
@@ -418,9 +420,12 @@ export default function WallPage(props: WallPageProps) {
   const [link, setLink] = useState<ConnectLinkView | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  // 本机模式下「添加设备」要给出真实的直连地址和配对码。
+  const [direct, setDirect] = useState<DirectState | null>(null);
 
   useEffect(() => {
-    if (account.quick) return;
+    // 连接码由服务器签发：本机模式和连接码会话里都没有。
+    if (account.quick || account.local) return;
     let alive = true;
     getConnectCode()
       .then((value) => {
@@ -430,7 +435,26 @@ export default function WallPage(props: WallPageProps) {
     return () => {
       alive = false;
     };
-  }, [account.quick, account.deviceId]);
+  }, [account.quick, account.local, account.deviceId]);
+
+  // 本机模式的引导信息来自直连状态（地址 + 配对码），不是服务器设备 ID。
+  useEffect(() => {
+    if (!account.local) return;
+    let alive = true;
+    const load = () => {
+      getDirectState()
+        .then((value) => {
+          if (alive) setDirect(value);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [account.local]);
 
   async function rotateCode() {
     if (connectBusy) return;
@@ -1024,13 +1048,18 @@ export default function WallPage(props: WallPageProps) {
   }
 
 
+  // 只给**别的**在线设备开缩略图，绝不订阅本机。
+  //
+  // `mode: "wall"` 的会话在被控端是免授权推流的（见 agent/src/cloud.rs），
+  // 所以一旦把本机 ID 也放进来，本机就会把自己的桌面推给自己看 —— 表现为
+  // 被控端一登录，屏幕墙上就出现一张自己的桌面卡片。
   const onlinePreviewKey = useMemo(
     () =>
       devices
-        .filter((device) => device.online)
+        .filter((device) => device.online && device.id !== account.deviceId)
         .map((device) => device.id)
         .join(","),
-    [devices],
+    [devices, account.deviceId],
   );
 
   // 在线设备各开一条只读缩略图会话（1 FPS / 320px 宽），离开页面时全部断开。
@@ -1108,15 +1137,28 @@ export default function WallPage(props: WallPageProps) {
     return () => window.clearTimeout(timer);
   }, [refreshing, devices.length, notify]);
 
+  // 计数也要排除本机，否则筛选栏的「在线 N」和实际能看到的卡片数对不上。
   const onlineCount = useMemo(
-    () => devices.filter((device) => device.online).length,
-    [devices],
+    () =>
+      devices.filter(
+        (device) => device.online && device.id !== account.deviceId,
+      ).length,
+    [devices, account.deviceId],
   );
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
+  // 屏幕墙只列「别人」：本机是操作台，不是被看的对象。
+  //
+  // 之前把本机也列进来，再加上缩略图订阅没排除本机，被控端一登录就会
+  // 在屏幕墙上看到自己的桌面 —— 那既不必要，也让人以为画面被推走了。
+  const remoteDevices = useMemo(
+    () => devices.filter((device) => device.id !== account.deviceId),
+    [devices, account.deviceId],
+  );
+
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    return devices.filter((device) => {
+    return remoteDevices.filter((device) => {
       if (filter === "online" && !device.online) return false;
       if (filter === "offline" && device.online) return false;
       if (!keyword) return true;
@@ -1128,12 +1170,16 @@ export default function WallPage(props: WallPageProps) {
         device.ip ?? "",
       ].some((field) => field.toLowerCase().includes(keyword));
     });
-  }, [devices, filter, query]);
+  }, [remoteDevices, filter, query]);
 
   const filterOptions: { value: WallFilter; label: string; count: number }[] = [
-    { value: "all", label: "全部", count: devices.length },
+    { value: "all", label: "全部", count: remoteDevices.length },
     { value: "online", label: "在线", count: onlineCount },
-    { value: "offline", label: "离线", count: devices.length - onlineCount },
+    {
+      value: "offline",
+      label: "离线",
+      count: remoteDevices.length - onlineCount,
+    },
   ];
 
   const hasSelection = selectedIds.length > 0;
@@ -1212,10 +1258,14 @@ export default function WallPage(props: WallPageProps) {
         <div className="wall-card-preview">
           <DesktopPreview
             device={device}
-            live={device.online}
+            live={device.online && !isLocal}
             showName={false}
             frame={frames[device.id]}
-            hint={previewHints[device.id]}
+            self={isLocal}
+            hint={
+              previewHints[device.id] ??
+              (isLocal ? "本机桌面（不推流）" : undefined)
+            }
           />
           <button
             type="button"
@@ -1459,7 +1509,8 @@ export default function WallPage(props: WallPageProps) {
           <span>松开到任意在线设备卡片上，即可把文件发到那台电脑</span>
         </div>
       )}
-      {!account.quick && (
+      {/* 连接码和一次性链接都要服务器签发，本机模式下没有这一块。 */}
+      {!account.quick && !account.local && (
         <div className="wall-connect" aria-label="本机连接码">
           <div className="wall-connect-main">
             <span className="wall-connect-label">
@@ -1649,12 +1700,16 @@ export default function WallPage(props: WallPageProps) {
         ) : (
           <SkeletonList />
         )
-      ) : devices.length === 0 ? (
+      ) : remoteDevices.length === 0 ? (
         <div className="wall-empty">
           <EmptyState
             icon={<MonitorSmartphone size={18} strokeWidth={1.75} />}
-            title="还没有任何设备"
-            hint="同一账号的电脑安装客户端并登录后，设备会自动出现在这里。"
+            title="还没有其他设备"
+            hint={
+              account.local
+                ? "在另一台电脑点「直连」，填本机地址和配对码，连过的设备会留在这里。"
+                : "同一账号的电脑安装客户端并登录后，设备会自动出现在这里。"
+            }
             action={
               <div className="wall-empty-actions">
                 <button
@@ -1838,49 +1893,106 @@ export default function WallPage(props: WallPageProps) {
       >
         <div className="wall-modal">
           <p className="wall-modal-intro">
-            在另一台 Windows 电脑安装 ScreenWall 客户端，用同一账号登录，设备会自动出现在屏幕墙。
+            {account.local
+              ? "在另一台电脑打开 ScreenWall 并进入局域网模式，然后在「设备」页右上角点「直连」，填下面的地址和配对码。"
+              : "在另一台 Windows 电脑安装 ScreenWall 客户端，用同一账号登录，设备会自动出现在屏幕墙。"}
           </p>
 
           <div className="wall-fields">
-            <div className="field">
-              <span>当前账号</span>
-              <div className="field-control wall-copy-control">
-                <span className="wall-copy-value" title={account.username}>
-                  {account.username || "未登录"}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost wall-copy-btn"
-                  onClick={() => copyValue("账号", account.username)}
-                  disabled={!account.username}
-                >
-                  <Copy size={14} strokeWidth={1.75} />
-                  复制
-                </button>
+            {!account.local && (
+              <div className="field">
+                <span>当前账号</span>
+                <div className="field-control wall-copy-control">
+                  <span className="wall-copy-value" title={account.username}>
+                    {account.username || "未登录"}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost wall-copy-btn"
+                    onClick={() => copyValue("账号", account.username)}
+                    disabled={!account.username}
+                  >
+                    <Copy size={14} strokeWidth={1.75} />
+                    复制
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="field">
-              <span>本机设备 ID</span>
-              <div className="field-control wall-copy-control">
-                <code className="wall-copy-value" title={account.deviceId}>
-                  {account.deviceId || "—"}
-                </code>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost wall-copy-btn"
-                  onClick={() => copyValue("设备 ID", account.deviceId)}
-                  disabled={!account.deviceId}
-                >
-                  <Copy size={14} strokeWidth={1.75} />
-                  复制
-                </button>
+            {account.local ? (
+              <>
+                <div className="field">
+                  <span>本机直连地址</span>
+                  <div className="field-control wall-copy-control">
+                    <code className="wall-copy-value">
+                      {direct?.addresses.length
+                        ? `${direct.addresses[0]}:${direct.port}`
+                        : direct
+                          ? `未检测到局域网地址（端口 ${direct.port}）`
+                          : "正在读取…"}
+                    </code>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost wall-copy-btn"
+                      onClick={() =>
+                        copyValue(
+                          "直连地址",
+                          direct?.addresses.length
+                            ? `${direct.addresses[0]}:${direct.port}`
+                            : "",
+                        )
+                      }
+                      disabled={!direct?.addresses.length}
+                    >
+                      <Copy size={14} strokeWidth={1.75} />
+                      复制
+                    </button>
+                  </div>
+                </div>
+
+                <div className="field">
+                  <span>配对码</span>
+                  <div className="field-control wall-copy-control">
+                    <code className="wall-copy-value mono">
+                      {direct?.pairingCode ?? "未开启"}
+                    </code>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost wall-copy-btn"
+                      onClick={() => copyValue("配对码", direct?.pairingCode ?? "")}
+                      disabled={!direct?.pairingCode}
+                    >
+                      <Copy size={14} strokeWidth={1.75} />
+                      复制
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="field">
+                <span>本机设备 ID</span>
+                <div className="field-control wall-copy-control">
+                  <code className="wall-copy-value" title={account.deviceId}>
+                    {account.deviceId || "—"}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost wall-copy-btn"
+                    onClick={() => copyValue("设备 ID", account.deviceId)}
+                    disabled={!account.deviceId}
+                  >
+                    <Copy size={14} strokeWidth={1.75} />
+                    复制
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <p className="notice wall-modal-note">
-            登录后设备会在中转服务器上自动上线，不需要记 IP，也不依赖额外组网软件。
+            {account.local
+              ? "局域网直连不经过任何服务器：画面和操作只在你和对方之间传输。"
+              : "登录后设备会在中转服务器上自动上线，不需要记 IP，也不依赖额外组网软件。"}
           </p>
         </div>
       </Modal>

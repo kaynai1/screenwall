@@ -108,6 +108,13 @@ struct ClientConfig {
     /// 服务器分配的 9 位连接码（缓存，离线时也能显示）。
     #[serde(default)]
     connect_code: String,
+    /// 本机模式：完全不用服务器，只走局域网直连。
+    ///
+    /// 打开后界面正常进入，但不会去连 `/ws/view`、`/ws/device`，
+    /// 设备列表来自已配对的直连设备。这是默认推荐的使用方式 ——
+    /// 两台机器在同一网段时，不需要账号、不需要服务器。
+    #[serde(default)]
+    local_mode: bool,
 }
 
 fn default_direct_port() -> u16 {
@@ -143,6 +150,7 @@ impl Default for ClientConfig {
             connect_enabled: false,
             connect_password: String::new(),
             connect_code: String::new(),
+            local_mode: false,
         }
     }
 }
@@ -233,6 +241,8 @@ struct AccountView {
     error: Option<String>,
     /// 这次是「连接码」临时会话，不是账号登录：界面上隐藏账号相关入口。
     quick: bool,
+    /// 本机模式：没连服务器，只用局域网直连。
+    local: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -685,6 +695,10 @@ async fn logout(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<Accoun
     if shared.quick_mode.load(Ordering::Relaxed) {
         return Ok(end_quick_session(&app, &shared).await);
     }
+    // 本机模式没有服务器会话可退，直接回登录页。
+    if shared.config.read().await.local_mode {
+        return Ok(exit_local_mode(&app, &shared).await);
+    }
     let (base, token) = {
         let config = shared.config.read().await;
         (config.server_url.clone(), config.token.clone())
@@ -725,6 +739,94 @@ async fn logout(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<Accoun
     let view = account_view(&shared).await;
     let _ = app.emit("account", view.clone());
     Ok(view)
+}
+
+// ---------------------------------------------------------------- 本机模式（无服务器）
+
+/// 进入本机模式：不连服务器，只用局域网直连。
+///
+/// 这是「点对点」的默认形态 —— 两台机器在同一网段，一台生成配对码，
+/// 另一台输地址和码就能连，全程没有账号、没有云端中转。
+///
+/// 进入时顺手打开直连监听并生成配对码，用户不必再进设置点一次开关。
+#[tauri::command]
+async fn enter_local_mode(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+) -> Result<AccountView, String> {
+    let shared = shared.inner().clone();
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        return Err("请先断开当前的连接码会话".into());
+    }
+
+    cancel_reconnect(&shared, None);
+    *shared.pending_resume.lock().unwrap() = None;
+    shared.control_wanted.store(false, Ordering::Relaxed);
+    stop_tasks(&shared);
+    *shared.view_tx.write().await = None;
+    *shared.control.write().await = None;
+    shared.pending_opens.lock().unwrap().clear();
+    shared.files.lock().unwrap().reset();
+    wall::clear(&shared);
+    group::clear(&shared);
+
+    {
+        let mut config = shared.config.write().await;
+        config.local_mode = true;
+        // 本机模式不持有任何服务器凭据。
+        config.token.clear();
+        config.username.clear();
+        config.server_url.clear();
+        if config.device_id.is_empty() {
+            config.device_id = screenwall_agent::config::generate_device_id();
+        }
+        // 默认打开直连监听：本机模式的全部价值就在这条链路上。
+        config.direct_enabled = true;
+        config
+            .save()
+            .map_err(|error| format!("保存配置失败: {error}"))?;
+    }
+
+    *shared.connected.write().await = false;
+    *shared.error.write().await = None;
+    {
+        let config = shared.config.read().await.clone();
+        *shared.devices.write().await = local_devices(&config);
+    }
+    spawn_tasks(app.clone(), shared.clone());
+    emit_devices(&app, &shared).await;
+    let view = account_view(&shared).await;
+    let _ = app.emit("account", view.clone());
+    Ok(view)
+}
+
+/// 退出本机模式，回登录页。已配对的直连设备保留，下次进来还能用。
+async fn exit_local_mode(app: &AppHandle, shared: &Arc<Shared>) -> AccountView {
+    cancel_reconnect(shared, None);
+    *shared.pending_resume.lock().unwrap() = None;
+    shared.control_wanted.store(false, Ordering::Relaxed);
+    stop_tasks(shared);
+    *shared.view_tx.write().await = None;
+    *shared.control.write().await = None;
+    shared.pending_opens.lock().unwrap().clear();
+    shared.files.lock().unwrap().reset();
+    wall::clear(shared);
+    group::clear(shared);
+    {
+        let mut config = shared.config.write().await;
+        config.local_mode = false;
+        config
+            .save()
+            .map_err(|error| tracing::warn!("保存配置失败: {error}"))
+            .ok();
+    }
+    shared.devices.write().await.clear();
+    *shared.connected.write().await = false;
+    *shared.error.write().await = None;
+    emit_devices(app, shared).await;
+    let view = account_view(shared).await;
+    let _ = app.emit("account", view.clone());
+    view
 }
 
 // ---------------------------------------------------------------- 连接码（ID + 密码）
@@ -3248,6 +3350,27 @@ async fn end_session(
 fn spawn_tasks(app: AppHandle, shared: Arc<Shared>) {
     shared.pending_control_requests.lock().unwrap().clear();
 
+    // 本机模式：不碰任何服务器接口，只跑局域网直连监听。
+    //
+    // view/host 两条循环在没有 token 时会立刻 return（见各自开头），
+    // 但显式分开更清楚：本机模式下连「尝试连服务器」这个动作都不该有。
+    if shared.config.try_read().is_ok_and(|config| config.local_mode) {
+        let direct_shared = shared.clone();
+        let direct_app = app.clone();
+        let direct_task = tauri::async_runtime::spawn(async move {
+            direct::listen_loop(direct_app, direct_shared).await;
+        });
+        let adapt_shared = shared.clone();
+        let adapt_app = app.clone();
+        let adapt = tauri::async_runtime::spawn(async move {
+            adapt_loop(adapt_app, adapt_shared).await;
+        });
+        let mut tasks = shared.tasks.lock().unwrap();
+        tasks.direct = Some(direct_task);
+        tasks.adapt = Some(adapt);
+        return;
+    }
+
     // 连接码模式只做「主控端」：绝不能启动 host 任务，否则会拿受限令牌
     // 去连 /ws/device，把目标设备的在线连接顶掉。
     if shared.quick_mode.load(Ordering::Relaxed) {
@@ -4370,16 +4493,54 @@ async fn account_view(shared: &Shared) -> AccountView {
             config.username.clone()
         },
         device_id: config.device_id.clone(),
-        logged_in: !config.token.is_empty(),
-        connected: *shared.connected.read().await,
+        logged_in: !config.token.is_empty() || config.local_mode,
+        connected: if config.local_mode {
+            // 本机模式没有服务器可连：直连监听起来就算「就绪」。
+            shared.direct.lock().unwrap().listening
+        } else {
+            *shared.connected.read().await
+        },
         error: shared.error.read().await.clone(),
         quick,
+        local: config.local_mode,
     }
 }
 
 async fn emit_devices(app: &AppHandle, shared: &Shared) {
     let devices = shared.devices.read().await.clone();
     let _ = app.emit("devices", devices);
+}
+
+/// 本机模式下重新计算设备列表并推给前端。
+pub(crate) async fn refresh_local_devices(app: &AppHandle, shared: &Arc<Shared>) {
+    let config = shared.config.read().await.clone();
+    *shared.devices.write().await = local_devices(&config);
+    emit_devices(app, shared).await;
+}
+
+/// 本机模式下把「已配对的直连设备」摊成设备列表。
+///
+/// 没有服务器就没有设备目录，屏幕墙/设备页能显示的就是这些配对过的机器。
+/// 这里把 `online` 标成 true：它们在同一网段，实际连不上时屏幕墙的缩略图
+/// 会话会自己报错并退避重试，不会卡住界面。
+fn local_devices(config: &ClientConfig) -> Vec<DeviceView> {
+    config
+        .known_peers
+        .iter()
+        .map(|peer| DeviceView {
+            id: format!("direct:{}", peer.address),
+            name: if peer.name.is_empty() {
+                peer.address.clone()
+            } else {
+                peer.name.clone()
+            },
+            os: "局域网直连".to_string(),
+            version: String::new(),
+            online: true,
+            last_seen: chrono::Utc::now().timestamp_millis(),
+            controllable: true,
+        })
+        .collect()
 }
 
 fn hostname() -> String {
@@ -4422,10 +4583,19 @@ async fn check_update(
         let config = shared.config.read().await;
         (config.server_url.clone(), config.token.clone())
     };
+    // 没有自建服务器（局域网模式）时回退到 GitHub Releases：
+    // 「不用服务器」不该等于「永远收不到新版本」。
     if base.is_empty() {
-        return Err("尚未配置服务器地址".into());
+        return update::check_update_github(&shared.http).await;
     }
-    update::check_update(&shared.http, &base, &token).await
+    match update::check_update(&shared.http, &base, &token).await {
+        Ok(found) => Ok(found),
+        // 自建服务器不可达时也退到 GitHub：用户至少还能知道有没有新版。
+        Err(error) => match update::check_update_github(&shared.http).await {
+            Ok(found) => Ok(found),
+            Err(_) => Err(error),
+        },
+    }
 }
 
 /// 下载新版本安装包并校验 SHA256，返回本地路径。
@@ -4500,7 +4670,8 @@ fn main() {
     if changed {
         let _ = config.save();
     }
-    let start_now = !config.token.is_empty() && !config.server_url.is_empty();
+    let start_now = config.local_mode
+        || (!config.token.is_empty() && !config.server_url.is_empty());
 
     // 通过 screenwall:// 协议启动时，命令行里带着链接。
     let startup_link = args
@@ -4512,9 +4683,15 @@ fn main() {
     let allow_control = config.allow_control;
     let ui_zoom = config.ui_zoom;
     let clipboard_on = config.clipboard_sync;
+    // 本机模式重启后直接进工作台，不需要再点一次「不用服务器」。
+    let boot_local_devices = if config.local_mode {
+        local_devices(&config)
+    } else {
+        Vec::new()
+    };
     let shared = Arc::new(Shared {
         config: RwLock::new(config),
-        devices: RwLock::new(Vec::new()),
+        devices: RwLock::new(boot_local_devices),
         connected: RwLock::new(false),
         error: RwLock::new(None),
         tasks: StdMutex::new(Tasks::default()),
@@ -4608,6 +4785,7 @@ fn main() {
             list_devices,
             login,
             logout,
+            enter_local_mode,
             quick_connect,
             quick_disconnect,
             create_connect_link,

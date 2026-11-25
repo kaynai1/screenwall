@@ -266,6 +266,10 @@ Authorization: Bearer <token>
 { "msg": "未配置更新" }
 ```
 
+> **没有自建服务器的客户端（局域网模式）不走这个接口**：它会退到 GitHub Releases 的
+> latest 接口取版本与安装包，校验值用附件自带的 `sha256:` digest。自建服务器不可达时
+> 也会退到 GitHub。两条更新路线的完整说明见 [更新与分发](update.md)。
+
 ### 1.10 下载安装包
 
 `GET /downloads/{file}`

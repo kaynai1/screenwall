@@ -1,0 +1,104 @@
+# 更新与分发
+
+这篇回答两个问题：**用户在哪里更新**，**你自己在哪里发新版**。
+
+---
+
+## 一、用户在哪里更新
+
+### 客户端界面
+
+打开客户端 → 左下角头像或「管理 → 设置」→ 左侧选 **关于** → 找到 **软件更新** 分组：
+
+- 显示当前版本；
+- 点 **检查更新**；
+- 有新版本时显示版本号、发布日期和更新说明，点 **下载并安装**；
+- 下载有进度条，边下边算 SHA256；校验不过会删掉文件并报错，不会装上一个坏包；
+- 校验通过后启动 NSIS 安装包（`/S` 静默安装），会弹一次 UAC，装完自动替换。
+
+**「已是最新版本」不是没连上**，而是源里的版本号不高于当前客户端版本。
+
+### 两个更新源
+
+客户端按下面的顺序找新版本，两种模式都能收到更新：
+
+| 场景 | 更新源 | 说明 |
+|---|---|---|
+| 配了自建服务器（账号 / 连接码模式） | `GET {服务器}/api/v1/version` | 数据来自 `server.toml` 的 `[update]` 段，安装包由你自己托管 |
+| 没配服务器（局域网模式） | GitHub Releases `kaynai1/screenwall` 的 latest | 取第一个 `*-setup.exe`，用附件自带的 `sha256:` digest 校验 |
+
+自建服务器连不上时也会自动退到 GitHub，所以哪怕服务器挂了，用户仍然能知道有没有新版。
+
+### 手动更新
+
+不想用客户端里的按钮，就自己下载安装包覆盖安装：
+
+- GitHub：<https://github.com/kaynai1/screenwall/releases>
+- 自建服务器：`http://<你的服务器>/downloads/ScreenWall_<版本>_x64-setup.exe`
+
+安装包是 perMachine 安装，**直接双击新版本覆盖安装即可**，配置（`%APPDATA%\ScreenWall\client.json`）和已配对的直连设备都会保留。
+
+---
+
+## 二、你自己在哪里发新版
+
+### 路线 A：发到 GitHub（局域网模式用户走这条）
+
+前提：本机装了 GitHub CLI 并登录（`gh auth login`）。
+
+```powershell
+# 1. 升版本号（三处必须一致）
+#    根 Cargo.toml 的 workspace.package.version
+#    ui/package.json
+#    crates/client/tauri.conf.json
+
+# 2. 打包
+scripts\tauri-build.bat build --bundles nsis
+
+# 3. 建 Release 并上传安装包
+gh release create v0.2.3 `
+  target\release\bundle\nsis\ScreenWall_0.2.3_x64-setup.exe `
+  --title "ScreenWall 0.2.3" `
+  --notes "本次更新说明"
+```
+
+`gh` 会自动算附件的 digest，客户端检查更新时就是靠这个值校验安装包，所以**不要手动改附件**。
+
+### 路线 B：发到自建服务器（账号 / 连接码模式用户走这条）
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.3
+```
+
+这个脚本会：
+
+1. 把安装包复制到 `dist\update\`；
+2. 算出 SHA256；
+3. 改写 `server.toml` 的 `[update]` 段（`dir` / `version` / `file` / `notes`）。
+
+然后**重启服务器**（或让它重读配置），客户端点「检查更新」就能看到新版本。
+
+### 两条都发
+
+最稳妥的做法是两条都走：GitHub 给局域网模式的用户，自建服务器给你自己那几台走账号的机器。两者互不影响，客户端会按当前模式自动选。
+
+---
+
+## 三、版本号要改哪三处
+
+```text
+Cargo.toml                        →  [workspace.package] version = "0.2.3"
+ui/package.json                   →  "version": "0.2.3"
+crates/client/tauri.conf.json     →  "version": "0.2.3"
+```
+
+漏改 `tauri.conf.json` 会导致安装包文件名和内部版本对不上；漏改 `Cargo.toml` 会让客户端报的版本号还是旧的（`CURRENT_VERSION` 取自 `CARGO_PKG_VERSION`）。
+
+---
+
+## 四、注意事项
+
+- **没有商业代码签名证书**。安装包首次运行仍会弹 SmartScreen 警告，这是正常的，要消除必须买 OV/EV 证书。详见 [签名文档](signing.md)。
+- **校验值不能省**。客户端拿到没有 `sha256` 的更新信息会直接报错拒绝安装，宁可不让用户更新，也不装一个无法校验的包。
+- **GitHub API 有速率限制**。未认证请求每小时 60 次，个人使用完全够；如果出现 `HTTP 403`，等一会儿再试。
+- **`dist/` 不进仓库**（`.gitignore` 已忽略），安装包只存在于本机或 Release 上。

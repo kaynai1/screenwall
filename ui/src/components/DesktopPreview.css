@@ -59,6 +59,16 @@
   white-space: nowrap;
 }
 
+.desktop-preview.is-self {
+  border-color: var(--line-soft);
+  background: var(--fill-2);
+}
+
+.desktop-preview.is-self .dp-surface,
+.desktop-preview.is-self .dp-hint {
+  color: var(--text-3);
+}
+
 .desktop-preview.is-offline .dp-surface {
   color: var(--faint);
 }

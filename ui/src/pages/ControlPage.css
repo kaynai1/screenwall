@@ -283,9 +283,9 @@
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--r);
-  background: var(--surface-2);
+  background: var(--fill-2);
 }
 
 .ctrl-quality-auto-hint {
@@ -363,9 +363,9 @@
   width: 100%;
   height: 36px;
   padding: 4px;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--r-sm);
-  background: transparent;
+  background: var(--fill-2);
   color: var(--text-2);
   text-align: center;
   transition:
@@ -661,9 +661,12 @@
   gap: 2px;
   margin: 0 auto 14px;
   padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--chrome-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: var(--shadow);
 }
 
 .ctrl-dock-btn {
@@ -864,9 +867,9 @@
   gap: 6px;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--r-sm);
-  background: transparent;
+  background: var(--fill-2);
   color: var(--text-2);
   font-size: 14px;
   text-align: left;

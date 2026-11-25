@@ -16,10 +16,11 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  padding: 14px 16px;
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--panel-shadow);
 }
 
 .audit-stat-label {
@@ -91,9 +92,10 @@
 
 .audit-table {
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--panel-shadow);
 }
 
 .audit-head,
@@ -112,16 +114,31 @@
   font-size: 14px;
 }
 
+/* iOS 分组列表：分隔线从内容起点开始，不顶到卡片两边。 */
 .audit-row {
-  min-height: 48px;
-  border-top: 1px solid var(--line);
+  position: relative;
+  min-height: 52px;
   padding-top: 6px;
   padding-bottom: 6px;
   transition: background-color var(--dur) var(--ease);
 }
 
+.audit-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 16px;
+  height: 1px;
+  background: var(--line);
+}
+
 .audit-row:hover {
-  background: var(--surface-2);
+  background: var(--hover);
+}
+
+.audit-row:active {
+  background: var(--active);
 }
 
 .audit-row.is-live {

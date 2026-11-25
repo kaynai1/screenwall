@@ -675,6 +675,11 @@ pub async fn connect(
         let fingerprint = seen_fingerprint.lock().unwrap().clone().unwrap_or_default();
         remember_peer(shared, &address, &token, &fingerprint, &welcome.agent.name).await;
         tracing::info!(address = %address, "直连配对成功，凭据可用于后续自动重连");
+        // 本机模式没有服务器推设备列表：刚配对的这台要自己补进去，
+        // 否则连上了却在屏幕墙/设备页里找不到。
+        if shared.config.read().await.local_mode {
+            crate::refresh_local_devices(app, shared).await;
+        }
     }
 
     // 会话建立：登记直连通道与控制会话，然后转入读循环。

@@ -12,6 +12,7 @@ export default function DesktopPreview({
   showName = true,
   frame,
   hint,
+  self = false,
 }: {
   device: DeviceView;
   large?: boolean;
@@ -21,9 +22,11 @@ export default function DesktopPreview({
   frame?: string;
   /** 自定义占位文案，例如预览连接失败的原因。 */
   hint?: string;
+  /** 本机：永远不推流，用浅色说明面代替深色视频底。 */
+  self?: boolean;
 }) {
   const offline = !device.online;
-  const hasFrame = !offline && Boolean(frame);
+  const hasFrame = !offline && !self && Boolean(frame);
 
   return (
     <div
@@ -32,6 +35,7 @@ export default function DesktopPreview({
         large ? "is-large" : "",
         offline ? "is-offline" : "",
         hasFrame ? "has-frame" : "",
+        self ? "is-self" : "",
       ]
         .filter(Boolean)
         .join(" ")}

@@ -82,13 +82,21 @@ fn fail(app: &AppHandle, shared: &Shared, device: &str, message: &str) {
 }
 
 /// 前端告知当前需要预览哪些设备；多退少补。
+///
+/// 本机自己的 ID 一律剔除：屏幕墙是「看别人」的地方，把自己的桌面推给自己
+/// 既没有意义，也意味着本机被控端要白白开一路采集。前端已经过滤过一遍，
+/// 这里再挡一道，避免以后换调用方时又漏掉。
 pub async fn set_preview(app: &AppHandle, shared: &Arc<Shared>, device_ids: Vec<String>) {
+    let self_id = shared.config.read().await.device_id.clone();
     let mut close = Vec::new();
     {
         let mut hub = shared.wall.lock().unwrap();
         let mut desired: Vec<String> = Vec::new();
         for id in device_ids {
-            if !id.is_empty() && !desired.contains(&id) {
+            if id.is_empty() || (!self_id.is_empty() && id == self_id) {
+                continue;
+            }
+            if !desired.contains(&id) {
                 desired.push(id);
             }
         }

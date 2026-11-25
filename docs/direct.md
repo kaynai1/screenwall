@@ -482,5 +482,19 @@ async fn control_out(shared: &Shared, session: u32) -> Option<mpsc::UnboundedSen
 `set_stream_options` / `set_audio_enabled` 等控制路径）。`wall.rs` 与 `group.rs` 保持用
 `view_tx` 不动 —— 屏幕墙和群控是账号功能，直连没有对应语义。
 
+## 本机模式（不用服务器）
+
+登录页的「进入局域网模式」把客户端切成纯直连形态，配置里是 `local_mode: true`：
+
+- 不连 `/ws/view`、`/ws/device`，`spawn_tasks` 只拉起直连监听和画质自适应；
+- 自动打开直连监听并生成配对码，用户不必再进设置点开关；
+- 设备列表来自 `known_peers`（配对过的直连设备），屏幕墙显示的就是这些机器；
+- 屏幕墙不列本机，也不给本机开缩略图会话 —— 本机是操作台，不是被看的对象。
+  这条在两种模式下都成立：`WallPage` 过滤掉 `account.deviceId`，
+  `wall::set_preview` 在 Rust 侧再剔除一次，防止换调用方时漏掉。
+
+退出本机模式（侧栏登出按钮）会回到登录页，已配对的直连设备保留。
+
+
 `handle_view_binary` / `handle_view_text` 不改：直连的 WebSocket 读循环直接调用它们，
 按 `header.session` 分流本来就能工作。

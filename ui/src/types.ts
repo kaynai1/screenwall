@@ -25,6 +25,8 @@ export type AccountView = {
   error: string | null;
   /** 连接码临时会话：不是账号登录，隐藏账号相关入口。 */
   quick?: boolean;
+  /** 本机模式：不连服务器，只用局域网直连。 */
+  local?: boolean;
 };
 
 /** 局域网直连状态（对应客户端的 get_direct_state 等命令）。 */

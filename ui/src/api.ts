@@ -203,6 +203,20 @@ function demoLoggedIn(): boolean {
 export async function getAccount(): Promise<AccountView> {
   if (isTauri) return invoke<AccountView>("get_account");
   await delay(120);
+  // 演示模式用 localStorage 记住「本机模式」，刷新后不回登录页。
+  const local =
+    typeof localStorage !== "undefined" &&
+    localStorage.getItem(DEMO_KEY) === "local";
+  if (local) {
+    return {
+      ...mockAccount,
+      serverUrl: "",
+      username: "局域网模式",
+      loggedIn: true,
+      quick: false,
+      local: true,
+    };
+  }
   return { ...mockAccount, loggedIn: demoLoggedIn(), quick: demoQuick };
 }
 
@@ -238,6 +252,31 @@ export async function login(input: {
     username: input.username || mockAccount.username,
     loggedIn: true,
     quick: false,
+  };
+}
+
+// ---------------------------------------------------------------- 本机模式（无服务器）
+
+/**
+ * 不连服务器，只用局域网直连。
+ *
+ * 这是「点对点」的默认形态：两台机器在同一网段，一台显示配对码，
+ * 另一台输地址和码就能连，全程没有账号、没有云端中转。
+ */
+export async function enterLocalMode(): Promise<AccountView> {
+  if (isTauri) return invoke<AccountView>("enter_local_mode");
+  await delay(400);
+  demoQuick = false;
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(DEMO_KEY, "local");
+  }
+  return {
+    ...mockAccount,
+    serverUrl: "",
+    username: "本机模式",
+    loggedIn: true,
+    quick: false,
+    local: true,
   };
 }
 

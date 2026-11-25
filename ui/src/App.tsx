@@ -9,6 +9,7 @@ import {
   logout as apiLogout,
   quickConnect as apiQuickConnect,
   connectByLink as apiConnectByLink,
+  enterLocalMode as apiEnterLocalMode,
   subscribeAccount,
   subscribeConnectLink,
   subscribeControlRequest,
@@ -213,6 +214,26 @@ export default function App() {
     }
   }
 
+  /** 进入局域网模式：不连服务器，只走直连。 */
+  async function handleLocalMode() {
+    if (busy) return;
+    setBusy(true);
+    setLoginError(null);
+    try {
+      const next = await apiEnterLocalMode();
+      setAccount(next);
+      const list = await listDevices().catch(() => [] as DeviceView[]);
+      setDevices(list);
+      setPage("wall");
+      notify("已进入局域网模式，不需要服务器", "success");
+    } catch (error) {
+      const { title, detail } = describeError(error);
+      setLoginError(`${title}：${detail}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleQuickConnect(input: {
     serverUrl: string;
     code: string;
@@ -395,6 +416,7 @@ export default function App() {
         error={loginError ?? bootError ?? account?.error ?? null}
         onLogin={handleLogin}
         onQuickConnect={handleQuickConnect}
+        onLocalMode={handleLocalMode}
       />
     );
   }

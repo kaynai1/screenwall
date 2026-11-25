@@ -1,4 +1,4 @@
-import { LogOut, Monitor } from "lucide-react";
+import { LogOut, Monitor, Wifi } from "lucide-react";
 import { NAV_SECTIONS } from "../nav";
 import type { AccountView, DeviceView, PageKey } from "../types";
 
@@ -19,7 +19,9 @@ export default function Sidebar({
 }) {
   const onlineCount = devices.filter((device) => device.online).length;
   const local = devices.find((device) => device.id === account.deviceId);
-  const serverHost = account.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const serverHost = account.local
+    ? "局域网直连 · 无服务器"
+    : account.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
   // 连接码会话只有一台设备，只保留设置入口。
   const sections = account.quick
     ? NAV_SECTIONS.map((section) => ({
@@ -84,19 +86,29 @@ export default function Sidebar({
             <strong>{local?.name ?? (account.quick ? "远程设备" : "这台电脑")}</strong>
             <small>
               <i className={account.connected ? "is-ok" : ""} />
-              {account.connected
-                ? account.quick
-                  ? "连接码会话"
-                  : "本机被控在线"
-                : "正在连接服务器"}
+              {account.local
+                ? account.connected
+                  ? "局域网直连已开启"
+                  : "正在开启直连"
+                : account.connected
+                  ? account.quick
+                    ? "连接码会话"
+                    : "本机被控在线"
+                  : "正在连接服务器"}
             </small>
           </div>
         </div>
 
         <div className="account-mini">
-          <div className="avatar">{account.username.slice(0, 1).toUpperCase()}</div>
+          <div className="avatar">
+            {account.local ? (
+              <Wifi size={14} strokeWidth={1.75} />
+            ) : (
+              account.username.slice(0, 1).toUpperCase()
+            )}
+          </div>
           <div className="account-mini-copy">
-            <strong>{account.username}</strong>
+            <strong>{account.local ? "局域网模式" : account.username}</strong>
             <small title={serverHost}>{serverHost || "未配置服务器"}</small>
           </div>
           <button

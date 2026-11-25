@@ -3,7 +3,9 @@
 //! 这里不依赖 `crate::Shared`，只接收 `reqwest::Client`、服务器地址与令牌，
 //! 进度通过回调上报，便于在 `main.rs` 里用 `#[tauri::command]` 包装并 emit 事件。
 //!
-//! - 检查更新走 `GET /api/v1/version`（服务器不要求登录）。
+//! - 检查更新优先走 `GET /api/v1/version`（服务器不要求登录）。
+//! - 没有自建服务器时（局域网模式）回退到 GitHub Releases 的 latest 接口，
+//!   这样「不用服务器」的用户也能收到新版本。
 //! - 下载到 `%TEMP%\ScreenWall\updates\<文件名>`，边下边算 SHA256，校验失败即删除。
 //! - 安装只负责启动安装包；是否退出主程序由调用方决定。
 
@@ -16,6 +18,9 @@ use tokio::io::AsyncWriteExt;
 
 /// 当前编译版本，与 `Cargo.toml` 保持一致。
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 开源仓库的 Releases 接口；局域网模式（没有自建服务器）用它检查更新。
+const GITHUB_RELEASES: &str = "https://api.github.com/repos/kaynai1/screenwall/releases/latest";
 
 /// 发现的新版本。字段用 camelCase 直接返回给前端。
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +146,109 @@ pub async fn check_update(
         sha256,
         published_at,
     }))
+}
+
+/// 从 GitHub Releases 检查新版本；`Ok(None)` 表示已是最新。
+///
+/// 局域网模式没有自建服务器，但用户同样需要更新。GitHub 的 latest 接口
+/// 返回 tag_name、正文和附件列表；我们取第一个 `*-setup.exe` 作为安装包，
+/// 校验值用附件自带的 `digest`（GitHub 现在会返回 `sha256:<hex>`）。
+///
+/// 网络不可达时返回 Err，由界面显示原因 —— 不静默当成「已是最新」。
+pub async fn check_update_github(
+    client: &reqwest::Client,
+) -> Result<Option<UpdateInfo>, String> {
+    let response = client
+        .get(GITHUB_RELEASES)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|error| format!("检查更新失败: {error}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // 仓库还没有发布任何 Release：按「已是最新」处理，不当作错误。
+        return Ok(None);
+    }
+    let body: Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| Value::Object(Default::default()));
+    if !status.is_success() {
+        let message = body
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("GitHub 未返回可用的更新信息");
+        return Err(format!("{message}（HTTP {status}）"));
+    }
+
+    let version = body
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "GitHub 返回的版本号无效".to_string())?
+        .to_string();
+    if !version_gt(&version, CURRENT_VERSION) {
+        return Ok(None);
+    }
+
+    let assets = body
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let installer = assets
+        .iter()
+        .find(|asset| {
+            asset
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with("-setup.exe"))
+        })
+        .ok_or_else(|| format!("{version} 的 Release 里没有 setup.exe 安装包"))?;
+
+    let url = installer
+        .get("browser_download_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "安装包下载地址无效".to_string())?
+        .to_string();
+    // digest 形如 `sha256:abcd…`；没有就拒绝，宁可不更新也不能不校验。
+    let sha256 = installer
+        .get("digest")
+        .and_then(Value::as_str)
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .ok_or_else(|| "Release 附件缺少 SHA256 校验值，已取消更新".to_string())?;
+
+    let notes = body
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let published_at = body
+        .get("published_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_ms)
+        .unwrap_or(0);
+
+    Ok(Some(UpdateInfo {
+        current: CURRENT_VERSION.to_string(),
+        version,
+        notes,
+        url,
+        sha256,
+        published_at,
+    }))
+}
+
+/// `2026-11-25T07:58:38Z` → Unix 毫秒。
+///
+/// 只为「发布于 …」这一行显示服务，手写解析比多引一个日期库划算；
+/// 解析不了就返回 None，界面按「发布时间未知」处理。
+fn parse_rfc3339_ms(raw: &str) -> Option<i64> {
+    let date = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    Some(date.timestamp_millis())
 }
 
 /// 相对下载地址拼成绝对地址；已是 `http(s)://` 的原样返回。
