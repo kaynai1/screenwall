@@ -563,8 +563,9 @@ Linux 上编译运行。
 #### 0. 一键部署（Ubuntu / 无域名 / 直绑公网，最快路径）
 
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
-`scripts/deploy-server.sh`：一条命令跑起来后**按提示逐项填写**（账号、密码、
-端口等），填完自动完成装依赖、装 Rust、编译、写配置、建账号、装 systemd，
+`scripts/deploy-server.sh`：跑起来是一个菜单，输入编号选择操作。选「1. 安装」
+后只问账号和密码，其余（安装目录 `/opt/screenwall`、端口 `8787`、源码地址）
+都用固定默认值，自动完成装依赖、装 Rust、编译、写配置、建账号、装 systemd，
 最后提示放行端口并做健康检查。
 
 ```bash
@@ -572,17 +573,16 @@ git clone --depth 1 https://github.com/kaynai1/screenwall.git /tmp/sw \
   && bash /tmp/sw/scripts/deploy-server.sh
 ```
 
-国内服务器 GitHub 不通时，换镜像地址（脚本里也会让你填）：
+国内服务器 GitHub 不通时，换镜像地址（脚本 clone 失败也会自动切镜像）：
 
 ```bash
 git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/sw \
   && bash /tmp/sw/scripts/deploy-server.sh
 ```
 
-脚本会依次询问：账号名、密码（输入不显示）、监听端口（默认 `8787`）、
-安装目录（默认 `/opt/screenwall`）、源码临时目录、源码仓库地址、是否允许
-自助注册（自用选否）、确认开始。跑完会打印客户端连接地址，记得去云控制台
-**安全组**放行 TCP 端口。Rust 与 crates 走 `rsproxy.cn` 镜像，国内机器编译快。
+菜单包含：安装、更新到最新版、查看状态、查看日志、重启服务、备份数据、卸载、退出。
+安装跑完会打印客户端连接地址，记得去云控制台 **安全组** 放行 TCP 端口 `8787`。
+Rust 与 crates 走 `rsproxy.cn` 镜像，国内机器编译快。
 
 > 该脚本与下方分步流程同源，首次在真实机器上部署时若遇编译或环境问题，
 > 请把报错反馈回来。需要域名 + HTTPS / WSS 的完整分步（含 Caddy）见下文。
