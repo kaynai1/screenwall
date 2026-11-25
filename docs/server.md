@@ -572,6 +572,9 @@ git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/
   && bash /tmp/sw/scripts/deploy-server.sh --yes --account kay --password '至少8位密码'
 ```
 
+（镜像有缓存，若提示「未知参数 --yes」说明拿到的是旧版脚本：去掉镜像，改用下面的
+jsDelivr 或 GitHub 直连地址。）
+
 能访问 jsDelivr 的机器可以完全不落地文件：
 
 ```bash
