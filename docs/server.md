@@ -560,6 +560,33 @@ Linux 上编译运行。
 `screenwall-client` 依赖 `tauri`，这两个在 Linux 上编不过。`-p screenwall-server`
 只会拉进 `screenwall-proto`（纯 serde），依赖闭包是干净的。
 
+#### 0. 一键部署（Ubuntu / 无域名 / 直绑公网，最快路径）
+
+如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
+`scripts/deploy-server.sh`：一条命令跑起来后**按提示逐项填写**（账号、密码、
+端口等），填完自动完成装依赖、装 Rust、编译、写配置、建账号、装 systemd，
+最后提示放行端口并做健康检查。
+
+```bash
+git clone --depth 1 https://github.com/kaynai1/screenwall.git /tmp/sw \
+  && bash /tmp/sw/scripts/deploy-server.sh
+```
+
+国内服务器 GitHub 不通时，换镜像地址（脚本里也会让你填）：
+
+```bash
+git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/sw \
+  && bash /tmp/sw/scripts/deploy-server.sh
+```
+
+脚本会依次询问：账号名、密码（输入不显示）、监听端口（默认 `8787`）、
+安装目录（默认 `/opt/screenwall`）、源码临时目录、源码仓库地址、是否允许
+自助注册（自用选否）、确认开始。跑完会打印客户端连接地址，记得去云控制台
+**安全组**放行 TCP 端口。Rust 与 crates 走 `rsproxy.cn` 镜像，国内机器编译快。
+
+> 该脚本与下方分步流程同源，首次在真实机器上部署时若遇编译或环境问题，
+> 请把报错反馈回来。需要域名 + HTTPS / WSS 的完整分步（含 Caddy）见下文。
+
 #### 1. 装工具链（Arch 为例）
 
 ```bash
