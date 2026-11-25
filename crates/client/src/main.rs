@@ -108,6 +108,13 @@ struct ClientConfig {
     /// 服务器分配的 9 位连接码（缓存，离线时也能显示）。
     #[serde(default)]
     connect_code: String,
+    /// 本机识别码（9 位数字），首次启动生成后固定不变。
+    ///
+    /// 与 `connect_code` 的区别：那个是服务器分配的，只有登录后才有；
+    /// 这个是本机自己算的，**纯局域网、不登录也能用** —— 局域网里
+    /// 对方输这 9 位数字，本机通过 UDP 广播应答把地址告诉他。
+    #[serde(default)]
+    local_id: String,
     /// 本机模式：完全不用服务器，只走局域网直连。
     ///
     /// 打开后界面正常进入，但不会去连 `/ws/view`、`/ws/device`，
@@ -115,6 +122,18 @@ struct ClientConfig {
     /// 两台机器在同一网段时，不需要账号、不需要服务器。
     #[serde(default)]
     local_mode: bool,
+    /// 允许跨网段直连：TCP 连不上时，用 STUN 探出公网映射并尝试 UDP 打洞。
+    ///
+    /// 打洞成功后画面直接在两台机器之间走，不经过任何服务器。打不通
+    /// （双方都是对称型 NAT）时自动放弃，不影响原来的 TCP 直连和中转。
+    #[serde(default = "default_true")]
+    punch_through: bool,
+    /// UDP 打洞用的本机端口；0 表示由系统分配。
+    ///
+    /// 固定端口的好处是路由器上的端口映射重启后仍然有效；不固定也能打通，
+    /// 只是每次重启映射都会变。
+    #[serde(default)]
+    punch_port: u16,
 }
 
 fn default_direct_port() -> u16 {
@@ -150,7 +169,10 @@ impl Default for ClientConfig {
             connect_enabled: false,
             connect_password: String::new(),
             connect_code: String::new(),
+            local_id: String::new(),
             local_mode: false,
+            punch_through: true,
+            punch_port: 0,
         }
     }
 }
@@ -3354,7 +3376,11 @@ fn spawn_tasks(app: AppHandle, shared: Arc<Shared>) {
     //
     // view/host 两条循环在没有 token 时会立刻 return（见各自开头），
     // 但显式分开更清楚：本机模式下连「尝试连服务器」这个动作都不该有。
-    if shared.config.try_read().is_ok_and(|config| config.local_mode) {
+    if shared
+        .config
+        .try_read()
+        .is_ok_and(|config| config.local_mode)
+    {
         let direct_shared = shared.clone();
         let direct_app = app.clone();
         let direct_task = tauri::async_runtime::spawn(async move {
@@ -4667,11 +4693,16 @@ fn main() {
         config.token.clear();
         changed = true;
     }
+    // 识别码跟着安装走：首次启动生成，之后固定不变，别人记住一次就能一直用。
+    if config.local_id.trim().is_empty() {
+        config.local_id = direct::generate_local_id();
+        changed = true;
+    }
     if changed {
         let _ = config.save();
     }
-    let start_now = config.local_mode
-        || (!config.token.is_empty() && !config.server_url.is_empty());
+    let start_now =
+        config.local_mode || (!config.token.is_empty() && !config.server_url.is_empty());
 
     // 通过 screenwall:// 协议启动时，命令行里带着链接。
     let startup_link = args
@@ -4852,6 +4883,7 @@ fn main() {
             direct::forget_direct_peers,
             direct::connect_direct,
             direct::scan_direct_devices,
+            direct::resolve_direct_id,
             set_ca_path,
             firewall::get_direct_firewall_state,
             firewall::allow_direct_firewall,

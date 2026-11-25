@@ -10,6 +10,8 @@ import {
   quickConnect as apiQuickConnect,
   connectByLink as apiConnectByLink,
   enterLocalMode as apiEnterLocalMode,
+  getDirectState,
+  setDirectEnabled,
   subscribeAccount,
   subscribeConnectLink,
   subscribeControlRequest,
@@ -33,6 +35,7 @@ import LoginPage from "./pages/LoginPage";
 import ServerPage from "./pages/ServerPage";
 import SettingsPage from "./pages/SettingsPage";
 import WallPage from "./pages/WallPage";
+import RemotePage from "./pages/RemotePage";
 import { isDirectDeviceId, stopActiveSession } from "./session";
 import type {
   AccountView,
@@ -65,6 +68,11 @@ export default function App() {
   const [requests, setRequests] = useState<ControlRequest[]>([]);
   /** 收到但还没确认的连接链接（登录状态下需要先问是否退出账号）。 */
   const [pendingLink, setPendingLink] = useState<ConnectLinkInput | null>(null);
+  /** 局域网直连开关状态（侧栏底部那个开关）。 */
+  const [directOn, setDirectOn] = useState(false);
+  const [directBusy, setDirectBusy] = useState(false);
+  /** 已经打开过的页面：切回来时复用，不再重新挂载、重新拉数据。 */
+  const [visited, setVisited] = useState<Set<PageKey>>(() => new Set(["wall"]));
   const toastSeq = useRef(0);
 
   const notify = useCallback((text: string, tone: ToastTone = "info") => {
@@ -110,6 +118,26 @@ export default function App() {
       offDevices();
     };
   }, []);
+
+  // 直连开关状态：只在局域网模式下有意义，但登录状态下也读一次，
+  // 这样侧栏底部能反映真实状态而不是猜。
+  useEffect(() => {
+    if (!account?.loggedIn) return;
+    let alive = true;
+    const load = () => {
+      void getDirectState()
+        .then((next) => {
+          if (alive) setDirectOn(next.enabled);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [account?.loggedIn, account?.local]);
 
   // 被控端授权：事件 + 启动时补拉，避免窗口挂载前的事件丢失。
   useEffect(() => {
@@ -385,11 +413,36 @@ export default function App() {
       void stopActiveSession();
     }
     setPage(next);
+    setVisited((current) => {
+      if (current.has(next)) return current;
+      const copy = new Set(current);
+      copy.add(next);
+      return copy;
+    });
   }
 
   function selectForGroup(ids: string[]) {
     setSelectedIds(ids);
     setPage("group");
+  }
+
+  /** 侧栏底部的直连开关。 */
+  async function toggleDirect() {
+    if (!account?.local) {
+      notify("直连开关只在局域网模式下可用", "info");
+      return;
+    }
+    setDirectBusy(true);
+    try {
+      const next = await setDirectEnabled(!directOn);
+      setDirectOn(next.enabled);
+      notify(next.enabled ? "已开启局域网直连" : "已关闭局域网直连", "success");
+    } catch (error) {
+      const { title, detail } = describeError(error);
+      notify(`${title}：${detail}`, "error");
+    } finally {
+      setDirectBusy(false);
+    }
   }
 
   if (!booted) {
@@ -442,8 +495,10 @@ export default function App() {
       ? activeId
       : null;
 
-  function renderPage() {
-    switch (currentPage) {
+  function renderPage(target: PageKey = currentPage) {
+    switch (target) {
+      case "remote":
+        return <RemotePage {...common} onOpenDevice={openDevice} />;
       case "wall":
         return (
           <WallPage
@@ -523,6 +578,9 @@ export default function App() {
         devices={devices}
         selectedCount={selectedIds.length}
         onLogout={handleLogout}
+        directOn={directOn}
+        directBusy={directBusy}
+        onToggleDirect={() => void toggleDirect()}
       />
 
       <div className="app-main">
@@ -536,9 +594,18 @@ export default function App() {
             currentPage === "control" || currentPage === "server" ? "is-flush" : ""
           }`}
         >
-          <div className="page-enter" key={`${currentPage}:${activeId ?? ""}`}>
-            {renderPage()}
-          </div>
+          {/* 访问过的页面保留在 DOM 里，切回来只切 display。
+              之前每次切页都换 key，整页卸载重挂、每个页面的 useEffect
+              又各自 invoke 后端，所以点一下要等好几秒才有反应。 */}
+          {Array.from(visited).map((key) => (
+            <div
+              className={`page-enter ${key === currentPage ? "" : "is-hidden"}`}
+              key={key}
+              aria-hidden={key === currentPage ? undefined : true}
+            >
+              {renderPage(key)}
+            </div>
+          ))}
         </div>
       </div>
 

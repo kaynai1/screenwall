@@ -1404,28 +1404,38 @@ const DEMO_DIRECT: DirectState = {
   listening: true,
   port: 47900,
   addresses: ["192.168.1.20"],
+  localId: "572955600",
   pairingCode: "428913",
   pairingExpiresIn: 512,
   activeSessions: 0,
   trustedPeers: 2,
 };
 
+/**
+ * 演示模式下开关的状态。
+ *
+ * 必须记在模块里：远程协助页每 5 秒轮询一次 `getDirectState`，如果这里
+ * 永远返回默认值，用户刚关掉的开关会在下一次轮询时自己跳回去。
+ */
+let demoDirect: DirectState = { ...DEMO_DIRECT };
+
 export async function getDirectState(): Promise<DirectState> {
   if (isTauri) return invoke<DirectState>("get_direct_state");
   await delay(120);
-  return DEMO_DIRECT;
+  return demoDirect;
 }
 
 export async function setDirectEnabled(enabled: boolean): Promise<DirectState> {
   if (isTauri) return invoke<DirectState>("set_direct_enabled", { enabled });
   await delay(160);
-  return {
-    ...DEMO_DIRECT,
+  demoDirect = {
+    ...demoDirect,
     enabled,
     listening: enabled,
     pairingCode: enabled ? DEMO_DIRECT.pairingCode : null,
     pairingExpiresIn: enabled ? DEMO_DIRECT.pairingExpiresIn : 0,
   };
+  return demoDirect;
 }
 
 export async function regeneratePairingCode(): Promise<DirectState> {
@@ -1433,14 +1443,16 @@ export async function regeneratePairingCode(): Promise<DirectState> {
   await delay(160);
   // 每次生成一个新码，演示「用过即换」的行为。
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  return { ...DEMO_DIRECT, pairingCode: code, pairingExpiresIn: 600 };
+  demoDirect = { ...demoDirect, pairingCode: code, pairingExpiresIn: 600 };
+  return demoDirect;
 }
 
 /** 清空「允许直连本机」的长期授权，所有配对过的设备都要重新输配对码。 */
 export async function forgetDirectPeers(): Promise<DirectState> {
   if (isTauri) return invoke<DirectState>("forget_direct_peers");
   await delay(160);
-  return { ...DEMO_DIRECT, trustedPeers: 0 };
+  demoDirect = { ...demoDirect, trustedPeers: 0 };
+  return demoDirect;
 }
 
 /** 演示模式：假装安装器已经加好规则。 */
@@ -1475,7 +1487,22 @@ export type DiscoveredDevice = {
   name: string;
   port: number;
   fingerprint: string;
+  /** 对方识别码（9 位数字）；老版本设备为空。 */
+  id?: string;
 };
+
+/**
+ * 按识别码在局域网里找设备。
+ *
+ * 只发一次 UDP 广播、等约 1.2 秒；找不到会抛错，不会退回到「随便连一台」。
+ */
+export async function resolveDirectId(id: string): Promise<DiscoveredDevice> {
+  if (!isTauri) {
+    await delay(700);
+    return { address: "192.168.1.31:47900", name: "DESKTOP-7Q2", port: 47900, fingerprint: "", id };
+  }
+  return invoke<DiscoveredDevice>("resolve_direct_id", { id });
+}
 
 /**
  * 扫描同网段开启了局域网直连的设备。

@@ -9,6 +9,9 @@ export default function Sidebar({
   devices,
   selectedCount,
   onLogout,
+  directOn,
+  directBusy,
+  onToggleDirect,
 }: {
   page: PageKey;
   onNavigate: (page: PageKey) => void;
@@ -16,6 +19,10 @@ export default function Sidebar({
   devices: DeviceView[];
   selectedCount: number;
   onLogout: () => void;
+  /** 局域网直连当前是否开启（只在本机模式下有意义）。 */
+  directOn: boolean;
+  directBusy: boolean;
+  onToggleDirect: () => void;
 }) {
   const onlineCount = devices.filter((device) => device.online).length;
   const local = devices.find((device) => device.id === account.deviceId);
@@ -32,7 +39,17 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand" data-tauri-drag-region>
+      <div
+        className="brand"
+        onMouseDown={(event) => {
+          // 侧栏顶部和顶栏一样可以拖动窗口。
+          if (event.button !== 0) return;
+          if (!("__TAURI_INTERNALS__" in window)) return;
+          void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+            getCurrentWindow().startDragging(),
+          ).catch(() => {});
+        }}
+      >
         <div className="brand-mark" aria-hidden="true">
           <span />
           <span />
@@ -78,18 +95,36 @@ export default function Sidebar({
       </nav>
 
       <div className="sidebar-foot">
-        <div className="local-device">
+        {/* 本机状态 + 直连开关。原来「开启直连」是顶栏上一个不可点的胶囊，
+            点了没反应；现在做成可点的开关，直接控制本机是否被直连。 */}
+        <button
+          type="button"
+          className="local-device"
+          onClick={() => onToggleDirect()}
+          disabled={directBusy || account.quick}
+          title={
+            account.local
+              ? directOn
+                ? "点击关闭局域网直连"
+                : "点击开启局域网直连"
+              : "直连只在局域网模式下可切换"
+          }
+        >
           <div className="local-device-icon">
             <Monitor size={15} strokeWidth={1.75} />
           </div>
           <div className="local-device-copy">
             <strong>{local?.name ?? (account.quick ? "远程设备" : "这台电脑")}</strong>
             <small>
-              <i className={account.connected ? "is-ok" : ""} />
+              <i
+                className={
+                  account.local ? (directOn ? "is-ok" : "") : account.connected ? "is-ok" : ""
+                }
+              />
               {account.local
-                ? account.connected
+                ? directOn
                   ? "局域网直连已开启"
-                  : "正在开启直连"
+                  : "局域网直连已关闭"
                 : account.connected
                   ? account.quick
                     ? "连接码会话"
@@ -97,7 +132,10 @@ export default function Sidebar({
                   : "正在连接服务器"}
             </small>
           </div>
-        </div>
+          {account.local && (
+            <span className={`local-switch ${directOn ? "is-on" : ""}`} aria-hidden="true" />
+          )}
+        </button>
 
         <div className="account-mini">
           <div className="avatar">

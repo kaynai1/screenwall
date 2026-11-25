@@ -39,6 +39,8 @@ export type DirectState = {
   port: number;
   /** 本机局域网 IPv4，界面直接显示给用户。 */
   addresses: string[];
+  /** 本机识别码（9 位数字）；不登录也有，同网段输入它就能找到本机。 */
+  localId: string;
   /** 6 位数字；未开启时 null。 */
   pairingCode: string | null;
   /** 配对码剩余秒数；未开启时 0。 */
@@ -62,6 +64,7 @@ export type DirectFirewallState = {
 };
 
 export type PageKey =
+  | "remote"
   | "wall"
   | "group"
   | "files"
@@ -116,6 +119,11 @@ export type FilesPageProps = PageProps & {
 };
 
 export type DevicesPageProps = PageProps & {
+  onOpenDevice: (id: string) => void;
+};
+
+export type RemotePageProps = PageProps & {
+  /** 连上之后直接进控制页，不用用户再去设备列表里找一遍。 */
   onOpenDevice: (id: string) => void;
 };
 

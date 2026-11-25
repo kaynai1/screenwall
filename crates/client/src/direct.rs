@@ -125,11 +125,32 @@ pub struct DirectState {
     pub listening: bool,
     pub port: u16,
     pub addresses: Vec<String>,
+    /// 本机识别码（9 位数字）。不登录也有，同网段输入它就能找到本机。
+    pub local_id: String,
     pub pairing_code: Option<String>,
     pub pairing_expires_in: u64,
     pub active_sessions: usize,
     /// 已授权可以直连本机的设备数（长期 token 条数）。
     pub trusted_peers: usize,
+}
+
+/// 生成 9 位本机识别码。
+///
+/// 和服务端连接码同样的形状（9 位、首位非 0），这样用户不用区分
+/// 「这是服务器的码还是本机的码」，同一个输入框都能填。
+///
+/// 用系统熵源而不是时间戳：识别码是长期不变的，可预测就等于把
+/// 「找得到哪台机器」也交了出去。取 4 字节后按 9 亿取模，偏差可以忽略。
+pub fn generate_local_id() -> String {
+    let mut bytes = [0u8; 4];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        let now = now_ms() as u32;
+        let pid = std::process::id();
+        bytes = (now ^ pid.wrapping_mul(2654435761)).to_le_bytes();
+    }
+    // 1..=9 亿，保证首位非 0，正好 9 位。
+    let value = u32::from_le_bytes(bytes) % 900_000_000 + 100_000_000;
+    value.to_string()
 }
 
 /// 生成 6 位配对码。
@@ -247,6 +268,7 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
                 continue;
             }
         };
+        let material = Arc::new(material);
 
         // 每次重建监听都重灌长期白名单。
         //
@@ -299,6 +321,32 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
             keep_pairing_fresh(refresh_app, refresh_shared).await;
         });
 
+        // 跨网段打洞监听：在同一次监听里顺带起一个 UDP 端点，
+        // 等主控端打洞包到达后接受它的 QUIC 连接。
+        //
+        // 跟着直连开关一起起停：关掉直连就不该再从公网被连进来。
+        let (punch_cancel, punch_cancel_rx) = tokio::sync::watch::channel(false);
+        let punch = if config.punch_through {
+            match spawn_punch_listener(
+                app.clone(),
+                shared.clone(),
+                config.punch_port,
+                material.clone(),
+                punch_cancel_rx,
+            )
+            .await
+            {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    // 打洞起不来不影响同网段直连，只是跨网段连不上。
+                    tracing::warn!("跨网段打洞监听未能启动: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // 自动发现应答器：同网段的主控端广播探测时回报本机地址与指纹。
         // 跟着这次监听一起起停 —— 关掉直连就不该再被别人扫到。
         let (discover_cancel, discover_cancel_rx) = tokio::sync::watch::channel(false);
@@ -308,7 +356,9 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
                 hostname(),
                 port,
                 material.fingerprint.clone(),
-            ),
+            )
+            // 公告里带上识别码：主控端只知道 9 位数字也能在同网段找到本机。
+            .with_id(config.local_id.clone()),
             discover_cancel_rx,
         )
         .await
@@ -331,6 +381,10 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
             }
         };
         refresh.abort();
+        let _ = punch_cancel.send(true);
+        if let Some(handle) = punch {
+            handle.abort();
+        }
         let _ = discover_cancel.send(true);
         if let Some(handle) = discover {
             handle.abort();
@@ -342,6 +396,96 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
         let _ = app.emit("direct-state", direct_state(&shared).await);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+/// 跨网段打洞监听：等主控端的打洞包，然后接受它的 QUIC 连接。
+///
+/// 为什么被控端要主动 `await_peer` 而不是「监听 TCP 端口」：
+/// NAT 会丢掉没见过的来源发来的包，所以跨网段时主控端根本连不到
+/// 被控端的 TCP 端口。UDP 打洞是唯一可行的方向 —— 双方各发一次，
+/// 两边的 NAT 就都开了口子。
+///
+/// 打洞成功后的 QUIC 连接上跑的是**同一套**直连协议（`serve_stream`），
+/// 所以授权、文件、音频、剪贴板全都自动可用。
+async fn spawn_punch_listener(
+    app: AppHandle,
+    shared: Arc<Shared>,
+    port: u16,
+    material: Arc<tls::CertMaterial>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Result<tauri::async_runtime::JoinHandle<()>, String> {
+    use screenwall_agent::nat;
+
+    let mut punch = nat::PunchSocket::bind(port)
+        .map_err(|error| format!("绑定打洞端口 {port} 失败: {error}"))?;
+    let local = punch.local_addr().map_err(|error| error.to_string())?;
+    // 探测失败不算致命：同网段的主控端仍能用内网地址打洞成功，
+    // 只是跨网段时因为不知道公网地址而失败。
+    match punch.discover() {
+        Ok(mapping) => tracing::info!(
+            public = %mapping.public,
+            local = %mapping.local,
+            "跨网段打洞已就绪（UDP {}）",
+            local.port()
+        ),
+        Err(error) => tracing::warn!("STUN 探测失败，跨网段打洞可能不可用: {error}"),
+    }
+
+    let socket = punch.into_socket();
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("切换非阻塞失败: {error}"))?;
+    let endpoint = screenwall_agent::quic::server_endpoint(socket, &material)
+        .map_err(|error| format!("QUIC 端点创建失败: {error}"))?;
+    drop(material);
+
+    let handle = tauri::async_runtime::spawn(async move {
+        loop {
+            let incoming = tokio::select! {
+                _ = cancel.changed() => break,
+                incoming = endpoint.accept() => match incoming {
+                    Some(incoming) => incoming,
+                    None => break,
+                },
+            };
+            let connection = match incoming.await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::debug!("QUIC 打洞连接失败: {error}");
+                    continue;
+                }
+            };
+            let peer_ip = connection.remote_address().ip();
+            // 和 TCP 直连同一条安全边界：只接受局域网或打洞成功的来源。
+            // 打洞成功的公网地址不受 `is_lan_peer` 限制 —— 那正是它的用途。
+            let stream = match screenwall_agent::quic::QuicStream::accept(&connection).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::debug!("接受 QUIC 流失败: {error}");
+                    continue;
+                }
+            };
+            let state = Arc::new(AgentState {
+                config: agent_config(&shared.config.read().await.clone()),
+                displays: screenwall_agent::display::list_displays(),
+                approval: Some(approval_fn(app.clone(), shared.clone())),
+            });
+            let auth = shared.direct.lock().unwrap().auth.clone();
+            let limiter = Arc::new(direct::AuthLimiter::new());
+            tokio::spawn(async move {
+                if let Err(error) =
+                    direct::serve_stream(stream, peer_ip, state, auth, limiter).await
+                {
+                    tracing::debug!("QUIC 直连会话结束: {error}");
+                }
+                // 连接对象要活到流结束。
+                connection.closed().await;
+            });
+        }
+        tracing::info!("跨网段打洞监听已停止");
+    });
+
+    Ok(handle)
 }
 
 /// 让「授权通过后提升的长期 token」落进配置，重启后仍能免配对码。
@@ -595,11 +739,132 @@ pub async fn connect(
     // 连接建立后再兜一层指纹核对：`PinnedCert` 只在有 pin 时比对，而且
     // 比对失败时 rustls 报的是笼统的握手错误。这里把实际指纹显式拿出来，
     // 指纹变了就给出明确原因，不会静默接受一台换了证书的机器。
-    let actual = seen_fingerprint.lock().unwrap().clone();
-    if !fingerprint_matches(known.as_ref(), actual.as_deref().unwrap_or_default()) {
+    let actual = seen_fingerprint.lock().unwrap().clone().unwrap_or_default();
+    if !fingerprint_matches(known.as_ref(), &actual) {
         return Err("对方的证书指纹与配对时不一致，已拒绝连接".into());
     }
 
+    finish_connect(app, shared, address, code, token, actual, ws, client_token).await
+}
+
+/// 走 QUIC 打洞连一条直连会话（跨网段）。
+///
+/// 流程：绑定 UDP 端口 → STUN 探公网映射 → 与对端互发打洞包 → QUIC 握手
+/// → 在 QUIC 流上跑与 TCP 完全相同的 WebSocket 协议。
+///
+/// 打洞失败返回 `Err`，调用方据此回退到「让用户走服务器中转」。
+pub async fn connect_punch(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    host: &str,
+    port: Option<u16>,
+    pairing_code: Option<&str>,
+    client_token: u64,
+) -> Result<crate::ControlInfo, String> {
+    use screenwall_agent::{nat, quic};
+    use std::net::ToSocketAddrs;
+
+    let config = shared.config.read().await.clone();
+    let port = port.unwrap_or(if config.direct_port == 0 {
+        DEFAULT_PORT
+    } else {
+        config.direct_port
+    });
+    let address = normalize_address(host, port);
+    let code = pairing_code.map(str::trim).filter(|code| !code.is_empty());
+    let known = known_peer(&config.known_peers, &address);
+    let token = pick_credential(code, known.as_ref())?;
+
+    // 对端地址必须能解析成 socket 地址：打洞比 TCP 更需要真实的 IP。
+    let peer: std::net::SocketAddr = address
+        .to_socket_addrs()
+        .map_err(|error| format!("地址无效 {address}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("解析不到 {address}"))?;
+
+    let mut punch = nat::PunchSocket::bind(config.punch_port)
+        .map_err(|error| format!("绑定 UDP 端口失败: {error}"))?;
+    let mapping = punch
+        .discover()
+        .map_err(|error| format!("STUN 探测失败（可能被防火墙拦了 UDP）: {error}"))?;
+    tracing::info!(
+        public = %mapping.public,
+        local = %mapping.local,
+        "打洞前的公网映射"
+    );
+
+    // 对端可能在内网、也可能在公网：两个地址都试。
+    let mut candidates = vec![peer];
+    if mapping.public != peer {
+        candidates.push(mapping.public);
+    }
+    let reached = punch
+        .punch(&candidates, Duration::from_secs(8))
+        .map_err(|error| format!("打洞失败: {error}"))?;
+
+    let socket = punch.into_socket();
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("切换非阻塞失败: {error}"))?;
+    let seen_fingerprint = Arc::new(std::sync::Mutex::new(None));
+    let client = quic::client_endpoint(
+        socket,
+        known.as_ref().map(|peer| peer.fingerprint.clone()),
+        seen_fingerprint.clone(),
+    )
+    .map_err(|error| format!("QUIC 配置失败: {error}"))?;
+    let connection = client
+        .connect(reached)
+        .await
+        .map_err(|error| format!("QUIC 握手失败: {error}"))?;
+    let stream = quic::QuicStream::open(&connection)
+        .await
+        .map_err(|error| format!("打开 QUIC 流失败: {error}"))?;
+
+    let actual = seen_fingerprint.lock().unwrap().clone().unwrap_or_default();
+    if !fingerprint_matches(known.as_ref(), &actual) {
+        return Err("对方的证书指纹与配对时不一致，已拒绝连接".into());
+    }
+
+    let url = format!("wss://{address}/ws");
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| format!("地址无效: {error}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| "令牌格式无效")?,
+    );
+    let (ws, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .map_err(|error| format!("QUIC 上的 WebSocket 握手失败: {error}"))?;
+
+    // 连接对象必须活到会话结束：drop 掉它流会立刻被重置。
+    std::mem::forget(connection);
+
+    tracing::info!(peer = %reached, "跨网段直连已建立（QUIC 打洞）");
+    finish_connect(app, shared, address, code, token, actual, ws, client_token).await
+}
+/// 传输建好之后的公共部分：握手、开会话、登记、转入读循环。
+///
+/// TCP + TLS 和 QUIC 打洞都走这里，保证两条路径的协议行为完全一致 ——
+/// 尤其是授权、配对升级、审计上报这些只有一份实现，不会因为换传输而漏掉。
+#[allow(clippy::too_many_arguments)]
+async fn finish_connect<S>(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    address: String,
+    code: Option<&str>,
+    token: String,
+    // 本次握手看到的对端证书指纹，配对成功后存进 `known_peers`。
+    fingerprint: String,
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    client_token: u64,
+) -> Result<crate::ControlInfo, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (mut sink, mut stream) = ws.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ViewOut>();
 
@@ -672,7 +937,6 @@ pub async fn connect(
     // 有效）。`remember_peer` 存下的正是同一个字符串，所以之后的重连
     // （不带配对码、只给地址）能直接过白名单，不需要用户再输一次码。
     if code.is_some() {
-        let fingerprint = seen_fingerprint.lock().unwrap().clone().unwrap_or_default();
         remember_peer(shared, &address, &token, &fingerprint, &welcome.agent.name).await;
         tracing::info!(address = %address, "直连配对成功，凭据可用于后续自动重连");
         // 本机模式没有服务器推设备列表：刚配对的这台要自己补进去，
@@ -1177,6 +1441,7 @@ pub async fn direct_state(shared: &Arc<Shared>) -> DirectState {
         listening,
         port: config.direct_port,
         addresses: local_addresses(),
+        local_id: config.local_id.clone(),
         pairing_code,
         pairing_expires_in,
         active_sessions,
@@ -1291,15 +1556,60 @@ pub async fn connect_direct(
     // 用户手动发起直连：任何在途的自动重连都作废，否则它稍后建好的会话
     // 会把用户刚连上的这条顶掉。
     crate::cancel_reconnect(shared, None);
-    connect(
+
+    // 输入的是 9 位识别码（不是 IP）时，先在同网段广播把它解析成地址。
+    //
+    // 解析不出来就到此为止，不要拿「9 位数字」当主机名去连 —— 那只会
+    // 变成一次 DNS 查询加超时，报错还很难懂。
+    let host = if let Some(id) = parse_local_id(&input.host) {
+        let found = resolve_local_id(&id).await?;
+        tracing::info!(%id, address = %found.address, "识别码已解析为直连地址");
+        found.address
+    } else {
+        input.host.clone()
+    };
+
+    // 先走同网段的 TCP 直连；连不上再试跨网段的 QUIC 打洞。
+    //
+    // 顺序不能反：同网段时 TCP 一定更快更稳，打洞要多花几秒探测 STUN。
+    // 反过来（先打洞）会让局域网连接也慢上好几秒。
+    let tcp = connect(
         &app,
         shared,
-        &input.host,
+        &host,
+        input.port,
+        input.pairing_code.as_deref(),
+        client_token,
+    )
+    .await;
+    let Err(tcp_error) = tcp else {
+        return tcp;
+    };
+
+    let punch_enabled = shared.config.read().await.punch_through;
+    if !punch_enabled {
+        return Err(tcp_error);
+    }
+    tracing::info!("TCP 直连失败（{tcp_error}），尝试跨网段打洞");
+    match connect_punch(
+        &app,
+        shared,
+        &host,
         input.port,
         input.pairing_code.as_deref(),
         client_token,
     )
     .await
+    {
+        Ok(info) => Ok(info),
+        Err(punch_error) => {
+            // 两条路都失败时把原因都带上：只说打洞失败会让用户以为
+            // 局域网地址填错了，实际可能是对方没开打洞或双方都是对称型 NAT。
+            Err(format!(
+                "局域网直连失败：{tcp_error}；跨网段打洞也失败：{punch_error}"
+            ))
+        }
+    }
 }
 
 /// 扫描同网段开启了局域网直连的设备（UDP 广播）。
@@ -1311,10 +1621,103 @@ pub async fn scan_direct_devices() -> Result<Vec<screenwall_agent::discovery::Di
     Ok(screenwall_agent::discovery::scan(Duration::from_millis(1200)).await)
 }
 
+/// 把输入里的识别码取出来：允许用户带空格或短横线（界面按 3-3-3 显示）。
+///
+/// 只认「9 位纯数字」，IP 地址和主机名一律返回 `None` —— 判断放在一处，
+/// 免得界面和后端对「什么算识别码」有不同理解。
+pub fn parse_local_id(input: &str) -> Option<String> {
+    let digits: String = input.chars().filter(char::is_ascii_digit).collect();
+    let others = input
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || ch == ' ' || ch == '-' || ch == '\t');
+    (digits.len() == 9 && others).then_some(digits)
+}
+
+/// 按识别码在局域网里找设备，返回它的直连地址。
+///
+/// 用户只记得 9 位数字时走这条路：广播一次探测，拿回所有应答，
+/// 挑识别码对得上的那台。找不到就报错 —— 不要退回「随便连一台」，
+/// 那会让用户连到别人的电脑上。
+async fn resolve_local_id(id: &str) -> Result<screenwall_agent::discovery::Discovered, String> {
+    let found = screenwall_agent::discovery::scan(Duration::from_millis(1200)).await;
+    pick_by_id(found, id)
+        .ok_or_else(|| format!("局域网里没找到识别码 {id} 的设备，确认对方已开启直连且在同一网段"))
+}
+
+/// 从扫描结果里挑识别码对得上的那台。
+///
+/// 单独拆出来是为了能测：真实扫描要发广播，测试环境里不可靠。
+fn pick_by_id(
+    found: Vec<screenwall_agent::discovery::Discovered>,
+    id: &str,
+) -> Option<screenwall_agent::discovery::Discovered> {
+    found.into_iter().find(|device| device.id == id)
+}
+
+/// 给界面用的版本：输入 9 位数字，返回对方地址。
+#[tauri::command]
+pub async fn resolve_direct_id(
+    id: String,
+) -> Result<screenwall_agent::discovery::Discovered, String> {
+    let wanted = parse_local_id(&id).ok_or("识别码是 9 位数字")?;
+    resolve_local_id(&wanted).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{ClientConfig, ControlSession};
+
+    #[test]
+    fn local_id_is_nine_digits_and_unpredictable() {
+        let first = generate_local_id();
+        let second = generate_local_id();
+        assert_eq!(first.len(), 9, "识别码必须是 9 位");
+        assert!(!first.starts_with('0'), "首位不能是 0");
+        assert!(first.chars().all(|ch| ch.is_ascii_digit()));
+        assert_ne!(first, second, "两次生成不该撞在一起");
+    }
+
+    fn discovered(address: &str, id: &str) -> screenwall_agent::discovery::Discovered {
+        screenwall_agent::discovery::Discovered {
+            address: address.into(),
+            name: format!("设备{id}"),
+            port: 47900,
+            fingerprint: "AA:BB".into(),
+            id: id.into(),
+        }
+    }
+
+    #[test]
+    fn pick_by_id_selects_exact_match_only() {
+        let found = vec![
+            discovered("192.168.1.10:47900", "111111111"),
+            discovered("192.168.1.20:47900", "222222222"),
+        ];
+        let hit = pick_by_id(found.clone(), "222222222").expect("应命中第二台");
+        assert_eq!(hit.address, "192.168.1.20:47900");
+
+        // 近似（前缀/后缀）不算命中：宁可报找不到，也不能连错机器。
+        assert!(pick_by_id(found.clone(), "22222222").is_none());
+        assert!(pick_by_id(found.clone(), "2222222222").is_none());
+        // 老版本设备 id 为空，不能用空串误匹配。
+        assert!(pick_by_id(found, "").is_none());
+    }
+
+    #[test]
+    fn parse_local_id_accepts_spacing_and_rejects_addresses() {
+        assert_eq!(parse_local_id("123456789").as_deref(), Some("123456789"));
+        assert_eq!(parse_local_id("123 456 789").as_deref(), Some("123456789"));
+        assert_eq!(
+            parse_local_id(" 123-456-789 ").as_deref(),
+            Some("123456789")
+        );
+        // IP 与主机名不能当识别码，否则会被误解析成广播查询。
+        assert_eq!(parse_local_id("192.168.1.20"), None);
+        assert_eq!(parse_local_id("192.168.1.20:47900"), None);
+        assert_eq!(parse_local_id("12345678"), None);
+        assert_eq!(parse_local_id(""), None);
+    }
 
     fn session(reconnectable: bool) -> ControlSession {
         ControlSession {

@@ -52,9 +52,9 @@ import {
   uploadChunk,
   type ConnectCodeView,
   type ConnectLinkView,
-  type DirectState,
   type FileTransferEvent,
 } from "../api";
+import type { DirectState } from "../types";
 import { formatConnectCode } from "../connect";
 import { errorLine } from "../errors";
 import { formatBytes, formatLastSeen, statusLabel } from "../mock";

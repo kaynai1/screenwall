@@ -15,6 +15,9 @@ base64 = "0.22"
 futures-util = "0.3"
 getrandom = "0.2"
 hex = "0.4"
+# QUIC 传输：跨网段直连时把打洞出来的 UDP socket 变成加密流。
+# 已经在 Cargo.lock 里（reqwest 的 http3 带进来的），不新增下载。
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"

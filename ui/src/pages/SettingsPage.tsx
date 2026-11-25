@@ -4,9 +4,7 @@ import {
   ChevronDown,
   Copy,
   Download,
-  Hash,
   Info,
-  KeyRound,
   Loader2,
   LogOut,
   Palette,
@@ -25,7 +23,6 @@ import {
   getDirectState,
   getLocalSettings,
   regeneratePairingCode,
-  rotateConnectCode,
   setAllowControl,
   setAutostart,
   setCaPath,
@@ -46,7 +43,6 @@ import {
   type UpdateInfo,
 } from "../update";
 import DiagnosticsCard from "../components/DiagnosticsCard";
-import { formatConnectCode } from "../connect";
 import { errorLine } from "../errors";
 import { applyMotion, applyTheme, storedMotion, storedTheme, type Theme } from "../theme";
 import type {
@@ -176,7 +172,6 @@ export default function SettingsPage({
   const [connectPasswordDraft, setConnectPasswordDraft] = useState("");
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [connectCopied, setConnectCopied] = useState(false);
 
   // 局域网直连：开关即时生效，不参与下面的 dirty / saved 机制。
   const [direct, setDirect] = useState<DirectState | null>(null);
@@ -426,52 +421,6 @@ export default function SettingsPage({
       setConnectError(errorLine(error));
     } finally {
       setConnectBusy(false);
-    }
-  }
-
-  /** 单独保存密码，不动开关。 */
-  async function saveConnectPassword() {
-    const password = connectPasswordDraft.trim();
-    if (password.length < 6) {
-      setConnectError("连接密码至少 6 位");
-      return;
-    }
-    if (connectBusy) return;
-    setConnectBusy(true);
-    setConnectError(null);
-    try {
-      applyConnect(await setConnectCode(connect?.enabled ?? false, password));
-      notify("连接密码已更新", "success");
-    } catch (error) {
-      setConnectError(errorLine(error));
-    } finally {
-      setConnectBusy(false);
-    }
-  }
-
-  async function rotateCode() {
-    if (connectBusy) return;
-    setConnectBusy(true);
-    setConnectError(null);
-    try {
-      applyConnect(await rotateConnectCode());
-      notify("已换新的连接码，旧码立即失效", "success");
-    } catch (error) {
-      setConnectError(errorLine(error));
-    } finally {
-      setConnectBusy(false);
-    }
-  }
-
-  async function copyConnectCode() {
-    if (!connect?.code) return;
-    try {
-      await navigator.clipboard.writeText(connect.code);
-      setConnectCopied(true);
-      window.setTimeout(() => setConnectCopied(false), 1600);
-      notify("连接码已复制", "success");
-    } catch {
-      notify("复制失败，请手动选择连接码", "error");
     }
   }
 
@@ -921,6 +870,9 @@ export default function SettingsPage({
                 <h3 className="set-group-title" id="set-direct">
                   局域网直连
                 </h3>
+                <p className="set-group-hint">
+                  识别码、临时密码和连接开关都在「远程协助」页，这里只放排障相关的设置。
+                </p>
                 <div className="set-rows">
                   <Switch
                     label="开启局域网直连"
@@ -1209,97 +1161,17 @@ export default function SettingsPage({
                     连接码连接
                   </h3>
                   <div className="set-rows">
-                    <div className="set-field">
-                      <span className="set-field-label">本机连接码</span>
-                      <div className="set-server-row">
-                        <div className="field-control">
-                          <Hash size={15} strokeWidth={1.75} />
-                          <input
-                            value={connect ? formatConnectCode(connect.code) : ""}
-                            readOnly
-                            className="mono"
-                            placeholder={connect ? "" : "尚未从服务器取到连接码"}
-                            aria-label="本机连接码"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          onClick={() => void copyConnectCode()}
-                          title="复制连接码"
-                          aria-label="复制连接码"
-                          disabled={!connect?.code}
-                        >
-                          {connectCopied ? (
-                            <Check size={15} strokeWidth={1.75} />
-                          ) : (
-                            <Copy size={15} strokeWidth={1.75} />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          onClick={() => void rotateCode()}
-                          disabled={connectBusy || !connect}
-                        >
-                          <RefreshCw
-                            size={14}
-                            className={connectBusy ? "spin" : ""}
-                          />
-                          换一个
-                        </button>
-                      </div>
-                      <p className="set-field-hint">
-                        别人在登录页选「连接码连接」，输入这 9 位数字和下面的密码，
-                        不需要同一个账号，也不需要知道对方 IP。
-                      </p>
-                    </div>
-
-                    <div className="set-field">
-                      <span className="set-field-label">连接密码</span>
-                      <div className="set-server-row">
-                        <div className="field-control">
-                          <KeyRound size={15} strokeWidth={1.75} />
-                          <input
-                            type="text"
-                            value={connectPasswordDraft}
-                            onChange={(event) =>
-                              setConnectPasswordDraft(event.target.value)
-                            }
-                            placeholder={
-                              connect?.hasPassword
-                                ? "已设置（本机不显示时可直接改）"
-                                : "至少 6 位"
-                            }
-                            spellCheck={false}
-                            autoComplete="off"
-                            aria-label="连接密码"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          onClick={() => void saveConnectPassword()}
-                          disabled={connectBusy}
-                        >
-                          保存
-                        </button>
-                      </div>
-                      <p className="set-field-hint">
-                        明文只保存在本机配置里，服务器只存 Argon2 哈希。
-                      </p>
-                    </div>
-
                     <Switch
                       label="允许连接码连接"
-                      hint="开启后，知道连接码和密码的人可以直接连入本机，不再弹「允许控制」确认框；可随时关闭或换码"
+                      hint="开启后，知道识别码和密码的人可以直接连入本机，不再弹「允许控制」确认框"
                       checked={connect?.enabled ?? false}
                       disabled={connectBusy || !connect}
                       onChange={(next) => void toggleConnectCode(next)}
                     />
 
                     <p className="set-field-hint">
-                      连接码和「生成链接」按钮都在工作台顶部，日常使用不必进设置。
+                      识别码、临时密码和「生成一次性链接」都在「远程协助」页顶部，
+                      日常使用不必进设置。
                     </p>
 
                     {connectError && (

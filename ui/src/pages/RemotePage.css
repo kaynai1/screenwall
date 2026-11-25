@@ -1,0 +1,493 @@
+/* 远程协助：识别码 + 临时密码 + 连对方，一页搞定。 */
+
+.remote-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1120px;
+}
+
+.remote-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.remote-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.remote-head p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.remote-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .remote-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.remote-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface-1);
+  box-shadow: var(--panel-shadow);
+}
+
+.remote-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.remote-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.remote-card-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.remote-card-title strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.remote-card-title small {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- 开关 */
+
+.remote-switch {
+  position: relative;
+  flex: none;
+  width: 42px;
+  height: 25px;
+  cursor: pointer;
+}
+
+.remote-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.remote-switch span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--fill-3);
+  transition: background-color var(--dur) var(--ease);
+}
+
+.remote-switch span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 22%);
+  transition: transform var(--dur) var(--ease);
+}
+
+.remote-switch input:checked + span {
+  background: var(--green);
+}
+
+.remote-switch input:checked + span::after {
+  transform: translateX(17px);
+}
+
+.remote-switch input:disabled + span {
+  opacity: 0.55;
+}
+
+/* ---------------------------------------------------------------- 识别码 / 密码 */
+
+.remote-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.remote-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  background: var(--fill-2);
+}
+
+.remote-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.remote-field-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.remote-code {
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-mini {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.remote-mini:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.remote-mini:disabled {
+  opacity: 0.4;
+}
+
+.remote-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.remote-link:hover {
+  text-decoration: underline;
+}
+
+.remote-link-wide {
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.remote-link-wide:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.remote-copy-all {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---------------------------------------------------------------- 有效期 */
+
+.remote-ttl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remote-ttl-label {
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.remote-ttl-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.remote-ttl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: 13px;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.remote-ttl-btn i {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.remote-ttl-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.remote-ttl-btn.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.remote-ttl-btn.is-on i {
+  border: 4px solid var(--accent);
+}
+
+.remote-ttl-hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------- 固定密码 */
+
+.remote-fixed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.remote-fixed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.remote-fixed-head em {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.remote-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--fill-2);
+  color: var(--text);
+  font-size: 14px;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+.remote-input:focus {
+  border-color: var(--accent);
+  background: var(--surface-1);
+  outline: none;
+}
+
+.remote-input::placeholder {
+  color: var(--text-3);
+}
+
+/* ---------------------------------------------------------------- 局域网 */
+
+.remote-local {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--r);
+  background: var(--fill-2);
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.remote-local > span {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.remote-local code {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-pairing {
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+/* 局域网那行的剩余时间说明，右对齐、不换行。 */
+.remote-local-hint {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 连对方 */
+
+.remote-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.remote-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.remote-connect {
+  width: 100%;
+  justify-content: center;
+}
+
+.remote-tip {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* 查找识别码 → 连接 的进度行，和提示同一位置、同一字号。 */
+.remote-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--accent, #4f7cff);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.remote-status svg {
+  flex: none;
+}
+
+/* 「联网码」小注：本机识别码旁边提示还有一个服务器码，不占一行。 */
+.remote-field-note {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-style: normal;
+  letter-spacing: 0.02em;
+}
+
+/* 直连关闭时那句提醒：换成警告色，比灰色的「联网码」更该被看到。 */
+.remote-field-note.is-off {
+  color: var(--amber);
+}
+
+.remote-tip svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--green);
+}
+
+.remote-foot {
+  display: flex;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.remote-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.remote-error {
+  margin: 0;
+}

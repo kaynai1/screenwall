@@ -87,13 +87,21 @@ pub fn setup(app: &AppHandle<Wry>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_main_window(tray.app_handle());
+            match event {
+                // 双击：Windows 上双击会先发一次 Click 再发 DoubleClick，
+                // 只处理 Click 的话第二次点击反而会把刚显示出来的窗口又「聚焦」
+                // 一次，看起来像没反应。这里把两种都当成「打开」。
+                TrayIconEvent::DoubleClick { .. } => {
+                    show_main_window(tray.app_handle());
+                }
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
+                    show_main_window(tray.app_handle());
+                }
+                _ => {}
             }
         });
 

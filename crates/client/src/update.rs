@@ -155,9 +155,7 @@ pub async fn check_update(
 /// 校验值用附件自带的 `digest`（GitHub 现在会返回 `sha256:<hex>`）。
 ///
 /// 网络不可达时返回 Err，由界面显示原因 —— 不静默当成「已是最新」。
-pub async fn check_update_github(
-    client: &reqwest::Client,
-) -> Result<Option<UpdateInfo>, String> {
+pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<UpdateInfo>, String> {
     let response = client
         .get(GITHUB_RELEASES)
         .header("Accept", "application/vnd.github+json")

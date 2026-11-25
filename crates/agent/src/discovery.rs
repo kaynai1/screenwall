@@ -47,6 +47,13 @@ pub struct Announcement {
     pub fingerprint: String,
     /// 协议版本。
     pub proto: u32,
+    /// 本机识别码（9 位数字）。
+    ///
+    /// 主控端输入识别码后广播一次，只有识别码对得上的那台会连过来 ——
+    /// 这样「输识别码就能连」在纯局域网模式下也成立，不需要服务器。
+    /// 老版本没有这个字段，`#[serde(default)]` 保证仍能互相发现。
+    #[serde(default)]
+    pub id: String,
 }
 
 impl Announcement {
@@ -61,7 +68,14 @@ impl Announcement {
             port,
             fingerprint: fingerprint.into(),
             proto: u32::from(PROTO_VERSION),
+            id: String::new(),
         }
+    }
+
+    /// 带上本机识别码。
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
     }
 }
 
@@ -77,6 +91,9 @@ pub struct Discovered {
     pub port: u16,
     /// 直连证书指纹。
     pub fingerprint: String,
+    /// 对方识别码；老版本为空。
+    #[serde(default)]
+    pub id: String,
 }
 
 /// 被控端应答器。
@@ -236,6 +253,7 @@ pub async fn scan_with_targets(targets: &[String], timeout: Duration) -> Vec<Dis
                     name: announcement.name,
                     port: announcement.port,
                     fingerprint: announcement.fingerprint,
+                    id: announcement.id,
                 });
             }
         }
@@ -283,12 +301,50 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["app", "fingerprint", "name", "port", "proto"],
+            ["app", "fingerprint", "id", "name", "port", "proto"],
             "字段名应是 camelCase"
         );
 
         let decoded: Announcement = serde_json::from_value(value).expect("公告应能反序列化");
         assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn old_announcement_without_id_still_decodes() {
+        // 老版本被控端没有 `id` 字段。主控端升级后必须还能发现它们，
+        // 否则「输 IP 直连」这条路会跟着一起坏掉。
+        let json = r#"{"app":"screenwall","name":"老机器","port":47900,
+                      "fingerprint":"AA:BB","proto":1}"#;
+        let decoded: Announcement = serde_json::from_str(json).expect("缺 id 也应能解析");
+        assert_eq!(decoded.id, "");
+        assert_eq!(decoded.name, "老机器");
+    }
+
+    #[test]
+    fn announcement_carries_local_id() {
+        let info = announcement().with_id("123456789");
+        assert_eq!(info.id, "123456789");
+        let value = serde_json::to_value(&info).expect("公告应能序列化");
+        assert_eq!(value["id"], "123456789");
+    }
+
+    #[tokio::test]
+    async fn scan_returns_responder_id() {
+        let info = announcement().with_id("987654321");
+        let responder = Responder::bind(0, info).await.expect("绑定应答器");
+        let port = responder.local_addr().expect("取本地地址").port();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(responder.run(cancel_rx));
+
+        let found =
+            scan_with_targets(&[format!("127.0.0.1:{port}")], Duration::from_millis(800)).await;
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "987654321", "识别码要原样带回主控端");
+
+        let _ = cancel_tx.send(true);
+        task.abort();
+        let _ = task.await;
     }
 
     #[tokio::test]

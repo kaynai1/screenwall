@@ -335,6 +335,23 @@ async fn serve(
         Ok(result) => result?,
         Err(_) => bail!("直连 TLS 握手超时"),
     };
+    serve_stream(stream, peer_ip, state, auth, limiter).await
+}
+
+/// 在一条**已经加密**的流上跑直连协议。
+///
+/// 传输无关：TCP + TLS（同网段）和 QUIC（跨网段打洞）都走这里，
+/// 所以握手、授权、会话派发、缓存补投只有一份实现。
+pub async fn serve_stream<S>(
+    stream: S,
+    peer_ip: IpAddr,
+    state: Arc<AgentState>,
+    auth: Arc<DirectAuth>,
+    limiter: Arc<AuthLimiter>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let ws = match tokio::time::timeout(HANDSHAKE_TIMEOUT, tokio_tungstenite::accept_async(stream))
         .await
     {
