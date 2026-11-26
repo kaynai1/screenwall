@@ -2,9 +2,10 @@
 #
 # ScreenWall 中转服务器 · 一键安装与管理脚本
 #
-# 交互安装（一条命令，装的途中依次问账号、密码、端口，端口回车用默认 8787）：
+# 交互使用（一条命令，先出管理菜单）：
 #   curl -fsSL <脚本地址> | bash
 #   或者先保存成文件：bash deploy-server.sh
+# 选 1 安装时会依次问账号、密码、端口（端口回车用默认 8787）。
 #
 # 完全无交互的一键安装（适合复制一条命令就跑）：
 #   curl -fsSL <脚本地址> | bash -s -- --yes --account kay --password '至少8位密码'
@@ -26,6 +27,7 @@ REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME.git"
 REPO_MIRROR="https://gitclone.com/github.com/$REPO_OWNER/$REPO_NAME.git"
 TARBALL="https://codeload.github.com/$REPO_OWNER/$REPO_NAME/tar.gz/refs/heads/main"
 TARBALL_MIRROR="https://gitclone.com/github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/main.tar.gz"
+SCRIPT_VERSION="1.0"
 SERVICE=screenwall
 CONFIG="$APP_DIR/server.toml"
 BIN="$APP_DIR/screenwall-server"
@@ -45,9 +47,8 @@ REGISTER=""
 usage() {
   cat <<'USAGE'
 用法：
-  bash deploy-server.sh                     交互安装：依次问账号、密码、端口
-                                            （端口直接回车用默认 8787）；装过之后
-                                            再次运行显示管理菜单
+  bash deploy-server.sh                     打开管理菜单：安装 / 更新 / 状态 /
+                                            日志 / 重启 / 备份 / 卸载
   bash deploy-server.sh --yes --account 账号 --password 密码 [--port 8787] [--allow-register]
                                             无交互一键安装
   bash deploy-server.sh --help              显示本帮助
@@ -162,9 +163,54 @@ ensure_tools() {
   command -v cc >/dev/null 2>&1 || warn "缺少 C 编译器，编译 rusqlite 可能失败。"
 }
 
+# 有些机器（比如从 Windows 拷过来的 ~/.rustup，或之前交叉编译过）把默认工具链
+# 写成了 stable-x86_64-pc-windows-msvc 这种带别的 target 的 channel，新版 rustup
+# 会直接报 error: target tuple in channel name '...'，编译一行都跑不起来。
+# 这里检测到就改回 host 对应的 stable。
+normalize_toolchain() {
+  local arch os tc triple settings
+  case "$(uname -m)" in
+    x86_64) arch=x86_64 ;;
+    aarch64|arm64) arch=aarch64 ;;
+    *) arch="" ;;
+  esac
+  case "$(uname -s)" in
+    Linux) os=linux ;;
+    *) os="" ;;
+  esac
+  if [[ -n "${RUSTUP_TOOLCHAIN:-}" && "$RUSTUP_TOOLCHAIN" != "stable" && "$RUSTUP_TOOLCHAIN" == *-*-* ]]; then
+    warn "忽略环境变量 RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN（带 target，rustup 不接受）"
+    unset RUSTUP_TOOLCHAIN
+  fi
+  settings="${RUSTUP_HOME:-$HOME/.rustup}/settings.toml"
+  if [[ -f "$settings" ]]; then
+    tc=$(sed -n 's/^default_toolchain = "\(.*\)"/\1/p' "$settings" | head -1)
+    if [[ -n "$tc" && "$tc" == stable-* ]]; then
+      triple="${tc#stable-}"
+      # 架构不对（aarch64 机器配了 x86_64）或者 Linux 上配了非 Linux 的 target
+      # （stable-x86_64-pc-windows-msvc 是最常见的一种）都要改。
+      if [[ -n "$arch" && "$triple" != "$arch"-* ]] ||
+         [[ "$os" = "linux" && "$triple" != *linux* ]]; then
+        warn "修复 rustup 默认工具链：$tc → stable"
+        sed -i "s|^default_toolchain = \".*\"|default_toolchain = \"stable\"|" "$settings"
+      fi
+    fi
+  fi
+  if command -v rustup >/dev/null 2>&1; then
+    rustup default stable >/dev/null 2>&1 || true
+  fi
+  # 设置改完如果稳定版工具链其实没装，补一个。
+  if ! cargo --version >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1; then
+    warn "stable 工具链不可用，重新安装…"
+    rustup toolchain install stable --profile minimal >/dev/null 2>&1 || true
+    rustup default stable >/dev/null 2>&1 || true
+  fi
+}
+
 ensure_rust() {
   if command -v cargo >/dev/null 2>&1; then
     ok "已检测到 cargo（$(cargo --version 2>/dev/null || echo '版本未知')）。"
+    normalize_toolchain
     return 0
   fi
   info "安装 Rust（走 rsproxy 镜像）…"
@@ -242,9 +288,10 @@ build_server() {
   if (( mem_kb > 0 && mem_kb < 4000000 )); then
     jobs=(-j 2)
   fi
+  normalize_toolchain
   info "编译 screenwall-server（约 3–5 分钟）…"
-  ( cd "$SRC_DIR" && cargo build --release -p screenwall-server ${jobs[@]+"${jobs[@]}"} ) \
-    || die "编译失败。看上方第一处 error；常见原因是内存不足（可加 swap）或网络拉不到依赖。"
+  ( cd "$SRC_DIR" && cargo build --release -p screenwall-server ${jobs[@]+"${jobs[@]}"} </dev/null ) \
+    || die "编译失败。看上方第一处 error；常见原因是内存不足（可加 swap）、网络拉不到依赖，或 rustup 工具链不对（看上面是否提示修复过工具链）。"
   ok "编译完成。"
 }
 
@@ -461,12 +508,23 @@ uninstall_server() {
 }
 
 main_menu() {
+  local state
   while true; do
+    if [[ -f "$CONFIG" ]]; then
+      state="已安装 · 端口 $(config_port)"
+    else
+      state="未安装"
+    fi
     echo
-    printf '%s\n' "${C_BLU}════════ ScreenWall 中转服务器 ════════${C_OFF}"
+    printf '%s\n' "${C_BLU}══════════════════════════════════════════════${C_OFF}"
+    printf '%s\n' "${C_BLU}            ScreenWall 管理脚本 v${SCRIPT_VERSION}${C_OFF}"
+    printf '%s\n' "${C_BLU}══════════════════════════════════════════════${C_OFF}"
+    printf '  %s\n' "$state"
     cat <<'MENU'
- 1. 安装（SQLite 单机，最简单）
+
+ 1. 安装 / 重装服务器
  2. 更新到最新版
+──────────────────────────────────────────────
  3. 查看状态
  4. 查看日志
  5. 重启服务
@@ -474,7 +532,9 @@ main_menu() {
  7. 卸载
  0. 退出
 MENU
-    printf '%s\n' "${C_BLU}═══════════════════════════════════════${C_OFF}"
+    printf '%s\n' "──────────────────────────────────────────────"
+    printf '  重新执行一键安装命令即可拿到最新脚本\n'
+    echo
     tty_read -rp "请输入编号: " choice || exit 0
     case "$choice" in
       1) install_server ;;
@@ -503,12 +563,6 @@ fi
 if [[ $YES -eq 0 && -z "$ACCOUNT" && $HAVE_TTY -eq 0 ]]; then
   die "当前环境没法交互。无交互安装请带参数：
   bash -s -- --yes --account 账号 --password '至少8位密码'"
-fi
-
-# 没装过就直接进安装向导（依次问账号、密码、端口），装过才显示菜单。
-if [[ $YES -eq 0 && -z "$ACCOUNT" && ! -f "$CONFIG" ]]; then
-  install_server
-  exit 0
 fi
 
 main_menu

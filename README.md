@@ -55,7 +55,7 @@ scripts\cargo.bat run -p screenwall-server -- run --config server.toml
 curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash
 ```
 
-运行后会依次问你 **请输入账号** → **请输入密码（至少 8 位，输入不显示）** → **请输入端口（直接回车用默认 8787）**，然后自动修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址。装完到云控制台**安全组**放行该端口。
+运行后先出现 **ScreenWall 管理脚本** 菜单（安装 / 更新 / 查看状态 / 查看日志 / 重启 / 备份数据 / 卸载），选 `1` 安装，然后依次问你 **请输入账号** → **请输入密码（至少 8 位，输入不显示）** → **请输入端口（直接回车用默认 8787）**。之后它会自动修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址。装完到云控制台**安全组**放行该端口；以后再执行同一条命令，就能用菜单更新、备份、卸载。
 
 不想交互就一次给全：
 
