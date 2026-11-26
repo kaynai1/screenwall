@@ -480,4 +480,12 @@ if [[ $YES -eq 1 || -n "$ACCOUNT" ]]; then
   exit 0
 fi
 
+# 交互菜单要从键盘读输入。用 curl ... | bash 方式跑时 stdin 是脚本本身，
+# 没有终端可读，提前说清楚该怎么带参数，而不是让 read 直接读到 EOF。
+if [[ ! -t 0 ]]; then
+  die "当前不是交互终端，菜单用不了。无交互安装请带参数：
+  bash -s -- --yes --account 账号 --password '至少8位密码'
+想用菜单的话，先把脚本存成文件（curl -o deploy-server.sh ...），再执行 bash deploy-server.sh"
+fi
+
 main_menu

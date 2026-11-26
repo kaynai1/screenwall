@@ -565,24 +565,28 @@ Linux 上编译运行。
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
 `scripts/deploy-server.sh`。**一条命令、无需交互**。
 
-GitHub 直连不通时（国内服务器常见）用镜像克隆，再跑脚本：
+一台全新的 Ubuntu / Debian 服务器，登录后执行这一条就装完（账号密码换成你自己的，
+密码至少 8 位）：
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
+  | bash -s -- --yes --account kay --password '至少8位密码'
+```
+
+`api.github.com` 不通时换 jsDelivr（内容取自 main，可能有缓存延迟）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@main/scripts/deploy-server.sh \
+  | bash -s -- --yes --account kay --password '至少8位密码'
+```
+
+两个都不通，就用镜像克隆，再在本地执行：
 
 ```bash
 git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/sw \
   && bash /tmp/sw/scripts/deploy-server.sh --yes --account kay --password '至少8位密码'
 ```
-
-（镜像有缓存，若提示「未知参数 --yes」说明拿到的是旧版脚本：去掉镜像，改用下面的
-jsDelivr 或 GitHub 直连地址。）
-
-能访问 jsDelivr 的机器可以完全不落地文件：
-
-```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.8/scripts/deploy-server.sh \
-  | bash -s -- --yes --account kay --password '至少8位密码'
-```
-
-脚本会自己处理这些容易失败的环节：
 
 脚本会自己处理这些容易失败的环节：
 
@@ -599,7 +603,11 @@ curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.8/scripts/deploy-
 日志 / 重启 / 备份 / 卸载）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.8/scripts/deploy-server.sh | bash
+# 存成文件再跑，菜单才能从键盘读输入（管道执行时没有终端）
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
+  -o deploy-server.sh
+bash deploy-server.sh
 # 或者用上面克隆的目录：
 # bash /tmp/sw/scripts/deploy-server.sh
 ```
