@@ -67,19 +67,47 @@ gh release create "v$v" `
 
 ### 路线 B：发到自建服务器（账号 / 连接码模式用户走这条）
 
+先看清楚发布脚本跑在**哪台机器**上 —— 它改的是那台机器上的 `server.toml`：
+
+| 服务器跑在 | 用哪个脚本 | 在哪执行 |
+|---|---|---|
+| Windows | `scripts\publish-update.ps1` | 服务器本机（通常也是打包机） |
+| Linux（最常见） | `scripts/publish-update.sh` | 服务器上，用 SSH 过去执行 |
+
+#### B1. 服务器是 Windows
+
 ```powershell
 # $v 与路线 A 同一版本
 $v = "0.2.8"
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
 ```
 
-这个脚本会：
+它会把安装包复制到 `dist\update\`、算出 SHA256、改写 `server.toml` 的 `[update]` 段。
 
-1. 把安装包复制到 `dist\update\`；
-2. 算出 SHA256；
-3. 改写 `server.toml` 的 `[update]` 段（`dir` / `version` / `file` / `notes`）。
+#### B2. 服务器是 Linux
 
-然后**重启服务器**（或让它重读配置），客户端点「检查更新」就能看到新版本。
+`publish-update.ps1` **不能**在 Linux 上跑（`powershell: command not found`），改用仓库里的
+`scripts/publish-update.sh`：安装包在 Windows 打包机上生成，先传上去，再在服务器上执行。
+
+```bash
+# 在打包机的 Git Bash / PowerShell 里
+scp target/release/bundle/nsis/ScreenWall_0.2.8_x64-setup.exe root@<服务器>:/root/
+scp scripts/publish-update.sh root@<服务器>:/root/
+
+# 发布（脚本自己会重启服务并校验版本）
+ssh root@<服务器> 'bash /root/publish-update.sh -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe'
+```
+
+脚本做的事：
+
+1. 把安装包复制到 `[update].dir`（默认 `/opt/screenwall/downloads`）；
+2. 删掉旧的 `[update]` 段、追加新的（`dir` / `version` / `file` / `notes`），旧配置留一份 `.bak.<时间>`；
+3. 重启 `screenwall` 服务（`--no-restart` 可跳过）；
+4. 请求一次 `http://127.0.0.1:<端口>/api/v1/version`，确认真的返回了新版本。
+
+SHA256 不用手填，服务器首次被请求时会自己算并缓存。
+
+然后客户端点「检查更新」就能看到新版本。
 
 ### 两条都发
 
