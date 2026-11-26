@@ -427,7 +427,7 @@ where
     });
 
     // 对端没声明 caps 时按 v1 基线处理；Welcome 只回双方交集，和中转入口一致。
-    let agreed = Capabilities::with_peer(hello.caps.clone());
+    let agreed = Capabilities::with_peer_and(hello.caps.clone(), crate::h264::capabilities());
     tracing::info!(
         client = %hello.client.name,
         caps = %agreed,

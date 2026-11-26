@@ -104,7 +104,13 @@ export type ControlFrameEvent = {
   height: number;
   fps: number;
   bytes: number;
+  /** `mjpeg`（dataUrl 有效）或 `h264`（data 是 Annex-B 的 base64）。 */
+  codec: "mjpeg" | "h264";
+  /** H.264 关键帧（带 SPS/PPS），解码前必须先等到一个。 */
+  keyframe: boolean;
   dataUrl: string;
+  /** H.264 Annex-B 字节流的 base64；JPEG 时为空串。 */
+  data: string;
 };
 
 export type ControlPowerEvent = {
@@ -1384,7 +1390,31 @@ export type ActiveControl = {
   clientToken: number;
   /** 握手后的能力交集；尚未握手时为 `null`。 */
   caps?: string[] | null;
+  /** 当前订阅的视频编码。 */
+  codec?: "mjpeg" | "h264";
 };
+
+/**
+ * 告诉后端界面能不能解 H.264（`window.VideoDecoder` 是否存在）。
+ *
+ * 必须在 `startControl` 之前调用——握手时的能力声明要用到它。
+ */
+export function setVideoDecoder(available: boolean): Promise<void> {
+  if (!isTauri) return Promise.resolve();
+  return invoke<void>("set_video_decoder", { available });
+}
+
+/** 解码失败或用户关掉时停用 H.264：本次运行不再尝试，当前会话改订 MJPEG。 */
+export function disableH264Video(clientToken: number): Promise<void> {
+  if (!isTauri) return Promise.resolve();
+  return invoke<void>("disable_h264_video", { clientToken });
+}
+
+/** 请求被控端立刻生成关键帧（解码器丢帧、重配之后调用）。 */
+export function requestVideoKeyframe(clientToken: number): Promise<void> {
+  if (!isTauri) return Promise.resolve();
+  return invoke<void>("request_video_keyframe", { clientToken });
+}
 
 export async function getControlInfo(): Promise<ActiveControl | null> {
   if (!isTauri) return { deviceId: "demo-device", session: 1, clientToken: 1 };

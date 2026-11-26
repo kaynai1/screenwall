@@ -878,7 +878,7 @@ where
             name: hostname(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        caps: Capabilities::current(),
+        caps: Capabilities::current_with(crate::local_caps(shared)),
     });
     sink.send(WsMessage::Text(hello.to_json().into()))
         .await
@@ -924,7 +924,7 @@ where
     // 帧交给 `read_loop`（会话建立后它才开始跑）。
     let (session, buffered) = match tokio::time::timeout(
         Duration::from_secs(crate::APPROVAL_TIMEOUT_SECS + 10),
-        wait_open_ok(&mut stream, &mut sink, request_id),
+        wait_open_ok(shared, &mut stream, &mut sink, request_id),
     )
     .await
     {
@@ -981,9 +981,11 @@ where
         video_id: None,
         width: 0,
         height: 0,
-        fps: 0,
-        max_width: 0,
-        quality: 0,
+        // 与默认订阅一致；`welcome` 到达后按协商结果订阅。
+        fps: 30,
+        max_width: 1920,
+        quality: 65,
+        codec: screenwall_proto::VideoCodec::Mjpeg,
         display: 0,
         displays: Vec::new(),
         audio_enabled: false,
@@ -995,7 +997,10 @@ where
         audio_source: screenwall_proto::AudioSource::Loopback,
         // 直连的 welcome 在会话登记前就收到了：先记下能力交集，
         // 免得控制页订阅 `control-caps` 之前事件已经过去。
-        peer_caps: Some(Capabilities::with_peer(welcome.caps.clone())),
+        peer_caps: Some(Capabilities::with_peer_and(
+            welcome.caps.clone(),
+            crate::local_caps(shared),
+        )),
         started_ms,
         // 直连会话同样支持断线自动重连（重连时整条 TLS + WS 重建）。
         reconnectable: true,
@@ -1145,6 +1150,7 @@ fn is_current_link(shared: &Shared, link_id: u64) -> bool {
 /// 期间读到的帧要原样交回给 `read_loop`，不能丢 —— 那条 `welcome`
 /// 里有能力协商结果和会话限制。
 async fn wait_open_ok<S>(
+    shared: &Shared,
     stream: &mut futures_util::stream::SplitStream<S>,
     sink: &mut futures_util::stream::SplitSink<S, WsMessage>,
     request_id: u32,
@@ -1190,9 +1196,13 @@ where
                             return Err("对方返回了无效的会话号".to_string());
                         }
                         opened = Some(session);
-                        // 会话号到手：立刻发会话级 hello 和默认视频订阅。
+                        // 会话号到手：立刻发会话级 hello。
                         // 被控端此时可能还在等本机点「允许」，它的 pending
-                        // 缓存会把这两帧存住，授权通过后按原序补投。
+                        // 缓存会把这一帧存住，授权通过后按原序补投。
+                        //
+                        // 视频订阅不在这里发：等会话级 `welcome` 拿到双方能力
+                        // 交集之后再按协商出的编码订阅，免得先发一遍 MJPEG
+                        // 再切 H.264，白花一次订阅和一次画面空窗。
                         let hello = Message::Hello(Hello {
                             proto: PROTO_VERSION,
                             token: String::new(),
@@ -1200,19 +1210,17 @@ where
                                 name: hostname(),
                                 version: env!("CARGO_PKG_VERSION").to_string(),
                             },
-                            caps: Capabilities::current(),
+                            caps: Capabilities::current_with(crate::local_caps(shared)),
                         });
-                        for message in [hello, crate::default_video_sub()] {
-                            let payload = message.to_json();
-                            let frame = screenwall_proto::cloud::encode_tunnel_frame(
-                                screenwall_proto::cloud::TunnelKind::Json,
-                                session,
-                                payload.as_bytes(),
-                            );
-                            sink.send(WsMessage::Binary(frame.into()))
-                                .await
-                                .map_err(|error| error.to_string())?;
-                        }
+                        let payload = hello.to_json();
+                        let frame = screenwall_proto::cloud::encode_tunnel_frame(
+                            screenwall_proto::cloud::TunnelKind::Json,
+                            session,
+                            payload.as_bytes(),
+                        );
+                        sink.send(WsMessage::Binary(frame.into()))
+                            .await
+                            .map_err(|error| error.to_string())?;
                     }
                     "open.err" => {
                         let request =
@@ -1765,6 +1773,7 @@ mod tests {
             fps: 0,
             max_width: 0,
             quality: 0,
+            codec: screenwall_proto::VideoCodec::Mjpeg,
             display: 0,
             displays: Vec::new(),
             audio_enabled: false,

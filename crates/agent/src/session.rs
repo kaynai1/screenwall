@@ -58,7 +58,7 @@ where
         bail!("协议版本不匹配: {}", hello.proto);
     }
     // 对端没声明 caps 时按 v1 基线处理，老主控端照旧可用。
-    let agreed = Capabilities::with_peer(hello.caps.clone());
+    let agreed = Capabilities::with_peer_and(hello.caps.clone(), crate::h264::capabilities());
     tracing::debug!(caps = %agreed, "局域网会话能力协商完成");
     if !state.config.allow_control {
         close_with(&mut sink, codes::CONTROL_DISABLED, "control disabled").await?;
