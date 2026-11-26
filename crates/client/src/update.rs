@@ -100,10 +100,7 @@ pub enum SourceCheck {
 /// 红字却和更新毫无关系），也可能让口径更严的反向代理直接拒绝请求。
 /// 服务器还没发布过更新时返回 404，这里按「这一源没有结论」处理，
 /// 交给 GitHub 那一路下判断。
-pub async fn check_update(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<SourceCheck, String> {
+pub async fn check_update(client: &reqwest::Client, base_url: &str) -> Result<SourceCheck, String> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/version");
     let response = client

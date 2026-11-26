@@ -1962,9 +1962,11 @@ fn scale_bgra(src: &[u8], sw: usize, sh: usize, dst: &mut Vec<u8>, dw: usize, dh
                 Image::from_slice_u8(dw as u32, dh as u32, dst.as_mut_slice(), PixelType::U8x4)
             {
                 // 双线性与原来的实现一致；alpha 恒为 255，关掉 alpha 预乘省时间。
-                let mut options = ResizeOptions::default();
-                options.algorithm = ResizeAlg::Convolution(FilterType::Bilinear);
-                options.mul_div_alpha = false;
+                let options = ResizeOptions {
+                    algorithm: ResizeAlg::Convolution(FilterType::Bilinear),
+                    mul_div_alpha: false,
+                    ..ResizeOptions::default()
+                };
                 let done = RESIZER.with(|cell| {
                     cell.borrow_mut()
                         .resize(&src_view, &mut dst_view, &options)

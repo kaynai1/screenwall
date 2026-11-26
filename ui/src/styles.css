@@ -566,6 +566,12 @@ button:not(:disabled),
   color: var(--text-3);
 }
 
+/* 走服务器中转时用琥珀色：链路是通的，但不代表直连。 */
+.brand-direct.is-relay {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
 .nav {
   display: flex;
   flex: 1;

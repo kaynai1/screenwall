@@ -336,7 +336,10 @@ async fn handle_control(
             // 主控端等不到 answer 会自己回退到中转。
             let (Some(provider), Some(request)) = (
                 options.p2p.as_ref(),
-                value.get("request").and_then(Value::as_u64).map(|r| r as u32),
+                value
+                    .get("request")
+                    .and_then(Value::as_u64)
+                    .map(|r| r as u32),
             ) else {
                 return;
             };
@@ -390,6 +393,8 @@ async fn handle_control(
 /// 从 `handle_control` 的 `"open"` 分支抽出来的会话启动逻辑：
 /// 走授权 → 登记会话 → 发 `open.ok` → 跑 `session_task`。
 /// 中转和直连共用；授权等待会阻塞当前任务，调用方必须放在 `tokio::spawn` 里。
+// 授权相关的布尔量已经拆开命名，再并成一个枚举只会让调用点更难读。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn open_session(
     state: &Arc<AgentState>,
     session: u32,

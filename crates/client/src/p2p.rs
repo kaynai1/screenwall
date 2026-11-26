@@ -100,8 +100,16 @@ impl P2pProvider for P2pHost {
                 }
             }
             let _guard = Guard(active);
-            if let Err(error) =
-                answer(app, shared, request, viewer_id, viewer, candidates, out.clone()).await
+            if let Err(error) = answer(
+                app,
+                shared,
+                request,
+                viewer_id,
+                viewer,
+                candidates,
+                out.clone(),
+            )
+            .await
             {
                 tracing::info!("同账号 P2P 未能建立，主控端将走中转: {error:#}");
                 // 明确告诉主控端别等了，它收到会立刻回退中转。
@@ -211,9 +219,7 @@ async fn answer(
     // 纯非阻塞 socket，超时设置留着会和 quinn 的 poll 打架。
     let _ = socket.set_read_timeout(None);
     let _ = socket.set_write_timeout(None);
-    socket
-        .set_nonblocking(true)
-        .context("切换非阻塞失败")?;
+    socket.set_nonblocking(true).context("切换非阻塞失败")?;
     let endpoint = quic::server_endpoint(socket, &material).context("QUIC 端点创建失败")?;
     tracing::info!(peer = %reached, "P2P 已打通，等待 QUIC 连接");
 

@@ -1,6 +1,7 @@
 import { LogOut, Monitor, Settings2, Wifi } from "lucide-react";
 import { NAV_SECTIONS } from "../nav";
 import type { AccountView, DeviceView, PageKey } from "../types";
+import { versionBelow } from "../version";
 
 export default function Sidebar({
   page,
@@ -13,12 +14,15 @@ export default function Sidebar({
   directOn,
   directBusy,
   onToggleDirect,
+  link,
 }: {
   page: PageKey;
   onNavigate: (page: PageKey) => void;
   account: AccountView;
   devices: DeviceView[];
   selectedCount: number;
+  /** 当前远程会话实际走的链路；没有会话时为 null。 */
+  link: "relay" | "direct" | "p2p" | null;
   onLogout: () => void;
   onOpenSettings: () => void;
   /** 局域网直连当前是否开启（只在本机模式下有意义）。 */
@@ -32,6 +36,36 @@ export default function Sidebar({
     ? "无服务器"
     : account.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const serverHint = account.local ? "局域网直连 · 无服务器" : serverHost;
+  // 链路胶囊只说「现在实际怎么连」：有控制会话就按后端回报的真实链路，
+  // 没有会话时按默认路径（账号模式走服务器，P2P 是会话建立时才可能升级的）。
+  const linkLabel = account.quick
+    ? "连接码"
+    : account.local
+      ? "局域网直连"
+      : link === "p2p"
+        ? "P2P 直连"
+        : link === "direct"
+          ? "局域网直连"
+          : "服务器中转";
+  // 低于 0.2.11 的服务器不认识 `p2p` 信令，也不发 `sameAccount`：
+  // 把这件事写在提示里，用户才知道「弹确认框」是服务器旧，不是客户端的问题。
+  const serverOutdated =
+    !account.local &&
+    !account.quick &&
+    versionBelow(account.serverVersion, "0.2.11");
+  const linkHint = account.quick
+    ? "通过连接码连接到这台设备"
+    : account.local
+      ? directOn
+        ? "局域网直连已开启"
+        : "局域网直连已关闭"
+      : link === "p2p"
+        ? "画面与控制走 P2P 直连（UDP 打洞成功，不经过服务器中转）"
+        : link === "direct"
+          ? "画面与控制走局域网直连"
+          : serverOutdated
+            ? `服务器 ${account.serverVersion} 版本较旧：升级服务器后可用 P2P 直连与同账号免确认`
+            : `画面与控制经服务器中转：${serverHost}`;
   // 连接码会话只有一台设备，只保留设置入口。
   const sections = account.quick
     ? NAV_SECTIONS.map((section) => ({
@@ -54,20 +88,20 @@ export default function Sidebar({
               局域网模式是直连（绿色=直连开着，灰色=关着），连接码会话单独标出来。 */}
           <span
             className={`brand-direct ${
-              account.local ? (directOn ? "" : "is-off") : account.connected ? "" : "is-off"
+              account.local
+                ? directOn
+                  ? ""
+                  : "is-off"
+                : account.connected
+                  ? link === "p2p" || link === "direct"
+                    ? ""
+                    : "is-relay"
+                  : "is-off"
             }`}
-            title={
-              account.quick
-                ? "通过连接码连接到这台设备"
-                : account.local
-                  ? directOn
-                    ? "局域网直连已开启"
-                    : "局域网直连已关闭"
-                  : `画面与控制经服务器中转：${serverHost}`
-            }
+            title={linkHint}
           >
             <Wifi size={12} strokeWidth={2} aria-hidden="true" />
-            {account.quick ? "连接码" : account.local ? "局域网直连" : "服务器中转"}
+            {linkLabel}
           </span>
         </div>
       </div>

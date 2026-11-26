@@ -83,6 +83,8 @@ export type ControlStateEvent = {
   deviceId: string;
   session: number;
   clientToken: number;
+  /** 这条会话实际走的链路；侧栏胶囊据此显示「P2P 直连 / 服务器中转」。 */
+  link?: "relay" | "direct" | "p2p";
   message: string | null;
   width: number | null;
   height: number | null;
@@ -1409,6 +1411,17 @@ export type ActiveControl = {
 export function setVideoDecoder(available: boolean): Promise<void> {
   if (!isTauri) return Promise.resolve();
   return invoke<void>("set_video_decoder", { available });
+}
+
+/**
+ * 控制页被切走时通知后端暂停视频帧推送，回到页面再恢复。
+ *
+ * 保活的页面只是 `display:none`：不暂停的话 4K 帧仍会持续编码、跨进程传输
+ * 并在 WebView 主线程解析 base64，用户点别处会卡好几秒。
+ */
+export function setControlVideoMuted(muted: boolean): Promise<void> {
+  if (!isTauri) return Promise.resolve();
+  return invoke<void>("set_control_video_muted", { muted });
 }
 
 /** 解码失败或用户关掉时停用 H.264：本次运行不再尝试，当前会话改订 MJPEG。 */

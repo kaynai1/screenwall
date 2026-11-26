@@ -27,6 +27,8 @@ export type AccountView = {
   quick?: boolean;
   /** 本机模式：不连服务器，只用局域网直连。 */
   local?: boolean;
+  /** 服务器 `/healthz` 报的版本；还没探测到时缺省。 */
+  serverVersion?: string | null;
 };
 
 /** 局域网直连状态（对应客户端的 get_direct_state 等命令）。 */

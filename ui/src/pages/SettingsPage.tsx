@@ -45,6 +45,7 @@ import {
 import DiagnosticsCard from "../components/DiagnosticsCard";
 import { errorLine } from "../errors";
 import { applyMotion, applyTheme, storedMotion, storedTheme, type Theme } from "../theme";
+import { versionBelow } from "../version";
 import type {
   DirectFirewallState,
   DirectState,
@@ -1217,6 +1218,24 @@ export default function SettingsPage({
                     </span>
                     <span className="set-row-value">SWP/1 · 中转 + P2P</span>
                   </div>
+                  {/* 服务器版本决定了两件事：低于 0.2.9 不发 sameAccount
+                      （同账号也会弹「允许控制」），低于 0.2.11 不认识 p2p
+                      信令（只能用中转）。版本旧时直接把原因和结论写在这里。 */}
+                  {!account.local && (
+                    <div className="set-row">
+                      <div className="set-row-copy">
+                        <span className="set-row-label">服务器版本</span>
+                        {versionBelow(account.serverVersion, "0.2.11") && (
+                          <span className="set-row-hint set-field-error">
+                            版本较旧：升级服务器后才能 P2P 直连、同账号免确认
+                          </span>
+                        )}
+                      </div>
+                      <span className="set-row-value">
+                        {account.serverVersion ?? "未探测到"}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </section>
 

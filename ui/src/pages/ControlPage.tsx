@@ -54,6 +54,7 @@ import {
   sendSecureAttention,
   setAudioEnabled,
   setAutoQuality as saveAutoQuality,
+  setControlVideoMuted,
   setRemoteVolume,
   setStreamOptions,
   setVideoDecoder,
@@ -328,10 +329,26 @@ function newH264State(): H264State {
 export default function ControlPage({
   devices,
   deviceId,
+  active,
   onBack,
   onFiles,
   notify,
 }: ControlPageProps) {
+  // 页面被保活：切到别的页面时只是 `display:none`。窗口最小化到托盘时
+  // `visibilityState` 也会变 hidden，两种情况下都不需要继续推画面。
+  const [windowHidden, setWindowHidden] = useState(
+    () => typeof document !== "undefined" && document.visibilityState === "hidden",
+  );
+  useEffect(() => {
+    const onChange = () => setWindowHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  /** 页面可见且窗口没被隐藏：只有这时才真的需要画面。 */
+  const videoWanted = active && !windowHidden;
+  // 用 ref 让定时器读到最新值。
+  const liveRef = useRef(videoWanted);
+  liveRef.current = videoWanted;
   // 账号设备列表里能查到的设备；直连设备用合成 ID，不在这里。
   const listedDevice = devices.find((item) => item.id === deviceId);
   const direct = isDirectDeviceId(deviceId);
@@ -1340,8 +1357,10 @@ export default function ControlPage({
       info.bytes = 0;
 
       // 断流判定只在正常会话里生效：重连中/失败态由后端状态机驱动，
-      // 否则会把「正在重连」覆盖成「画面停止更新」。
+      // 否则会把「正在重连」覆盖成「画面停止更新」。页面被切走时帧是
+      // 主动暂停的，也不能算断流。
       if (
+        liveRef.current &&
         hasFrameRef.current &&
         !errorRef.current &&
         !stalledRef.current &&
@@ -1391,7 +1410,12 @@ export default function ControlPage({
         });
       }
       guardTimer = window.setTimeout(() => {
-        if (!cancelled && !hasFrameRef.current && !errorRef.current) {
+        if (
+          !cancelled &&
+          liveRef.current &&
+          !hasFrameRef.current &&
+          !errorRef.current
+        ) {
           fail("已建立会话，但 12 秒内没有收到画面");
         }
       }, 12000);
@@ -1514,6 +1538,32 @@ export default function ControlPage({
       // 真正的断开由 App 的页面跳转（stopActiveSession）或后端换会话时完成。
     };
   }, [device?.id, device?.online, retryKey]);
+
+  // 页面被切走时暂停后端推流：保活的页面只是 `display:none`，4K 帧继续经
+  // Tauri 事件送进 WebView，主线程解析 base64 会让整窗点击卡好几秒。
+  useEffect(() => {
+    void setControlVideoMuted(!videoWanted).catch(() => {});
+  }, [videoWanted]);
+
+  // 组件卸载时一定要解除暂停：否则下一次进来（可能换了设备）会一直没有画面。
+  useEffect(
+    () => () => {
+      void setControlVideoMuted(false).catch(() => {});
+    },
+    [],
+  );
+
+  // 回到页面：暂停期间没有帧，断流计时要重新开始；H.264 还要补一个关键帧，
+  // 否则解码器会一直等参考帧，画面停在切走前那一帧。
+  useEffect(() => {
+    if (!videoWanted) return;
+    lastFrameAtRef.current = performance.now();
+    stalledRef.current = false;
+    const token = controlTokenRef.current;
+    if (token > 0 && videoCodecRef.current === "h264") {
+      void requestVideoKeyframe(token).catch(() => {});
+    }
+  }, [videoWanted]);
 
   // H.264 画在 canvas 上，缩放与留白由代码算：舞台尺寸一变就得重绘最后一帧。
   useEffect(() => {

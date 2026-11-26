@@ -266,6 +266,9 @@ struct AccountView {
     quick: bool,
     /// 本机模式：没连服务器，只用局域网直连。
     local: bool,
+    /// 服务器 `/healthz` 报的版本；还没探测到或本机模式时为 `None`。
+    /// 界面用它提示「服务器版本较旧」。
+    server_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -287,6 +290,8 @@ struct ControlStateEvent {
     device_id: String,
     session: u32,
     client_token: u64,
+    /// 这条会话实际走的链路，侧栏胶囊按它显示「P2P 直连 / 服务器中转」。
+    link: &'static str,
     message: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
@@ -666,6 +671,15 @@ struct Shared {
     next_group: AtomicU64,
     /// 当前控制会话的连接质量统计。
     quality: StdMutex<quality::Tracker>,
+    /// 控制页被切走时暂停视频帧推送。
+    ///
+    /// 保活的页面只是 `display:none`，订阅和会话都还在：4K MJPEG 每秒几十帧
+    /// 继续经 Tauri 事件送进 WebView，主线程光解析 base64 就会卡住点击。
+    /// 置位后帧循环直接跳过编码与 emit，回到控制页再恢复。
+    video_muted: AtomicBool,
+    /// 服务器 `/healthz` 报的版本号。旧服务器不认识 `p2p` 信令，客户端据此
+    /// 跳过打洞尝试，避免每次点「控制」都白等 8 秒才回退中转。
+    server_version: StdMutex<Option<String>>,
     /// 界面里的 WebCodecs `VideoDecoder` 是否可用（前端探测后通过命令告诉我们）。
     /// 只有为 true 时才会在能力声明里加 `video.h264`，否则老被控端会白白
     /// 发出一条浏览器解不了的 H.264 流。
@@ -872,6 +886,8 @@ async fn logout(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<Accoun
     shared.devices.write().await.clear();
     *shared.connected.write().await = false;
     *shared.error.write().await = None;
+    // 换账号/换服务器时旧版本号必须作废，否则会按上一台服务器的能力做判断。
+    *shared.server_version.lock().unwrap() = None;
 
     emit_devices(&app, &shared).await;
     let view = account_view(&shared).await;
@@ -2038,18 +2054,34 @@ async fn try_p2p(
         // 连接码会话的目标设备不在本账号下，服务器不会替它转发 P2P 请求。
         return None;
     }
+    // 服务器要先认识 `p2p` 信令才会把它转给被控端。服务器版本低于这一档时
+    // 发出去没有任何应答，只会让「点控制」白等 8 秒才回退中转——这也正是
+    // 旧服务器上「允许控制」弹窗要等十几秒才出现的原因。
+    let server_supports_p2p = shared
+        .server_version
+        .lock()
+        .unwrap()
+        .as_deref()
+        .is_none_or(|version| update::version_gt(version, P2P_MIN_VERSION));
+    if !server_supports_p2p {
+        tracing::debug!("服务器版本不支持 p2p 信令，直接走中转");
+        return None;
+    }
     if !shared.config.read().await.punch_through {
         return None;
     }
     let capable = {
         let devices = shared.devices.read().await;
-        devices.iter().find(|device| device.id == device_id).is_some_and(|device| {
-            // 离线的设备连中转都建不起来，更别说打洞：直接走中转，
-            // 由服务器回一条明确的「设备离线」。
-            device.online
-                && device.controllable
-                && update::version_gt(&device.version, P2P_MIN_VERSION)
-        })
+        devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .is_some_and(|device| {
+                // 离线的设备连中转都建不起来，更别说打洞：直接走中转，
+                // 由服务器回一条明确的「设备离线」。
+                device.online
+                    && device.controllable
+                    && update::version_gt(&device.version, P2P_MIN_VERSION)
+            })
     };
     if !capable {
         return None;
@@ -2065,9 +2097,7 @@ async fn try_p2p(
         let mut punch = screenwall_agent::nat::PunchSocket::bind(0)?;
         // 只给 3 秒：拿不到公网映射还能靠内网地址打通，没必要为它
         // 让「点连接」卡上十几秒。
-        let mapping = punch
-            .discover_within(Duration::from_secs(3))
-            .ok();
+        let mapping = punch.discover_within(Duration::from_secs(3)).ok();
         Ok::<_, std::io::Error>((punch, mapping))
     })
     .await
@@ -2115,7 +2145,10 @@ async fn try_p2p(
         }
     };
     if answer.get("event").and_then(Value::as_str) != Some("answer") {
-        let reason = answer.get("msg").and_then(|value| value.as_str()).unwrap_or("");
+        let reason = answer
+            .get("msg")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         tracing::info!(msg = reason, "被控端拒绝 P2P，回退服务器中转");
         return None;
     }
@@ -3540,6 +3573,18 @@ fn set_video_decoder(shared: State<'_, Arc<Shared>>, available: bool) {
     tracing::info!(available, "WebCodecs H.264 解码能力");
 }
 
+/// 控制页可见性变化时调用：页面被切走就暂停视频帧推送，回来再恢复。
+///
+/// 保活的页面只是 `display:none`，会话和订阅都还活着。不暂停的话，4K 画面
+/// 的 base64 编码、跨进程传输和 WebView 主线程解析会一直占着资源，用户
+/// 在别的页面点任何东西都要排队等帧处理完。
+#[tauri::command]
+fn set_control_video_muted(shared: State<'_, Arc<Shared>>, muted: bool) {
+    if shared.video_muted.swap(muted, Ordering::Relaxed) != muted {
+        tracing::debug!(muted, "控制页视频帧推送");
+    }
+}
+
 /// 解码失败（或用户手动关掉）时停用 H.264：本次运行不再尝试，当前会话改订 MJPEG。
 ///
 /// 「记住」是刻意的：解码器报错往往意味着这台机器的 WebCodecs 与硬件编码器
@@ -3918,11 +3963,19 @@ fn emit_control_state(
     control: &ControlSession,
     message: Option<String>,
 ) {
+    let link = if control.direct_link.is_none() {
+        "relay"
+    } else if is_direct_device(&control.device_id) {
+        "direct"
+    } else {
+        "p2p"
+    };
     let event = ControlStateEvent {
         phase: phase.to_string(),
         device_id: control.device_id.clone(),
         session: control.session,
         client_token: control.client_token,
+        link,
         message,
         width: (control.width > 0).then_some(control.width),
         height: (control.height > 0).then_some(control.height),
@@ -4140,6 +4193,33 @@ async fn view_once(app: &AppHandle, shared: &Arc<Shared>, config: &ClientConfig)
     *shared.view_tx.write().await = Some(out_tx);
     *shared.connected.write().await = true;
     *shared.error.write().await = None;
+    // 问一下服务器版本：低于 0.2.11 的服务器不认识 `p2p` 信令，也不发
+    // `sameAccount`。客户端据此跳过打洞，别让用户每次点连接都白等一轮超时。
+    {
+        let http = shared.http.clone();
+        let probe = shared.clone();
+        let probe_app = app.clone();
+        let base = config.server_url.trim_end_matches('/').to_string();
+        tokio::spawn(async move {
+            let response = match http
+                .get(format!("{base}/healthz"))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => response,
+                _ => return,
+            };
+            let Ok(body) = response.json::<Value>().await else {
+                return;
+            };
+            if let Some(version) = body.get("version").and_then(Value::as_str) {
+                *probe.server_version.lock().unwrap() = Some(version.to_string());
+                // 让侧栏/设置页及时看到服务器版本，而不是等下次重连。
+                let _ = probe_app.emit("account", account_view(&probe).await);
+            }
+        });
+    }
     let _ = app.emit("account", account_view(shared).await);
     // 主控连接（重）建立后立刻恢复屏幕墙预览，不必等下一轮 tick。
     wall::resume(app, shared).await;
@@ -4280,7 +4360,9 @@ async fn handle_view_text(app: &AppHandle, shared: &Arc<Shared>, text: &str) {
             let control = {
                 let mut guard = shared.control.write().await;
                 match guard.as_ref() {
-                    Some(current) if current.session == session && current.direct_link.is_none() => {
+                    Some(current)
+                        if current.session == session && current.direct_link.is_none() =>
+                    {
                         guard.take()
                     }
                     _ => None,
@@ -4456,13 +4538,13 @@ mod tests {
     #[test]
     fn update_survives_one_source_being_down() {
         // 纯内网：GitHub 不可达，服务器说有新版。
-        let merged =
-            merge_update_sources(Ok(newer("0.2.5")), Err("网络不通".into())).expect("一边失败不算错");
+        let merged = merge_update_sources(Ok(newer("0.2.5")), Err("网络不通".into()))
+            .expect("一边失败不算错");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
 
         // 服务器挂了，GitHub 说有新版。
-        let merged =
-            merge_update_sources(Err("服务器超时".into()), Ok(newer("0.2.5"))).expect("一边失败不算错");
+        let merged = merge_update_sources(Err("服务器超时".into()), Ok(newer("0.2.5")))
+            .expect("一边失败不算错");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
 
         // 服务器明确说已是最新、GitHub 连不上：按已是最新处理，不弹错。
@@ -4995,6 +5077,12 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                 payload.len() as u32,
                 Instant::now(),
             );
+            // 控制页被切走（保活在 DOM 里但不可见）时不往 WebView 送帧：
+            // 4K MJPEG 的 base64 编码和事件解析都在主线程上，隐藏页面继续
+            // 收帧会让整窗点击卡上好几秒。统计照常累加，回页后立刻恢复。
+            if shared.video_muted.load(Ordering::Relaxed) {
+                return;
+            }
             let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
             let h264 = frame.codec == FrameCodec::H264;
             let event = ControlFrameEvent {
@@ -5321,6 +5409,7 @@ async fn account_view(shared: &Shared) -> AccountView {
         error: shared.error.read().await.clone(),
         quick,
         local: config.local_mode,
+        server_version: shared.server_version.lock().unwrap().clone(),
     }
 }
 
@@ -5617,6 +5706,8 @@ fn main() {
         group: StdMutex::new(group::Hub::default()),
         next_group: AtomicU64::new(0),
         quality: StdMutex::new(quality::Tracker::new(Instant::now(), now_ms())),
+        video_muted: AtomicBool::new(false),
+        server_version: StdMutex::new(None),
         h264_decode: AtomicBool::new(false),
         h264_fallback: AtomicBool::new(false),
         reconnect: StdMutex::new(None),
@@ -5705,6 +5796,7 @@ fn main() {
             stop_control,
             send_control_input,
             set_stream_options,
+            set_control_video_muted,
             set_video_decoder,
             disable_h264_video,
             request_video_keyframe,

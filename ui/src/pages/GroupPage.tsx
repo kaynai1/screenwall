@@ -287,6 +287,7 @@ export default function GroupPage({
   setSelectedIds,
   onOpenDevice,
   notify,
+  active,
 }: GroupPageProps) {
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -338,6 +339,22 @@ export default function GroupPage({
   }, []);
 
   // 离开页面即停止群控，被控端会话一并关闭。
+  //
+  // 页面是保活的（只是 `display:none`），不卸载就不会触发下面的清理函数，
+  // 所以这里按 `active` 判断：切走后立刻停掉，别让多路画面在后台继续编码、
+  // 传输、进 WebView，用户点别处就会卡。
+  useEffect(() => {
+    if (active) return;
+    const current = tokenRef.current;
+    tokenRef.current = 0;
+    if (current > 0) {
+      void stopGroup(current).catch(() => {});
+      setRunning(false);
+      setFrames({});
+      setMemberStates({});
+    }
+  }, [active]);
+
   useEffect(
     () => () => {
       const current = tokenRef.current;

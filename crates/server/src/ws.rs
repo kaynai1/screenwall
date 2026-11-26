@@ -295,7 +295,10 @@ async fn handle_device_text(
 /// 往别人的主控连接里塞消息。字段逐项重建，不原样透传。
 async fn handle_device_p2p(state: &Arc<AppState>, user_id: i64, key: &str, value: &Value) {
     let (Some(request), Some(viewer_id)) = (
-        value.get("request").and_then(Value::as_u64).map(|r| r as u32),
+        value
+            .get("request")
+            .and_then(Value::as_u64)
+            .map(|r| r as u32),
         value.get("viewerId").and_then(Value::as_u64),
     ) else {
         return;
@@ -332,8 +335,12 @@ async fn handle_device_p2p(state: &Arc<AppState>, user_id: i64, key: &str, value
             .get("fingerprint")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let token = value.get("token").and_then(Value::as_str).unwrap_or_default();
-        if candidates.is_empty() || fingerprint.len() > 200 || token.is_empty() || token.len() > 200 {
+        let token = value
+            .get("token")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if candidates.is_empty() || fingerprint.len() > 200 || token.is_empty() || token.len() > 200
+        {
             return;
         }
         json!({

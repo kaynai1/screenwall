@@ -1066,12 +1066,15 @@ export default function WallPage(props: WallPageProps) {
     [devices, account.deviceId],
   );
 
-  // 在线设备各开一条只读缩略图会话（1 FPS / 320px 宽），离开页面时全部断开。
+  // 在线设备各开一条只读缩略图会话（1 FPS / 320px 宽）。
+  // 页面被切走（保活在 DOM 里但不可见）时全部停订阅：缩略图再小也是每秒
+  // 每台一条帧事件，和前台点击抢同一个 WebView 主线程，切回来再重开。
   useEffect(() => {
     if (!isTauri) return;
-    const ids = onlinePreviewKey ? onlinePreviewKey.split(",") : [];
+    const ids =
+      active && onlinePreviewKey ? onlinePreviewKey.split(",") : [];
     void setWallPreview(ids).catch(() => {});
-  }, [onlinePreviewKey]);
+  }, [onlinePreviewKey, active]);
 
   useEffect(() => {
     if (!isTauri) return;

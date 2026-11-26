@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Info, Loader2 } from "lucide-react";
 import {
   answerControlRequest,
   getAccount,
+  getControlInfo,
   listControlRequests,
   listDevices,
   login as apiLogin,
@@ -16,6 +17,7 @@ import {
   subscribeAccount,
   subscribeConnectLink,
   subscribeControlRequest,
+  subscribeControlState,
   subscribeDevices,
   takeConnectLink,
   type ConnectLinkInput,
@@ -72,6 +74,10 @@ export default function App() {
   /** 局域网直连开关状态（侧栏底部那个开关）。 */
   const [directOn, setDirectOn] = useState(false);
   const [directBusy, setDirectBusy] = useState(false);
+  /** 当前远程会话真实走的链路；没有会话时为 null（侧栏胶囊按它显示）。 */
+  const [controlLink, setControlLink] = useState<
+    "relay" | "direct" | "p2p" | null
+  >(null);
   /** 已经打开过的页面：切回来时复用，不再重新挂载、重新拉数据。 */
   const [visited, setVisited] = useState<Set<PageKey>>(() => new Set(["wall"]));
   // 任何方式切页（侧栏 navigate、屏幕墙/设备页 openDevice、登录后进控制页）都要
@@ -150,6 +156,36 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [account?.loggedIn, account?.local]);
+
+  // 侧栏胶囊要按实际链路说话：进入时读一次当前会话，之后跟随 control-state。
+  // 没有会话时保持 null，侧栏按默认路径显示「服务器中转」。
+  useEffect(() => {
+    if (!account?.loggedIn) {
+      setControlLink(null);
+      return;
+    }
+    let alive = true;
+    const sync = () => {
+      void getControlInfo()
+        .then((info) => {
+          if (alive) setControlLink(info ? (info.link ?? "relay") : null);
+        })
+        .catch(() => {});
+    };
+    sync();
+    const off = subscribeControlState((state) => {
+      if (!alive) return;
+      if (state.phase === "closed" || state.phase === "error") {
+        setControlLink(null);
+      } else if (state.link) {
+        setControlLink(state.link);
+      }
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [account?.loggedIn]);
 
   // 后台预启动服务器管理面板子进程：用户第一次点「服务器管理」时
   // 后端复用已启动进程直接返回握手，省掉首次 spawn + 握手的等待。
@@ -608,6 +644,7 @@ export default function App() {
         directOn={directOn}
         directBusy={directBusy}
         onToggleDirect={() => void toggleDirect()}
+        link={controlLink}
       />
 
       <div className="app-main">
