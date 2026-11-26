@@ -55,10 +55,11 @@
 # 2. 打包
 scripts\tauri-build.bat build --bundles nsis
 
-# 3. 建 Release 并上传安装包
-gh release create v0.2.3 `
-  target\release\bundle\nsis\ScreenWall_0.2.3_x64-setup.exe `
-  --title "ScreenWall 0.2.3" `
+# 3. 建 Release 并上传安装包（$v 换成这次要发的版本）
+$v = "0.2.8"
+gh release create "v$v" `
+  "target\release\bundle\nsis\ScreenWall_${v}_x64-setup.exe" `
+  --title "ScreenWall $v" `
   --notes "本次更新说明"
 ```
 
@@ -67,7 +68,9 @@ gh release create v0.2.3 `
 ### 路线 B：发到自建服务器（账号 / 连接码模式用户走这条）
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version 0.2.3
+# $v 与路线 A 同一版本
+$v = "0.2.8"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
 ```
 
 这个脚本会：
@@ -87,10 +90,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -
 ## 三、版本号要改哪三处
 
 ```text
-Cargo.toml                        →  [workspace.package] version = "0.2.3"
-ui/package.json                   →  "version": "0.2.3"
-crates/client/tauri.conf.json     →  "version": "0.2.3"
+Cargo.toml                        →  [workspace.package] version = "<版本>"
+ui/package.json                   →  "version": "<版本>"
+crates/client/tauri.conf.json     →  "version": "<版本>"
 ```
+
+三处必须写成同一个版本号（当前是 `0.2.8`）。
 
 漏改 `tauri.conf.json` 会导致安装包文件名和内部版本对不上；漏改 `Cargo.toml` 会让客户端报的版本号还是旧的（`CURRENT_VERSION` 取自 `CARGO_PKG_VERSION`）。
 
