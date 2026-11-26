@@ -254,7 +254,7 @@ FFmpeg 采用 BtbN 的 shared 构建（含 nvenc / qsv / amf），首次启动�
 | GOP | 2 秒；无 B 帧；订阅时和按需产生 IDR |
 | 光标 | 不包含（客户端本地绘制） |
 
-> **现状（2026-11-24 核对）**：这张表是计划。实际聚焦流仍是 **MJPEG**（`jpeg-encoder`），分辨率上限 1920、默认 30 fps、质量 65；没有 H.264 / NVENC / CBR / GOP / IDR，也就谈不上「按发送队列长度降档」。客户端发的是 `codec: mjpeg`（`crates/client/src/main.rs` 的 `default_video_sub` 与 `set_stream_options_impl`）。自适应画质只调 JPEG 质量；`VideoSub.max_bitrate`（kbps）自 2026-11-25 起已实现——按 `kbps * 1000 / 8 / fps` 折算单帧字节预算选质量档，默认不限制。光标方向与本条**相反**：聚焦流订阅 `cursor: true`，光标由 Agent 画进画面，客户端没有本地绘制，见 5.2 的现状说明。
+> **现状（2026-11-24 核对）**：这张表是计划。实际聚焦流仍是 **MJPEG**（`jpeg-encoder`），分辨率上限 1920、默认 30 fps、质量 65；没有 H.264 / NVENC / CBR / GOP / IDR，也就谈不上「按发送队列长度降档」。客户端发的是 `codec: mjpeg`（`crates/client/src/main.rs` 的 `default_video_sub` 与 `set_stream_options_impl`）。自适应从 2026-11-26 起是「先画质、后分辨率」：拥塞时（帧率掉到目标的 82% 以下，或 RTT 超过本会话最小值的 1.8 倍 + 25ms）先沿 75→65→55→48→42 降 JPEG 质量，到底再沿 3840→2560→1920→1280 降分辨率；链路连续 6 个窗口（约 12 秒）健康才往回升，且不会超过用户手动选的那一档。帧率支持 `0 = 自动`（不设上限，DXGI 只在桌面变化时出帧，实际跟着显示器刷新率走）。`VideoSub.max_bitrate`（kbps）按 `kbps * 1000 / 8 / fps` 折算单帧字节预算选质量档，默认不限制。光标方向与本条**相反**：聚焦流订阅 `cursor: true`，光标由 Agent 画进画面，客户端没有本地绘制，见 5.2 的现状说明。
 
 ### 6.3 解码与渲染（Web）
 

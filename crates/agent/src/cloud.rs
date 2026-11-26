@@ -131,12 +131,14 @@ async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<
     // 配置了自定义 CA 就只信任它（同 curl --cacert），否则走系统默认信任库。
     let connector =
         crate::ca::connector_from_path(options.ca_path.as_deref()).context("加载自定义 CA 失败")?;
+    // 关掉 Nagle：被控端上行是持续的视频帧，下行是键鼠和心跳；Nagle 会把
+    // 小包压到有 ACK 才发，交互延迟最坏多出 40ms。
     let (ws, _) = match connector {
         Some(connector) => {
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+            tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector))
                 .await
         }
-        None => tokio_tungstenite::connect_async(request).await,
+        None => tokio_tungstenite::connect_async_with_config(request, None, true).await,
     }
     .context("WebSocket 连接失败")?;
     tracing::info!("已连接账号服务器 {}", options.server_url);
@@ -922,11 +924,12 @@ async fn session_task(
                                     }
                                 };
 
+                                // 控制流跟随主控端的帧率（0 = 自动，不设上限）；
                                 // 缩略图会话强制低帧率、小尺寸，别让屏幕墙把 CPU 吃光。
                                 let (fps_cap, width_cap) = if view_only {
                                     (2, 480)
                                 } else {
-                                    (60, u32::MAX)
+                                    (capture::MAX_FPS, u32::MAX)
                                 };
                                 let options = CaptureOptions {
                                     fps: sub.fps.min(fps_cap),

@@ -501,11 +501,94 @@ impl Default for NetStats {
     }
 }
 
-/// 自适应阶梯：只调 JPEG 画质，不动分辨率。
+/// 自适应阶梯：先调 JPEG 画质，降到最低档还跟不上才动分辨率。
 ///
-/// 降分辨率会触发 CPU 双线性缩放（实测 1080p→1600 要 30ms 以上），
-/// 反而把帧率压得更低；降画质只减少编码字节数，对弱网和编码瓶颈都有效。
+/// 降画质只减少编码字节数，代价最小；降分辨率要重新订阅并多一次缩放，
+/// 放在最后，且最低只到 1280 宽 —— 再低就没法操作了。
 const QUALITY_LADDER: [u8; 5] = [75, 65, 55, 48, 42];
+
+/// 自适应可以走的分辨率档位，与界面上的四档一致。
+const WIDTH_LADDER: [u32; 4] = [1280, 1920, 2560, 3840];
+
+/// 连续多少个健康窗口才允许往上调一档（每窗口 2 秒）。
+const UPGRADE_STREAK: u32 = 6;
+/// RTT 超过会话最小值的这个比例 + 余量，就认为链路上已经排上队。
+const RTT_CONGESTED_RATIO: f64 = 1.8;
+const RTT_CONGESTED_SLACK_MS: f64 = 25.0;
+/// RTT 回落到这个范围之内才算链路干净，可以尝试升档。
+const RTT_CLEAR_RATIO: f64 = 1.3;
+const RTT_CLEAR_SLACK_MS: f64 = 10.0;
+
+/// 画质阶梯上降一档；已经是最后一档返回 `None`。
+fn quality_down(current: u8) -> Option<u8> {
+    QUALITY_LADDER
+        .iter()
+        .position(|candidate| *candidate == current)
+        .and_then(|index| QUALITY_LADDER.get(index + 1))
+        .copied()
+}
+
+/// 画质阶梯上升一档；已经是最清晰返回 `None`。
+fn quality_up(current: u8) -> Option<u8> {
+    QUALITY_LADDER
+        .iter()
+        .position(|candidate| *candidate == current)
+        .filter(|index| *index > 0)
+        .map(|index| QUALITY_LADDER[index - 1])
+}
+
+/// 分辨率降一档（只走阶梯里比当前小的最大值）。
+fn width_down(current: u32) -> Option<u32> {
+    WIDTH_LADDER
+        .iter()
+        .rev()
+        .copied()
+        .find(|width| *width < current)
+}
+
+/// 分辨率升一档，不超过用户选的上限。
+fn width_up(current: u32, ceiling: u32) -> Option<u32> {
+    WIDTH_LADDER
+        .iter()
+        .copied()
+        .find(|width| *width > current && *width <= ceiling)
+}
+
+/// 自适应的一步动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdaptAction {
+    Hold,
+    Quality(u8),
+    Width(u32),
+}
+
+/// 根据这一窗口的链路状态决定下一步。
+///
+/// 下调是即时的：一旦认定拥塞就先降画质，画质到底再降分辨率。
+/// 上调是保守的：连续 [`UPGRADE_STREAK`] 个健康窗口才升一档，且先升画质
+/// 再升分辨率，避免在临界点上来回抖动。
+fn adapt_decision(
+    congested: bool,
+    healthy: bool,
+    good_windows: u32,
+    quality: u8,
+    width: u32,
+    ceiling: u32,
+) -> AdaptAction {
+    if congested {
+        return quality_down(quality)
+            .map(AdaptAction::Quality)
+            .or_else(|| width_down(width).map(AdaptAction::Width))
+            .unwrap_or(AdaptAction::Hold);
+    }
+    if healthy && good_windows >= UPGRADE_STREAK {
+        return quality_up(quality)
+            .map(AdaptAction::Quality)
+            .or_else(|| width_up(width, ceiling).map(AdaptAction::Width))
+            .unwrap_or(AdaptAction::Hold);
+    }
+    AdaptAction::Hold
+}
 
 #[derive(Default)]
 struct Tasks {
@@ -536,6 +619,9 @@ struct Shared {
     auto_quality: AtomicBool,
     /// 当前处于自适应阶梯的第几级。
     quality_step: AtomicUsize,
+    /// 用户手动选的分辨率上限（自适应降分辨率后仍按它回升，不会越过用户的选择）。
+    /// 0 表示未知，按当前请求宽度当作上限。
+    user_max_width: AtomicU32,
     /// 最近一次隧道 Ping 的往返时延，0 表示未知。
     rtt_ms: AtomicU32,
     /// 已发出但还没回 Ping 的时间戳。
@@ -2761,8 +2847,12 @@ async fn set_stream_options_impl(
     display: Option<u32>,
     manual: bool,
 ) -> Result<(), String> {
-    if !(1..=60).contains(&fps) {
-        return Err(format!("帧率超出范围（{fps}，允许 1-60）"));
+    // 0 是「自动」：不设目标帧率，由被控端按显示器和链路能力尽量跑快。
+    if fps > screenwall_agent::capture::MAX_FPS {
+        return Err(format!(
+            "帧率超出范围（{fps}，允许 0-{}，0 表示自动）",
+            screenwall_agent::capture::MAX_FPS
+        ));
     }
     if !(320..=3840).contains(&max_width) {
         return Err(format!("宽度超出范围（{max_width}，允许 320-3840）"));
@@ -2833,6 +2923,8 @@ async fn set_stream_options_impl(
     if manual {
         // 手动选参数即视为退出自动档：用户的选择优先于自适应。
         shared.auto_quality.store(false, Ordering::Relaxed);
+        // 记住用户要的分辨率上限：之后即使自适应临时降过，也只会回到这一档。
+        shared.user_max_width.store(max_width, Ordering::Relaxed);
         let step = QUALITY_LADDER
             .iter()
             .position(|candidate| *candidate == quality)
@@ -2887,6 +2979,8 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
     // 新会话开始的几个窗口只观察不决策：起流、握手、首帧都在这一段里。
     let mut warmup = 0u32;
     let mut last_session = 0u32;
+    // 本会话见过的最小 RTT，作为「链路是否开始排队」的基线；换会话就重测。
+    let mut min_rtt: Option<u32> = None;
 
     loop {
         ticker.tick().await;
@@ -2900,6 +2994,11 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
             last_session = control.session;
             warmup = 2;
             good_windows = 0;
+            min_rtt = None;
+            // 新会话的分辨率上限以当前请求为准；用户重新选过会覆盖它。
+            shared
+                .user_max_width
+                .store(control.max_width, Ordering::Relaxed);
         }
 
         let (fps, kbps, frames) = {
@@ -2932,7 +3031,7 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
             }),
         );
 
-        if !shared.auto_quality.load(Ordering::Relaxed) || control.fps == 0 {
+        if !shared.auto_quality.load(Ordering::Relaxed) {
             good_windows = 0;
             continue;
         }
@@ -2944,67 +3043,103 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
             cooldown -= 1;
             continue;
         }
-        // 窗口里几乎没有帧（刚重订阅/断流）时不下判断，那测到的是空窗不是卡顿。
-        if frames < 3 {
+        // 固定帧率下窗口里几乎没有帧（刚重订阅/断流）时不下判断，那测到的
+        // 是空窗不是卡顿；自动档静止桌面本来就出不了几帧，不能这样判。
+        if control.fps > 0 && frames < 3 {
             continue;
         }
-
-        let target = control.fps as f64;
-        let step = shared.quality_step.load(Ordering::Relaxed);
         // 用户手选的画质不在阶梯上（退出自动档后又手动选了「清晰」），
         // 自适应不能拿它当基准继续下滑，等下一次手动选择或重启自适应。
-        if QUALITY_LADDER.get(step) != Some(&control.quality) {
+        if !QUALITY_LADDER.contains(&control.quality) {
             good_windows = 0;
             continue;
         }
-        let mut next = step;
-        if fps < target * 0.82 {
-            // 跑不到目标帧率：降一档画质，减少每帧字节数。
-            if step + 1 < QUALITY_LADDER.len() {
-                next = step + 1;
-            }
-            good_windows = 0;
-        } else if fps > target * 0.95 {
-            // 连续 4 个窗口（约 8 秒）都跑满：尝试恢复一档。
-            good_windows += 1;
-            if good_windows >= 4 && step > 0 {
-                next = step - 1;
-                good_windows = 0;
-            }
-        } else {
-            good_windows = 0;
-        }
 
-        if next != step {
-            let quality = QUALITY_LADDER[next];
-            let width = if control.max_width > 0 {
-                control.max_width
-            } else {
-                screenwall_agent::capture::DEFAULT_MAX_WIDTH
-            };
+        // RTT 是直连 / 打洞 / 中转三条路都测得到的真实路径时延：链路开始
+        // 排队时它比帧率更早变化，用它判断拥塞可以少掉一批帧。
+        if rtt > 0 {
+            min_rtt = Some(min_rtt.map_or(rtt, |best| best.min(rtt)));
+        }
+        let congested_rtt = match (rtt, min_rtt) {
+            (0, _) | (_, None) => false,
+            (now, Some(best)) => {
+                now as f64 > best as f64 * RTT_CONGESTED_RATIO + RTT_CONGESTED_SLACK_MS
+            }
+        };
+        let clear_rtt = match (rtt, min_rtt) {
+            // 拿不到 RTT 时只看帧率，不因此挡住升档。
+            (0, _) | (_, None) => true,
+            (now, Some(best)) => now as f64 <= best as f64 * RTT_CLEAR_RATIO + RTT_CLEAR_SLACK_MS,
+        };
+        let target = control.fps as f64;
+        let fps_low = target > 0.0 && fps < target * 0.82;
+        // 自动帧率没有目标可比，窗口里只要还有帧就算跟上了。
+        let fps_ok = if target > 0.0 {
+            fps > target * 0.95
+        } else {
+            frames > 0
+        };
+        let congested = congested_rtt || fps_low;
+        let healthy = !congested && fps_ok && clear_rtt;
+        good_windows = if healthy {
+            good_windows.saturating_add(1)
+        } else {
+            0
+        };
+
+        let width = if control.max_width > 0 {
+            control.max_width
+        } else {
+            screenwall_agent::capture::DEFAULT_MAX_WIDTH
+        };
+        // 用户手动选的那一档是天花板；自适应临时降下来的宽度不算。
+        let ceiling = shared.user_max_width.load(Ordering::Relaxed);
+        let ceiling = if ceiling == 0 { width } else { ceiling };
+        let action = adapt_decision(
+            congested,
+            healthy,
+            good_windows,
+            control.quality,
+            width,
+            ceiling,
+        );
+        let (next_quality, next_width) = match action {
+            AdaptAction::Hold => (control.quality, width),
+            AdaptAction::Quality(quality) => (quality, width),
+            AdaptAction::Width(width) => (control.quality, width),
+        };
+        if action != AdaptAction::Hold {
             tracing::info!(
-                from = step,
-                to = next,
-                width,
-                quality,
+                from_quality = control.quality,
+                to_quality = next_quality,
+                from_width = width,
+                to_width = next_width,
                 fps,
+                rtt,
+                congested,
                 "自适应调整画面参数"
             );
             if set_stream_options_impl(
                 &shared,
                 control.client_token,
                 control.fps,
-                width,
-                quality,
+                next_width,
+                next_quality,
                 None,
                 false,
             )
             .await
             .is_ok()
             {
-                shared.quality_step.store(next, Ordering::Relaxed);
+                if let Some(step) = QUALITY_LADDER
+                    .iter()
+                    .position(|candidate| *candidate == next_quality)
+                {
+                    shared.quality_step.store(step, Ordering::Relaxed);
+                }
                 cooldown = 1;
             }
+            good_windows = 0;
         }
     }
 }
@@ -3572,12 +3707,14 @@ async fn view_once(app: &AppHandle, shared: &Arc<Shared>, config: &ClientConfig)
         config.ca_path.as_deref().map(std::path::Path::new),
     )
     .context("加载自定义 CA 失败")?;
+    // 关掉 Nagle：同一条 WebSocket 上既有视频帧也有键鼠/心跳，Nagle 会
+    // 把小包压到有 ACK 才发，交互延迟最坏多出 40ms。
     let (ws, _) = match connector {
         Some(connector) => {
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+            tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector))
                 .await
         }
-        None => tokio_tungstenite::connect_async(request).await,
+        None => tokio_tungstenite::connect_async_with_config(request, None, true).await,
     }
     .context("无法连接服务器")?;
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ViewOut>();
@@ -3804,6 +3941,59 @@ fn reconnect_allowed(control: &ControlSession, wanted: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_walks_quality_before_touching_resolution() {
+        // 拥塞：先降画质；画质到底才降分辨率；都到底就保持。
+        assert_eq!(
+            adapt_decision(true, false, 0, 75, 3840, 3840),
+            AdaptAction::Quality(65)
+        );
+        assert_eq!(
+            adapt_decision(true, false, 0, 42, 3840, 3840),
+            AdaptAction::Width(2560)
+        );
+        assert_eq!(
+            adapt_decision(true, false, 0, 42, 1280, 3840),
+            AdaptAction::Hold
+        );
+    }
+
+    #[test]
+    fn adaptive_upgrades_only_after_a_long_healthy_streak() {
+        // 健康窗口不够多：保持不动，避免在临界点来回抖。
+        assert_eq!(
+            adapt_decision(false, true, UPGRADE_STREAK - 1, 42, 1280, 3840),
+            AdaptAction::Hold
+        );
+        // 够长：先把画质升回去。
+        assert_eq!(
+            adapt_decision(false, true, UPGRADE_STREAK, 42, 1280, 3840),
+            AdaptAction::Quality(48)
+        );
+        // 画质已经最高：再升分辨率，但不越过用户选的上限。
+        assert_eq!(
+            adapt_decision(false, true, UPGRADE_STREAK, 75, 1280, 3840),
+            AdaptAction::Width(1920)
+        );
+        assert_eq!(
+            adapt_decision(false, true, UPGRADE_STREAK, 75, 1920, 1920),
+            AdaptAction::Hold
+        );
+    }
+
+    #[test]
+    fn adaptive_ladders_are_monotonic() {
+        assert_eq!(quality_up(42), Some(48));
+        assert_eq!(quality_up(75), None);
+        assert_eq!(quality_down(75), Some(65));
+        assert_eq!(quality_down(42), None);
+        assert_eq!(width_up(3840, 3840), None);
+        assert_eq!(width_down(1280), None);
+        // 非阶梯宽度（手改过的配置）也能收敛到阶梯上。
+        assert_eq!(width_down(1600), Some(1280));
+        assert_eq!(width_up(1600, 1920), Some(1920));
+    }
 
     fn update_info(version: &str) -> update::UpdateInfo {
         update::UpdateInfo {
@@ -4856,6 +5046,7 @@ fn main() {
         stats: StdMutex::new(NetStats::default()),
         auto_quality: AtomicBool::new(true),
         quality_step: AtomicUsize::new(0),
+        user_max_width: AtomicU32::new(0),
         rtt_ms: AtomicU32::new(0),
         ping_sent: StdMutex::new(None),
         pending_control_requests: StdMutex::new(HashMap::new()),

@@ -728,10 +728,12 @@ pub async fn connect(
         known.as_ref().map(|peer| peer.fingerprint.clone()),
         seen_fingerprint.clone(),
     )?;
+    // 关掉 Nagle：直连会话里键鼠事件和视频帧共用一条 TCP 流，Nagle 会把
+    // 小包攒到有 ACK 才发，最坏多等 40ms，操作手感明显发黏。
     let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
         request,
         None,
-        false,
+        true,
         Some(tokio_tungstenite::Connector::Rustls(connector)),
     )
     .await
@@ -1569,47 +1571,80 @@ pub async fn connect_direct(
         input.host.clone()
     };
 
-    // 先走同网段的 TCP 直连；连不上再试跨网段的 QUIC 打洞。
+    // 先走同网段的 TCP 直连，同时让打洞在一个很短的宽限后也开始。
     //
-    // 顺序不能反：同网段时 TCP 一定更快更稳，打洞要多花几秒探测 STUN。
-    // 反过来（先打洞）会让局域网连接也慢上好几秒。
-    let tcp = connect(
-        &app,
-        shared,
-        &host,
-        input.port,
-        input.pairing_code.as_deref(),
-        client_token,
-    )
-    .await;
-    let Err(tcp_error) = tcp else {
-        return tcp;
-    };
-
+    // 顺序不能反：同网段时 TCP 一定更快更稳（几十毫秒就成功），打洞要多花
+    // 几秒探测 STUN，所以宽限窗口内 TCP 先赢，打洞直接被丢掉。
+    // 但跨网段时 TCP 往往要等系统把 SYN 重试完（Windows 上可达 20 秒）才
+    // 判定不可达，串行的话打洞要白等这 20 秒，这里并行就能省掉。
     let punch_enabled = shared.config.read().await.punch_through;
-    if !punch_enabled {
-        return Err(tcp_error);
-    }
-    tracing::info!("TCP 直连失败（{tcp_error}），尝试跨网段打洞");
-    match connect_punch(
+    connect_tcp_or_punch(
         &app,
         shared,
         &host,
         input.port,
         input.pairing_code.as_deref(),
         client_token,
+        punch_enabled,
     )
     .await
-    {
-        Ok(info) => Ok(info),
-        Err(punch_error) => {
-            // 两条路都失败时把原因都带上：只说打洞失败会让用户以为
-            // 局域网地址填错了，实际可能是对方没开打洞或双方都是对称型 NAT。
-            Err(format!(
-                "局域网直连失败：{tcp_error}；跨网段打洞也失败：{punch_error}"
-            ))
+}
+
+/// 打洞相对 TCP 的启动宽限：局域网 TCP 一般远快于这个值。
+const PUNCH_GRACE: Duration = Duration::from_millis(1200);
+
+/// TCP 直连与打洞并行，谁先成功用谁。
+///
+/// 任何一条先失败都不会立刻放弃 —— 另一条还在跑，跨网段时正是「TCP 不通、
+/// 打洞能通」的常见情形。两条都失败才把两个原因一起报出去。
+async fn connect_tcp_or_punch(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    host: &str,
+    port: Option<u16>,
+    code: Option<&str>,
+    client_token: u64,
+    punch_enabled: bool,
+) -> Result<crate::ControlInfo, String> {
+    let tcp = connect(app, shared, host, port, code, client_token);
+    if !punch_enabled {
+        return tcp.await;
+    }
+    let punch = async {
+        tokio::time::sleep(PUNCH_GRACE).await;
+        connect_punch(app, shared, host, port, code, client_token).await
+    };
+    tokio::pin!(tcp);
+    tokio::pin!(punch);
+
+    let mut tcp_error: Option<String> = None;
+    let mut punch_error: Option<String> = None;
+    loop {
+        tokio::select! {
+            result = &mut tcp, if tcp_error.is_none() => match result {
+                Ok(info) => return Ok(info),
+                Err(error) => {
+                    tracing::info!("TCP 直连失败（{error}），继续等打洞");
+                    tcp_error = Some(error);
+                }
+            },
+            result = &mut punch, if punch_error.is_none() => match result {
+                Ok(info) => return Ok(info),
+                Err(error) => {
+                    tracing::info!("跨网段打洞失败（{error}），继续等 TCP");
+                    punch_error = Some(error);
+                }
+            },
+            else => break,
         }
     }
+    // 两条路都失败时把原因都带上：只说打洞失败会让用户以为局域网地址
+    // 填错了，实际可能是对方没开打洞或双方都是对称型 NAT。
+    Err(format!(
+        "局域网直连失败：{}；跨网段打洞也失败：{}",
+        tcp_error.unwrap_or_default(),
+        punch_error.unwrap_or_default()
+    ))
 }
 
 /// 扫描同网段开启了局域网直连的设备（UDP 广播）。

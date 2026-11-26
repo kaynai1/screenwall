@@ -126,7 +126,59 @@ const RESOLUTION_OPTIONS = [
   { maxWidth: 3840, hint: "4K" },
 ];
 
-const FPS_OPTIONS = [10, 15, 30, 60];
+/**
+ * 帧率档位。`0` 是「自动」：不设目标帧率，被控端按显示器的实际刷新率
+ * （DXGI 只在桌面变化时出帧）和链路能力尽量跑快，慢下来由自适应负责。
+ */
+const FPS_OPTIONS = [0, 10, 15, 30, 60, 90, 120, 144];
+
+/**
+ * 画面偏好（分辨率 / 帧率 / 清晰度）跨会话保留：4K 屏的用户不该每次进控制页
+ * 都重选一遍。显示器索引不保存 —— 它跟某台被控机的屏幕布局绑定，换设备后
+ * 那个索引可能根本不存在，所以每次新会话都从主屏开始。
+ */
+const STREAM_OPTIONS_KEY = "screenwall.stream-options";
+
+function readStreamOptions(): StreamQuality {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(STREAM_OPTIONS_KEY) ?? "null",
+    ) as Partial<StreamQuality> | null;
+    // 只接受菜单里真实存在的档位：旧版本存下的、被手改过的值一律回默认，
+    // 免得界面显示一个后端会钳到别的值的档位。
+    if (
+      saved &&
+      RESOLUTION_OPTIONS.some((item) => item.maxWidth === saved.maxWidth) &&
+      FPS_OPTIONS.includes(saved.fps as number) &&
+      QUALITY_OPTIONS.some((item) => item.quality === saved.quality)
+    ) {
+      return {
+        fps: saved.fps as number,
+        maxWidth: saved.maxWidth as number,
+        quality: saved.quality as number,
+        display: 0,
+      };
+    }
+  } catch {
+    // 存储不可用（隐私模式）或 JSON 损坏：用默认值，不影响连接。
+  }
+  return DEFAULT_STREAM_OPTIONS;
+}
+
+function saveStreamOptions(options: StreamQuality): void {
+  try {
+    localStorage.setItem(
+      STREAM_OPTIONS_KEY,
+      JSON.stringify({
+        fps: options.fps,
+        maxWidth: options.maxWidth,
+        quality: options.quality,
+      }),
+    );
+  } catch {
+    // 存不下就只对本次运行生效。
+  }
+}
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
@@ -230,9 +282,8 @@ export default function ControlPage({
   const [powerBusy, setPowerBusy] = useState(false);
   const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
   const [qualitySwitching, setQualitySwitching] = useState(false);
-  const [streamOptions, setStreamOptionsState] = useState<StreamQuality>(
-    DEFAULT_STREAM_OPTIONS,
-  );
+  const [streamOptions, setStreamOptionsState] =
+    useState<StreamQuality>(readStreamOptions);
   const [displays, setDisplays] = useState<RemoteDisplay[]>([]);
   const [fullscreen, setFullscreen] = useState(false);
   const [sideOpen, setSideOpen] = useState(true);
@@ -1038,6 +1089,26 @@ export default function ControlPage({
         void getRemoteVolume(clientToken).catch(() => {});
       }
       setPhase((current) => (current === "connecting" ? "waiting" : current));
+      // 新会话在后端按默认档（1080p / 30 / 均衡）起订阅，这里补推用户上次
+      // 选的档位；否则界面显示「4K」而实际画面还是 1080p。
+      // 显示器一律回到主屏：记住的索引属于上次那台机器，换设备后可能不存在。
+      const wanted: StreamQuality = { ...streamOptionsRef.current, display: 0 };
+      if (wanted.display !== streamOptionsRef.current.display) {
+        streamOptionsRef.current = wanted;
+        setStreamOptionsState(wanted);
+      }
+      if (
+        wanted.fps !== DEFAULT_STREAM_OPTIONS.fps ||
+        wanted.maxWidth !== DEFAULT_STREAM_OPTIONS.maxWidth ||
+        wanted.quality !== DEFAULT_STREAM_OPTIONS.quality
+      ) {
+        setStreamOptions(clientToken, wanted).catch(() => {
+          // 推不上去就回到默认档，宁可界面朴素也不要显示的档位与实际不符。
+          streamOptionsRef.current = DEFAULT_STREAM_OPTIONS;
+          setStreamOptionsState(DEFAULT_STREAM_OPTIONS);
+          notify("恢复上次的画质设置失败，已回到默认 1080p", "error");
+        });
+      }
       guardTimer = window.setTimeout(() => {
         if (!cancelled && !hasFrameRef.current && !errorRef.current) {
           fail("已建立会话，但 12 秒内没有收到画面");
@@ -1481,6 +1552,8 @@ export default function ControlPage({
     setQualitySwitching(true);
     try {
       await setStreamOptions(controlTokenRef.current, next);
+      // 切换成功后记住这组偏好，下一台设备 / 下次启动沿用。
+      saveStreamOptions(next);
     } catch (error) {
       // 失败时回到切换前的选择，画面保持旧帧不变。
       streamOptionsRef.current = previous;
@@ -1974,8 +2047,8 @@ export default function ControlPage({
                           void applyStreamOptions({ fps: option })
                         }
                       >
-                        <span>{option}</span>
-                        <small>FPS</small>
+                        <span>{option === 0 ? "自动" : option}</span>
+                        <small>{option === 0 ? "不限" : "FPS"}</small>
                       </button>
                     ))}
                   </div>

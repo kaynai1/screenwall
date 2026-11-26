@@ -458,3 +458,13 @@ sidecar 模式下：
 | 侧栏裁切 | 「这台电脑」「局域网模式」副标题在 212px 侧栏里硬切；文案缩短 + `.side-copy-text` 省略号层，完整说明进 `title` |
 | 缩放性能 | `fast_image_resize`（SIMD）替换纯 Rust 浮点双线性；release 实测 4K→1080p 由 32–48 ms 降到 9–15 ms，SIMD 路径失败自动回退。JPEG 编码 1080p Q65 约 12.5 ms/帧（`jpeg-encoder` SIMD 4:2:0） |
 | 服务端一键安装 | `scripts/deploy-server.sh` 重写：自动修复异常 `/dev/null`、依赖安装 3 次重试、tarball 优先（git 兜底、镜像切换）、支持 `--yes --account --password [--port] [--allow-register]` 无交互安装 |
+
+## v0.2.8（2026-11-26）
+
+| 项目 | 内容 |
+| --- | --- |
+| 帧率自动档 | `CaptureOptions.fps = 0` 表示不设上限（`MAX_FPS = 240`）：DXGI 用 4ms 抓帧超时，实际节奏跟显示器刷新率走；GDI 无变化检测，自动档兜底 60fps。节奏每轮重算，DXGI→GDI 回退后自动收回。UI 档位 `自动/10/15/30/60/90/120/144`，`set_stream_options_impl` 允许 `0..=240` |
+| 网络自适应 | `adapt_loop` 改为 RTT + 帧率双信号：以本会话最小 RTT 为基线，`> 1.8× + 25ms` 判拥塞；先沿画质 `75→65→55→48→42` 降，到底再降分辨率 `3840→2560→1920→1280`；连续 6 个健康窗口（约 12s）才回升，且不超过用户手选的分辨率（`Shared.user_max_width`）。三条链路都按真实路径时延判定 |
+| 画质偏好记忆 | 分辨率/帧率/画质存 `localStorage["screenwall.stream-options"]`；会话建立后前端补推一次（后端新会话按默认 1080p/30 起订阅），推失败回退默认并提示。显示器索引每次新会话回主屏 |
+| P2P 传输 | 三处 WebSocket 打开 `disable_nagle`；QUIC `stream_receive_window` 1.25MB→8MB、`send_window` 32MB、保活 10s→5s、拥塞控制 Cubic→BBR；`connect_direct` 改为 TCP 与打洞并行（打洞延迟 1.2s 起步，谁先成功用谁），跨网段不必先等 TCP SYN 重试 |
+| 测试 | 全工作区 313 passed / 0 failed；UI `tsc --noEmit` + `vite build` 通过 |

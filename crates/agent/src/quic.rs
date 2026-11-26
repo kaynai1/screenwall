@@ -30,18 +30,30 @@ pub const ALPN: &[u8] = b"screenwall-direct/1";
 
 /// 空闲多久算断线。控制会话有心跳，但网络抖动时留足余量。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-/// 保活间隔，小于空闲超时的一半。
-const KEEP_ALIVE: Duration = Duration::from_secs(10);
+/// 保活间隔。要短于家用 NAT 的 UDP 映射老化时间（常见 30–60 秒），
+/// 否则闲置几十秒后打洞出来的映射就没了，重连只能退回中转。
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
+/// 单条流的接收窗口。默认 1.25 MB 是按「12.5 MB/s、100ms RTT」算的，
+/// 高延迟链路上会把吞吐卡在「窗口 / RTT」：4K 一帧就可能占掉大半窗口，
+/// 连续几帧就会把发端停住。放大到 8 MB，让 4K 画面也有在途余量。
+const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
+/// 发送窗口：覆盖一条流两个接收窗口，避免发送端被自己的缓冲限制。
+const SEND_WINDOW: u64 = 32 * 1024 * 1024;
 
 fn transport() -> Result<Arc<quinn::TransportConfig>> {
     let mut config = quinn::TransportConfig::default();
     config
+        .stream_receive_window(quinn::VarInt::from_u32(STREAM_WINDOW))
+        .send_window(SEND_WINDOW)
         .keep_alive_interval(Some(KEEP_ALIVE))
         .max_idle_timeout(Some(
             IDLE_TIMEOUT
                 .try_into()
                 .map_err(|error| anyhow!("空闲超时配置无效: {error}"))?,
-        ));
+        ))
+        // 打洞出来的链路常有少量随机丢包，Cubic 会把这种丢包当成拥塞，
+        // 一路砍到低码率；BBR 按带宽和时延建模，视频这种持续流量更稳。
+        .congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     Ok(Arc::new(config))
 }
 

@@ -257,8 +257,19 @@ impl Drop for KeepAwake {
     }
 }
 
+/// 帧率上限。`0` 表示「自动」：不设人为上限，由显示器刷新率和链路能力决定。
+///
+/// 240 只用于挡住荒谬的请求，真实瓶颈在 DXGI 出帧（桌面变化才出）和编码线程，
+/// 所以自动档不会把 CPU 打满 —— 抓屏线程在等下一帧时是阻塞的。
+pub const MAX_FPS: u16 = 240;
+
+/// 自动档折算码率预算时用的等效帧率：没有目标帧率，就按 120 估算单帧预算，
+/// 这不是限速，只是把「一秒的预算」切成一帧能用的份额。
+const AUTO_FPS_FOR_BUDGET: u16 = 120;
+
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureOptions {
+    /// 目标帧率；`0` 表示自动（不设上限）。
     pub fps: u16,
     pub max_width: u32,
     pub quality: u8,
@@ -277,7 +288,11 @@ pub struct CaptureOptions {
 impl CaptureOptions {
     pub fn normalized(self) -> Self {
         Self {
-            fps: self.fps.clamp(1, 60),
+            // 0 是自动档的哨兵值，必须原样保留；其余钳到 1..=MAX_FPS。
+            fps: match self.fps {
+                0 => 0,
+                fps => fps.clamp(1, MAX_FPS),
+            },
             max_width: self.max_width.clamp(320, 3840),
             quality: self.quality.clamp(MIN_JPEG_QUALITY, MAX_JPEG_QUALITY),
             region: self.region.filter(|region| !region.is_empty()),
@@ -290,13 +305,21 @@ impl CaptureOptions {
         }
     }
 
+    /// 折算码率预算用的等效帧率。自动档没有目标帧率，按 [`AUTO_FPS_FOR_BUDGET`] 算。
+    pub fn effective_fps(&self) -> u16 {
+        match self.fps {
+            0 => AUTO_FPS_FOR_BUDGET,
+            fps => fps,
+        }
+    }
+
     /// 单帧字节预算；没设上限时返回隧道允许的最大帧长。
     pub fn frame_budget(&self) -> usize {
         let Some(kbps) = self.max_bitrate else {
             return MAX_JPEG_BYTES;
         };
         let per_second = u64::from(kbps) * 1000 / 8;
-        let per_frame = per_second / u64::from(self.fps.max(1));
+        let per_frame = per_second / u64::from(self.effective_fps());
         // 太小会一帧都发不出去；给一个下限，宁可略超也不断流。
         (per_frame.max(MIN_FRAME_BYTES as u64) as usize).min(MAX_JPEG_BYTES)
     }
@@ -380,8 +403,6 @@ fn run_capture(
     stop: &AtomicBool,
     sink: impl Fn(Vec<u8>) + Send + 'static,
 ) {
-    // 用秒换算，60fps 得到 16.67ms 而不是整数截断的 16ms。
-    let interval = Duration::from_secs_f64(1.0 / options.fps.max(1) as f64);
     let latest = Arc::new(Latest::<FrameJob>::new());
     let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
     let blit_us = Arc::new(AtomicU64::new(0));
@@ -417,6 +438,10 @@ fn run_capture(
 
     while !stop.load(Ordering::Relaxed) {
         let frame_start = Instant::now();
+        // 抓屏节奏同时也是「等下一帧」的超时。每轮重算：显示器关闭后
+        // 采集会从 DXGI 回退到 GDI，自动档必须跟着把节奏收回到 60fps，
+        // 否则 GDI 会以 4ms 的节奏不停拷整块桌面。
+        let interval = pacing_interval(&options, capturer.is_dxgi());
         // 回收编码线程用完的缓冲区，稳态下这条路径不再分配内存。
         while let Ok(buffer) = recycle_rx.try_recv() {
             if pool.len() < BUFFER_POOL {
@@ -481,6 +506,26 @@ fn run_capture(
     latest.close();
     if let Ok(handle) = encoder {
         let _ = handle.join();
+    }
+}
+
+/// 自动档下 DXGI 等下一帧的超时。桌面静止时每 4ms 醒一次，几乎不耗 CPU；
+/// 桌面有更新时 `AcquireNextFrame` 一有新帧就返回，不受这个超时限制。
+const AUTO_IDLE_GRAB: Duration = Duration::from_millis(4);
+
+/// 抓屏节奏（同时也是 DXGI 等下一帧的超时）。
+///
+/// 自动档（`fps = 0`）不是「无限循环拷屏」：
+/// - DXGI 只在桌面变化时出帧，4ms 超时等价于「跟着显示器刷新率走」，
+///   60 / 120 / 144Hz 都能吃满，静止时也不会空转；
+/// - GDI 没有变化检测，每帧都要把整块桌面拷一遍，按 60fps 兜底 ——
+///   再快只会白烧一个核心，编码线程本来也会用最新帧覆盖旧的。
+fn pacing_interval(options: &CaptureOptions, dxgi: bool) -> Duration {
+    match options.fps {
+        0 if dxgi => AUTO_IDLE_GRAB,
+        0 => Duration::from_secs_f64(1.0 / 60.0),
+        // 用秒换算，60fps 得到 16.67ms 而不是整数截断的 16ms。
+        fps => Duration::from_secs_f64(1.0 / fps.max(1) as f64),
     }
 }
 
@@ -848,6 +893,10 @@ impl Capturer {
 
     fn size(&self) -> (u32, u32) {
         (self.out_w as u32, self.out_h as u32)
+    }
+
+    fn is_dxgi(&self) -> bool {
+        matches!(&self.backend, Backend::Dxgi(_))
     }
 
     /// 抓一帧到 dst（紧凑 BGRA）。返回 Ok(None) 表示桌面没有更新。
@@ -1621,9 +1670,29 @@ mod tests {
             max_bitrate: None,
         }
         .normalized();
-        assert_eq!(options.fps, 60);
+        // 120 已经是合法档位，只有超过 MAX_FPS 才钳制。
+        assert_eq!(options.fps, 120);
         assert_eq!(options.max_width, 3840);
         assert_eq!(options.quality, MAX_JPEG_QUALITY);
+
+        let absurd = CaptureOptions { fps: 1000, ..options }.normalized();
+        assert_eq!(absurd.fps, MAX_FPS);
+    }
+
+    #[test]
+    fn capture_options_treat_zero_fps_as_auto() {
+        let options = CaptureOptions {
+            fps: 0,
+            max_width: 1920,
+            quality: 65,
+            region: None,
+            cursor: false,
+            max_bitrate: None,
+        }
+        .normalized();
+        // 0 是自动档哨兵值，不能被钳成 1fps。
+        assert_eq!(options.fps, 0);
+        assert_eq!(options.effective_fps(), AUTO_FPS_FOR_BUDGET);
     }
 
     #[test]
@@ -1637,9 +1706,47 @@ mod tests {
             max_bitrate: None,
         }
         .normalized();
-        assert_eq!(options.fps, 1);
+        assert_eq!(options.fps, 0);
         assert_eq!(options.max_width, 320);
         assert_eq!(options.quality, MIN_JPEG_QUALITY);
+    }
+
+    #[test]
+    fn auto_fps_keeps_frame_budget_sane() {
+        // 8 Mbps 自动档：按 120fps 折算，单帧约 8333 字节，
+        // 不能退化成「把整整一秒的预算都塞进一帧」。
+        let options = CaptureOptions {
+            fps: 0,
+            max_width: 1920,
+            quality: 65,
+            region: None,
+            cursor: false,
+            max_bitrate: Some(8000),
+        }
+        .normalized();
+        assert_eq!(options.frame_budget(), 8333);
+    }
+
+    #[test]
+    fn pacing_follows_backend_in_auto_mode() {
+        let auto = CaptureOptions {
+            fps: 0,
+            max_width: 1920,
+            quality: 65,
+            region: None,
+            cursor: false,
+            max_bitrate: None,
+        };
+        // DXGI 有变化检测：4ms 超时让它跟着显示器刷新走。
+        assert_eq!(pacing_interval(&auto, true), AUTO_IDLE_GRAB);
+        // GDI 没有变化检测：兜底 60fps，别把核心烧满。
+        assert_eq!(pacing_interval(&auto, false), Duration::from_secs_f64(1.0 / 60.0));
+
+        let fixed = CaptureOptions { fps: 144, ..auto };
+        assert_eq!(
+            pacing_interval(&fixed, true),
+            Duration::from_secs_f64(1.0 / 144.0)
+        );
     }
 
     #[test]
