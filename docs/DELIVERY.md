@@ -468,3 +468,16 @@ sidecar 模式下：
 | 画质偏好记忆 | 分辨率/帧率/画质存 `localStorage["screenwall.stream-options"]`；会话建立后前端补推一次（后端新会话按默认 1080p/30 起订阅），推失败回退默认并提示。显示器索引每次新会话回主屏 |
 | P2P 传输 | 三处 WebSocket 打开 `disable_nagle`；QUIC `stream_receive_window` 1.25MB→8MB、`send_window` 32MB、保活 10s→5s、拥塞控制 Cubic→BBR；`connect_direct` 改为 TCP 与打洞并行（打洞延迟 1.2s 起步，谁先成功用谁），跨网段不必先等 TCP SYN 重试 |
 | 测试 | 全工作区 313 passed / 0 failed；UI `tsc --noEmit` + `vite build` 通过 |
+
+## v0.2.9（2026-11-26）
+
+| 项目 | 内容 |
+| --- | --- |
+| 同账号免确认 | 服务器转发 `open` 时带 `"sameAccount": restricted.is_none()`；客户端授权回调在「允许被控」总开关之后按它直接放行。连接码会话为 `false`、局域网直连不带该字段，仍然逐次弹窗。「允许被控」关闭时任何会话照样拒绝。群控不再逐台点确认 |
+| 连接方式胶囊 | 左上角显示当前真实链路：账号模式「服务器中转」、局域网模式「局域网直连」（开=绿/关=灰）、连接码会话「连接码」，悬停显示服务器地址或开关状态 |
+| 沉浸式全屏 | 全屏只留被控端画面：`body.is-immersive` 收起侧栏、顶栏、控制页工具栏与右侧信息栏，底部操作条绝对定位到右下角、半透明，悬停恢复；Esc 或操作条「全屏」退出 |
+| 窗口拖动 | 顶栏与侧栏品牌区改回 `data-tauri-drag-region`，子元素 `pointer-events: none`，修掉「左键长按拖不动窗口」 |
+| 注册重名提示 | `POST /api/v1/register` 的 409 之前被统一映射成「设备刚被其他端修改过」；新增 `username_taken` 文案优先匹配「用户名已存在」，并自动切到登录 tab |
+| 服务端管理脚本 | `scripts/deploy-server.sh` 改为六趣式横幅菜单（安装/更新/状态/日志/重启/备份/卸载），交互一律从 `/dev/tty` 读，`curl \| bash` 下也能提问 |
+| 工具链 | `rust-toolchain.toml` 的 `channel` 不再钉死 `stable-x86_64-pc-windows-msvc`（Linux 服务器上会报 `target tuple in channel name`），安装脚本另加 `normalize_toolchain` 兜底修正 `~/.rustup/settings.toml` |
+| 测试 | `group.rs` 断言 `sameAccount=true`、`quick.rs` 断言 `false`；`cargo check` 三个 crate、集成测试 3 passed、`tsc --noEmit`、`vite build` 通过 |
