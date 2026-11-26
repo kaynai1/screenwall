@@ -59,6 +59,14 @@ pub const POWER: &str = "power";
 pub const WOL: &str = "wol";
 /// 屏幕墙只读会话（`open` 带 `mode: "wall"`）。
 pub const WALL: &str = "wall";
+/// 硬件 H.264 视频通路（`video.sub.codec = "h264"`，Annex-B 字节流）。
+///
+/// 这是**运行时能力**，两边都只在确实可用时才声明：
+/// - 被控端要枚举得到硬件编码 MFT（Media Foundation）；
+/// - 主控端要运行环境里有 WebCodecs 的 [`VideoDecoder`]（由界面探测后告诉后端）。
+///
+/// 所以不要把它加进 [`BASELINE`] 或 [`CURRENT`] —— 那样等于无条件谎报支持。
+pub const VIDEO_H264: &str = "video.h264";
 
 /// 协议 v1 首发就具备的能力。
 ///
@@ -139,6 +147,15 @@ impl Capabilities {
         Self::new(CURRENT.iter().copied())
     }
 
+    /// 本机能力集 + 运行时探测到的额外能力。
+    ///
+    /// [`CURRENT`] 是编译期常量，装不下「这台机器有没有硬件编码器」这类
+    /// 运行时事实。调用方探测成功后才把 [`VIDEO_H264`] 之类的标识加进来，
+    /// 探测失败就传空切片，行为与 [`Capabilities::current`] 完全一致。
+    pub fn current_with(extra: &[&str]) -> Self {
+        Self::new(CURRENT.iter().copied().chain(extra.iter().copied()))
+    }
+
     /// 对端未声明 `caps` 时假定的能力集。
     pub fn legacy() -> Self {
         Self::new(BASELINE.iter().copied())
@@ -192,6 +209,11 @@ impl Capabilities {
     /// 与对端协商出本次会话可用的能力。
     pub fn with_peer(peer: Capabilities) -> Capabilities {
         Capabilities::current().negotiate(&peer.effective())
+    }
+
+    /// 与对端协商，并把本机运行时探测到的额外能力也算进交集。
+    pub fn with_peer_and(peer: Capabilities, extra: &[&str]) -> Capabilities {
+        Capabilities::current_with(extra).negotiate(&peer.effective())
     }
 }
 
@@ -287,6 +309,42 @@ mod tests {
         assert!(agreed.contains(FILE_DIRECTORY));
         assert!(agreed.contains(AUDIO_VOLUME));
         assert!(!agreed.contains(AUDIO_AEC));
+    }
+
+    #[test]
+    fn runtime_extras_join_the_intersection() {
+        // 本机探测到硬件编码、对端也声明了：交集里才有 `video.h264`。
+        let agreed =
+            Capabilities::with_peer_and(Capabilities::new([AUDIO_OPUS, VIDEO_H264]), &[VIDEO_H264]);
+        assert!(agreed.contains(VIDEO_H264));
+        assert!(agreed.contains(AUDIO_OPUS));
+
+        // 任意一边探测失败（传空切片 / 对端没声明）都不该出现。
+        assert!(
+            !Capabilities::with_peer_and(Capabilities::new([VIDEO_H264]), &[],)
+                .contains(VIDEO_H264)
+        );
+        assert!(
+            !Capabilities::with_peer_and(Capabilities::new([AUDIO_OPUS]), &[VIDEO_H264])
+                .contains(VIDEO_H264)
+        );
+
+        // 老版本对端（没有 caps）按基线协商：基线里没有运行时能力。
+        let legacy = Capabilities::with_peer_and(Capabilities::default(), &[VIDEO_H264]);
+        assert!(!legacy.contains(VIDEO_H264));
+        assert!(legacy.contains(AUDIO_OPUS));
+    }
+
+    #[test]
+    fn current_with_leaves_current_untouched() {
+        assert!(!Capabilities::current().contains(VIDEO_H264));
+        assert!(!CURRENT.contains(&VIDEO_H264));
+        assert!(Capabilities::current_with(&[VIDEO_H264]).contains(VIDEO_H264));
+        assert_eq!(
+            Capabilities::current_with(&[]),
+            Capabilities::current(),
+            "没有运行时能力时必须与原行为完全一致"
+        );
     }
 
     #[test]

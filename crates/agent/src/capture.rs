@@ -25,12 +25,13 @@ use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer
 use jpeg_encoder::{ColorType, Encoder};
 use screenwall_proto::cloud::TUNNEL_MAX_PAYLOAD;
 use screenwall_proto::{
-    encode_frame, FrameCodec, FrameHeader, FrameType, FLAG_KEYFRAME, FRAME_HEADER_LEN,
+    encode_frame, FrameCodec, FrameHeader, FrameType, VideoCodec, FLAG_KEYFRAME, FRAME_HEADER_LEN,
 };
 use tokio::sync::oneshot;
 
 use crate::display::MonitorRect;
 use crate::dxgi::{DxgiCapturer, DxgiError};
+use crate::h264;
 
 const SRCCOPY: u32 = 0x00CC_0020;
 const CAPTUREBLT: u32 = 0x4000_0000;
@@ -328,7 +329,17 @@ impl CaptureOptions {
 /// 采集线程句柄。Drop 时通知线程退出，不阻塞当前异步任务。
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
+    /// 请求下一帧编码成关键帧（H.264 专用；MJPEG 每帧都是完整的）。
+    keyframe: Arc<AtomicBool>,
     _thread: Option<JoinHandle<()>>,
+}
+
+impl CaptureHandle {
+    /// 请求一个关键帧。丢包、解码器报错或重新订阅时由会话层调用。
+    /// MJPEG 路径忽略这个请求。
+    pub fn request_keyframe(&self) {
+        self.keyframe.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Drop for CaptureHandle {
@@ -349,11 +360,15 @@ pub type SpawnedCapture = (CaptureHandle, oneshot::Receiver<ReadySize>);
 pub fn spawn(
     stream_id: u16,
     options: CaptureOptions,
+    codec: VideoCodec,
     sink: impl Fn(Vec<u8>) + Send + 'static,
 ) -> SpawnedCapture {
     let options = options.normalized();
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
+    // 未消费的请求保留到下一次编码，所以起始为 true：第一帧必须是关键帧。
+    let keyframe = Arc::new(AtomicBool::new(true));
+    let thread_keyframe = Arc::clone(&keyframe);
     let (ready_tx, ready_rx) = oneshot::channel();
 
     let thread = std::thread::Builder::new()
@@ -377,7 +392,15 @@ pub fn spawn(
             if let Some(tx) = ready_tx.take() {
                 let _ = tx.send(Ok(capturer.size()));
             }
-            run_capture(&mut capturer, stream_id, options, &thread_stop, sink);
+            run_capture(
+                &mut capturer,
+                stream_id,
+                options,
+                codec,
+                &thread_stop,
+                &thread_keyframe,
+                sink,
+            );
 
             // 采集停止时不再假设主控端还能发送 releaseAll。
             crate::input::release_all();
@@ -390,6 +413,7 @@ pub fn spawn(
     (
         CaptureHandle {
             stop,
+            keyframe,
             _thread: thread.ok(),
         },
         ready_rx,
@@ -400,7 +424,9 @@ fn run_capture(
     capturer: &mut Capturer,
     stream_id: u16,
     options: CaptureOptions,
+    codec: VideoCodec,
     stop: &AtomicBool,
+    keyframe: &Arc<AtomicBool>,
     sink: impl Fn(Vec<u8>) + Send + 'static,
 ) {
     let latest = Arc::new(Latest::<FrameJob>::new());
@@ -412,9 +438,32 @@ fn run_capture(
         let latest = Arc::clone(&latest);
         let blit_us = Arc::clone(&blit_us);
         let convert_us = Arc::clone(&convert_us);
+        let keyframe = Arc::clone(keyframe);
+        let name = if codec == VideoCodec::H264 {
+            "h264-encode"
+        } else {
+            "jpeg-encode"
+        };
         std::thread::Builder::new()
-            .name("jpeg-encode".to_string())
+            .name(name.to_string())
             .spawn(move || {
+                if codec == VideoCodec::H264 {
+                    match h264_encode_loop(
+                        stream_id,
+                        options,
+                        &latest,
+                        recycle_tx.clone(),
+                        &blit_us,
+                        &convert_us,
+                        &sink,
+                        &keyframe,
+                    ) {
+                        Ok(()) => return,
+                        Err(error) => {
+                            tracing::warn!("硬件 H.264 编码不可用，回退 MJPEG: {error:#}");
+                        }
+                    }
+                }
                 encode_loop(
                     stream_id,
                     options,
@@ -422,7 +471,7 @@ fn run_capture(
                     recycle_tx,
                     &blit_us,
                     &convert_us,
-                    sink,
+                    &sink,
                 );
             })
     };
@@ -561,6 +610,11 @@ impl<T> Latest<T> {
         previous
     }
 
+    /// 不等待地取走当前帧；邮箱空时返回 None。
+    fn try_take(&self) -> Option<T> {
+        self.slot.lock().unwrap().take()
+    }
+
     /// 等待并取走一帧；超时或关闭时返回 None。
     fn take(&self, timeout: Duration) -> Option<T> {
         let deadline = Instant::now() + timeout;
@@ -602,7 +656,7 @@ fn encode_loop(
     recycle: mpsc::Sender<Vec<u8>>,
     blit_us: &AtomicU64,
     convert_us: &AtomicU64,
-    sink: impl Fn(Vec<u8>),
+    sink: &dyn Fn(Vec<u8>),
 ) {
     let started = Instant::now();
     let mut seq: u32 = 0;
@@ -617,7 +671,8 @@ fn encode_loop(
             }
             if let Some(jpeg) = last_jpeg.as_ref() {
                 if last_sent.elapsed() >= IDLE_RESEND_AFTER {
-                    let frame = build_video_frame(stream_id, seq, started, jpeg);
+                    let frame =
+                        build_video_frame(stream_id, seq, started, jpeg, FrameCodec::Jpeg, true);
                     if frame.len() <= TUNNEL_MAX_PAYLOAD {
                         sink(frame);
                         seq = seq.wrapping_add(1);
@@ -669,7 +724,8 @@ fn encode_loop(
 
         match chosen {
             Some(jpeg) => {
-                let frame = build_video_frame(stream_id, seq, started, &jpeg);
+                let frame =
+                    build_video_frame(stream_id, seq, started, &jpeg, FrameCodec::Jpeg, true);
                 if frame.len() <= TUNNEL_MAX_PAYLOAD {
                     sink(frame);
                     seq = seq.wrapping_add(1);
@@ -694,17 +750,333 @@ fn encode_loop(
     tracing::debug!(stream_id, frames = seq, "屏幕采集线程结束");
 }
 
-fn build_video_frame(stream_id: u16, seq: u32, started: Instant, jpeg: &[u8]) -> Vec<u8> {
+/// H.264 的周期性关键帧间隔：客户端解码器报错后最多等这么久就能恢复，
+/// 静止画面下关键帧本身也很小。
+const H264_KEYFRAME_INTERVAL: Duration = Duration::from_secs(10);
+
+/// H.264 流水线深度：编码器手里最多同时有两帧 —— 一帧还在 GPU 上编、
+/// 一帧刚提交。下一帧的 BGRA→NV12 转换由此盖住上一帧的编码时间
+/// （4K 每帧省下约 9ms）。再深没有收益：MFT 的输入槽只有一两个，
+/// 第三帧只会阻塞在 `ProcessInput` 前。
+const H264_MAX_INFLIGHT: u32 = 2;
+
+/// 只有一帧在途、邮箱里也没有新帧时，等它出结果的时长。
+/// 1080p 一帧四五毫秒就出来了，短等能立刻发出去，不必拖到下一帧到达。
+const H264_SHORT_WAIT: Duration = Duration::from_millis(8);
+
+/// 两帧在途（GPU 还在编）时等输出的上限。正常几十毫秒内一定出帧，
+/// 超时只是先回去看看邮箱，不是错误。
+const H264_BLOCKING_WAIT: Duration = Duration::from_millis(60);
+
+/// 在途帧超过这么久还没有任何输出，就认定编码器卡死：返回错误让调用方
+/// 回退 MJPEG，避免画面永远停住。
+const H264_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 硬件 H.264 编码线程。
+///
+/// 与 MJPEG 线程共用同一个「最新帧」邮箱，但有几处不同：
+/// - **流水线**：提交和收取分开，上一帧在 GPU 上编码时转换下一帧；
+/// - 编码器按实际输出尺寸懒创建；分辨率变化（换显示器、改缩放）时重建；
+/// - 桌面静止时重编上一帧（P 帧只有几百字节），保持客户端帧率与不断流判定；
+/// - 首帧、周期性、丢帧后以及客户端主动请求时强制关键帧。丢了参考帧就必须
+///   重发关键帧，否则后续 P 帧会一直花屏。
+///
+/// 返回 `Err` 只发生在编码器创建/编码失败：调用方会回退到 MJPEG 线程。
+// 参数都是采集线程交过来的上下文（邮箱、回收通道、统计、关键帧标志），
+// 进来就组装成下面的 H264Loop；再包一层结构体只是换个地方列同样的字段。
+#[allow(clippy::too_many_arguments)]
+fn h264_encode_loop(
+    stream_id: u16,
+    options: CaptureOptions,
+    latest: &Latest<FrameJob>,
+    recycle: mpsc::Sender<Vec<u8>>,
+    blit_us: &AtomicU64,
+    convert_us: &AtomicU64,
+    sink: &dyn Fn(Vec<u8>),
+    keyframe: &AtomicBool,
+) -> anyhow::Result<()> {
+    H264Loop {
+        stream_id,
+        options,
+        fps: encoder_fps(&options),
+        latest,
+        recycle,
+        blit_us,
+        convert_us,
+        sink,
+        keyframe,
+        started: Instant::now(),
+        seq: 0,
+        stats: EncodeStats::default(),
+        encoder: None,
+        held: None,
+        inflight: 0,
+        inflight_since: None,
+        last_sent: Instant::now() - IDLE_RESEND_AFTER,
+        last_keyframe: None,
+        last_drop_log: None,
+    }
+    .run()
+}
+
+/// H.264 编码线程的全部状态。
+///
+/// 字段多但都是同一条线程独占的，拆成结构体比一串参数传递清楚：
+/// 邮箱与回收通道是采集线程交过来的，其余是本轮的流水线记账。
+struct H264Loop<'a> {
+    stream_id: u16,
+    options: CaptureOptions,
+    fps: u32,
+    latest: &'a Latest<FrameJob>,
+    recycle: mpsc::Sender<Vec<u8>>,
+    blit_us: &'a AtomicU64,
+    convert_us: &'a AtomicU64,
+    sink: &'a dyn Fn(Vec<u8>),
+    keyframe: &'a AtomicBool,
+    started: Instant,
+    seq: u32,
+    stats: EncodeStats,
+    encoder: Option<h264::Encoder>,
+    /// 最近一次提交的画面；桌面静止时重编它保持主控端帧率。
+    held: Option<FrameJob>,
+    /// 已提交、还没收到输出的帧数。
+    inflight: u32,
+    /// 最早那帧在途帧的提交时刻，只用来发现编码器卡死。
+    inflight_since: Option<Instant>,
+    last_sent: Instant,
+    last_keyframe: Option<Instant>,
+    last_drop_log: Option<Instant>,
+}
+
+impl H264Loop<'_> {
+    fn run(mut self) -> anyhow::Result<()> {
+        loop {
+            let mut did_work = false;
+
+            // 1. 提交：邮箱里有新帧就尽快送进编码器。转换发生在这里，
+            //    此时上一帧还在 GPU 上编，两边重叠。
+            while self.inflight < H264_MAX_INFLIGHT {
+                let Some(job) = self.latest.try_take() else {
+                    break;
+                };
+                self.submit(job)?;
+                did_work = true;
+            }
+
+            // 2. 收集：两帧在途说明 GPU 还在忙，阻塞等；只有一帧时短等，
+            //    结果一出来就发，不为等下一帧把延迟拖长。
+            if self.inflight > 0 {
+                let wait = if self.inflight > 1 {
+                    H264_BLOCKING_WAIT
+                } else {
+                    H264_SHORT_WAIT
+                };
+                let encoded = self
+                    .encoder
+                    .as_mut()
+                    .expect("有在途帧时编码器一定存在")
+                    .collect(wait)?;
+                if let Some(encoded) = encoded {
+                    self.inflight -= 1;
+                    self.inflight_since = (self.inflight > 0).then(Instant::now);
+                    self.emit(encoded);
+                    did_work = true;
+                } else if let Some(since) = self.inflight_since {
+                    if since.elapsed() >= H264_STALL_TIMEOUT {
+                        anyhow::bail!(
+                            "编码器超过 {} 秒没有输出，判定为卡死",
+                            H264_STALL_TIMEOUT.as_secs()
+                        );
+                    }
+                }
+            }
+            self.stats
+                .maybe_log(self.stream_id, self.blit_us, self.convert_us, self.options);
+
+            if did_work {
+                continue;
+            }
+
+            // 3. 手上没活：等新帧；一帧都没有时按周期重编上一帧。
+            if self.inflight == 0 {
+                match self.latest.take(IDLE_RESEND_AFTER) {
+                    Some(job) => self.submit(job)?,
+                    None => {
+                        if self.latest.is_closed() {
+                            break;
+                        }
+                        self.resend_if_idle()?;
+                    }
+                }
+            } else if let Some(job) = self.latest.take(H264_SHORT_WAIT) {
+                self.submit(job)?;
+            } else if self.latest.is_closed() {
+                break;
+            }
+        }
+
+        tracing::debug!(
+            stream_id = self.stream_id,
+            frames = self.seq,
+            "H.264 编码线程结束"
+        );
+        Ok(())
+    }
+
+    /// 送入一帧，并把它记成「静止时用来重编的那一帧」。
+    fn submit(&mut self, job: FrameJob) -> anyhow::Result<()> {
+        self.encode_job(&job)?;
+        // 旧的像素还给抓屏线程，稳态下这条路径不再分配大内存。
+        if let Some(old) = self.held.replace(job) {
+            let _ = self.recycle.send(old.pixels);
+        }
+        Ok(())
+    }
+
+    /// 提交一帧的像素（不接管所有权，静止重编也走这里）。
+    fn encode_job(&mut self, job: &FrameJob) -> anyhow::Result<()> {
+        let (job_w, job_h) = (job.width as u32, job.height as u32);
+        let wanted = {
+            let (w, h) = crate::nv12::padded_dims(job.width, job.height);
+            (w as u32, h as u32)
+        };
+
+        let mut fresh = false;
+        if self.encoder.as_ref().map(h264::Encoder::size) != Some(wanted) {
+            let bitrate = h264_bitrate(&self.options, job_w, job_h, self.fps);
+            tracing::info!(
+                stream_id = self.stream_id,
+                width = wanted.0,
+                height = wanted.1,
+                fps = self.fps,
+                bitrate,
+                "重建硬件 H.264 编码器"
+            );
+            self.encoder = Some(h264::Encoder::new(job_w, job_h, self.fps, bitrate)?);
+            fresh = true;
+            // 旧编码器里的在途帧随它一起销毁，输出计数归零。
+            self.inflight = 0;
+            self.inflight_since = None;
+        }
+
+        let force = fresh
+            || self.keyframe.swap(false, Ordering::Relaxed)
+            || self
+                .last_keyframe
+                .is_none_or(|at| at.elapsed() >= H264_KEYFRAME_INTERVAL);
+        self.encoder
+            .as_mut()
+            .expect("编码器已创建")
+            .submit_bgra(&job.pixels, force)?;
+        if self.inflight == 0 {
+            self.inflight_since = Some(Instant::now());
+        }
+        self.inflight += 1;
+        if force {
+            // 以提交时刻算周期；即使编码器不认强制关键帧，10 秒后还会再来一次。
+            self.last_keyframe = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    /// 桌面静止：每 `IDLE_RESEND_AFTER` 重编上一帧。P 帧只有几百字节，
+    /// 主控端的帧率与「画面还在」的判定不会因为没人动鼠标就归零。
+    fn resend_if_idle(&mut self) -> anyhow::Result<()> {
+        if self.last_sent.elapsed() < IDLE_RESEND_AFTER {
+            return Ok(());
+        }
+        let Some(job) = self.held.take() else {
+            return Ok(());
+        };
+        let result = self.encode_job(&job);
+        self.held = Some(job);
+        result
+    }
+
+    /// 把编码器吐出的一帧封包发出（或按单帧上限丢弃）。
+    fn emit(&mut self, encoded: h264::EncodedFrame) {
+        let frame = build_video_frame(
+            self.stream_id,
+            self.seq,
+            self.started,
+            &encoded.data,
+            FrameCodec::H264,
+            encoded.keyframe,
+        );
+        if encoded.data.len() > MAX_JPEG_BYTES || frame.len() > TUNNEL_MAX_PAYLOAD {
+            self.stats.dropped += 1;
+            // 丢掉一帧（尤其是关键帧）后参考链就断了：下一帧必须重发关键帧。
+            self.keyframe.store(true, Ordering::Relaxed);
+            if log_allowed(&mut self.last_drop_log, Instant::now()) {
+                tracing::warn!(
+                    stream_id = self.stream_id,
+                    bytes = encoded.data.len(),
+                    "H.264 帧超过中转单帧上限，已丢弃并要求关键帧"
+                );
+            }
+            return;
+        }
+        (self.sink)(frame);
+        self.seq = self.seq.wrapping_add(1);
+        self.last_sent = Instant::now();
+        self.stats.record(encoded.data.len());
+        if encoded.keyframe {
+            self.last_keyframe = Some(Instant::now());
+        }
+    }
+}
+
+/// 编码器帧率：自动档按 60fps 配置。实际输入可能更快，编码器只会按 CBR
+/// 把码率分摊得更细，不影响正确性。
+fn encoder_fps(options: &CaptureOptions) -> u32 {
+    match options.fps {
+        0 => 60,
+        fps => u32::from(fps),
+    }
+}
+
+/// H.264 的目标码率（kbps）。
+///
+/// H.264 的压缩效率远高于 MJPEG，1080p60 给 8 Mbps、4K60 给 25 Mbps 就能有
+/// 很好的文字清晰度。有码率上限时再与单帧预算取小，保证关键帧不超隧道上限。
+fn h264_bitrate(options: &CaptureOptions, width: u32, _height: u32, fps: u32) -> u32 {
+    let base = match width {
+        w if w >= 3000 => 25_000u64,
+        w if w >= 2400 => 14_000,
+        w if w >= 1600 => 8_000,
+        w if w >= 1200 => 5_000,
+        _ => 3_000,
+    };
+    let fps = u64::from(fps.clamp(1, 240));
+    let mut kbps = (base * fps / 60).max(2_000);
+    if let Some(cap) = options.max_bitrate {
+        kbps = kbps.min(u64::from(cap));
+    }
+    // 单帧预算的 90% 摊到每秒：超过它关键时刻会被单帧上限砍掉。
+    let budget = options.frame_budget() as u64;
+    let by_budget = budget.saturating_mul(fps).saturating_mul(8) / 1000 * 9 / 10;
+    kbps = kbps.min(by_budget.max(1_500)).min(100_000);
+    kbps as u32
+}
+
+fn build_video_frame(
+    stream_id: u16,
+    seq: u32,
+    started: Instant,
+    payload: &[u8],
+    codec: FrameCodec,
+    keyframe: bool,
+) -> Vec<u8> {
     let header = FrameHeader {
         kind: FrameType::Video,
         stream_id,
         seq,
         ts_us: started.elapsed().as_micros() as u64,
         payload_len: 0,
-        codec: FrameCodec::Jpeg,
-        flags: FLAG_KEYFRAME,
+        codec,
+        flags: if keyframe { FLAG_KEYFRAME } else { 0 },
     };
-    encode_frame(&header, jpeg)
+    encode_frame(&header, payload)
 }
 
 /// 编码线程的 5 秒统计窗口。
@@ -1675,7 +2047,11 @@ mod tests {
         assert_eq!(options.max_width, 3840);
         assert_eq!(options.quality, MAX_JPEG_QUALITY);
 
-        let absurd = CaptureOptions { fps: 1000, ..options }.normalized();
+        let absurd = CaptureOptions {
+            fps: 1000,
+            ..options
+        }
+        .normalized();
         assert_eq!(absurd.fps, MAX_FPS);
     }
 
@@ -1740,7 +2116,10 @@ mod tests {
         // DXGI 有变化检测：4ms 超时让它跟着显示器刷新走。
         assert_eq!(pacing_interval(&auto, true), AUTO_IDLE_GRAB);
         // GDI 没有变化检测：兜底 60fps，别把核心烧满。
-        assert_eq!(pacing_interval(&auto, false), Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(
+            pacing_interval(&auto, false),
+            Duration::from_secs_f64(1.0 / 60.0)
+        );
 
         let fixed = CaptureOptions { fps: 144, ..auto };
         assert_eq!(
@@ -1943,6 +2322,107 @@ mod tests {
         let (w, h) = scaled_output_size(0, 0, 1920);
         assert!(w >= 1 && h >= 1, "{w}×{h}");
         assert_eq!(scaled_output_size(1024, 768, 1920), (1024, 768));
+    }
+
+    /// 真机流水线冒烟：合成画面尽可能快地喂进邮箱，跑 2 秒，看编码线程
+    /// 实际发出多少帧。基准（`h264_bench`）量单帧成本，这里验证采集循环
+    /// 本身：提交/收取的记账、邮箱覆盖、退出时不会卡在等输出上。
+    #[test]
+    #[ignore = "需要显卡硬件编码器；用 --ignored 手动跑"]
+    fn h264_pipeline_keeps_up_with_capture() {
+        if !crate::h264::hardware_available() {
+            println!("跳过：本机没有可用的硬件 H.264 编码器");
+            return;
+        }
+        // 采集线程会调 `timeBeginPeriod(1)`；这里没有它，150µs 的等待会被
+        // Windows 拖到 15ms，量出来的帧率会假性偏低。
+        let _timer = TimerResolution::acquire();
+
+        let (width, height) = (1920usize, 1080usize);
+        let options = CaptureOptions {
+            fps: 60,
+            max_width: 1920,
+            quality: 65,
+            region: None,
+            cursor: false,
+            max_bitrate: None,
+        }
+        .normalized();
+
+        let latest = Arc::new(Latest::<FrameJob>::new());
+        let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
+        let (frames_tx, frames_rx) = mpsc::channel::<(u64, bool, usize)>();
+        let blit_us = AtomicU64::new(0);
+        let convert_us = AtomicU64::new(0);
+        let keyframe = Arc::new(AtomicBool::new(true));
+
+        let feeder = {
+            let latest = Arc::clone(&latest);
+            std::thread::spawn(move || {
+                // 渐变底 + 固定的色带，避免编码器把静止画面优化成接近零码率。
+                let mut source = vec![0u8; width * height * 4];
+                for y in 0..height {
+                    for x in 0..width {
+                        let index = (y * width + x) * 4;
+                        source[index] = (x % 256) as u8;
+                        source[index + 1] = (y % 256) as u8;
+                        source[index + 2] = 160;
+                        source[index + 3] = 255;
+                    }
+                }
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    let job = FrameJob {
+                        pixels: source.clone(),
+                        width,
+                        height,
+                    };
+                    // 被覆盖的旧帧直接丢弃：这正是抓屏线程跑赢编码时的行为。
+                    let _ = latest.set(job);
+                    std::thread::yield_now();
+                }
+                latest.close();
+            })
+        };
+
+        let started = Instant::now();
+        let sink = |frame: Vec<u8>| {
+            let (header, body) =
+                screenwall_proto::decode_frame(&frame).expect("发出的帧必须能解析");
+            assert_eq!(header.codec, FrameCodec::H264);
+            let _ = frames_tx.send((
+                started.elapsed().as_micros() as u64,
+                header.is_keyframe(),
+                body.len(),
+            ));
+        };
+        h264_encode_loop(
+            0,
+            options,
+            &latest,
+            recycle_tx,
+            &blit_us,
+            &convert_us,
+            &sink,
+            &keyframe,
+        )
+        .expect("H.264 编码循环失败");
+        feeder.join().expect("喂帧线程异常");
+
+        // 编码线程要把像素缓冲区还给抓屏线程，否则下一个会话会一直分配新内存。
+        let recycled = recycle_rx.try_iter().count();
+        assert!(recycled > 0, "编码线程没有回收像素缓冲区");
+
+        let stamps: Vec<(u64, bool, usize)> = frames_rx.try_iter().collect();
+        let count = stamps.len();
+        assert!(count >= 120, "2 秒只发出 {count} 帧，编码线程没跟上采集");
+        assert!(stamps[0].1, "首帧必须是关键帧");
+        let span = stamps[count - 1].0 - stamps[0].0;
+        let fps = (count - 1) as f64 * 1_000_000.0 / span.max(1) as f64;
+        println!(
+            "2 秒发出 {count} 帧，稳态 {fps:.1} fps，平均 {} KB/帧，回收 {recycled} 个缓冲区",
+            stamps.iter().map(|frame| frame.2).sum::<usize>() / count / 1024
+        );
     }
 
     #[test]

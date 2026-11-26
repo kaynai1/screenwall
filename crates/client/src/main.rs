@@ -31,8 +31,8 @@ use screenwall_proto::{
     decode_frame, AudioCodec, AudioSource, AudioStats, AudioSub, AudioUnsub, AudioVolume,
     AudioVolumeGet, Capabilities, ClipboardSync, DisplayInfo, FrameCodec, FrameType, Hello,
     InputBatch, InputEvent, Message, PeerInfo, Ping, PowerAction, PowerRequest, SasMethod,
-    SecureAttention, StreamKind, VideoCodec, VideoSub, VideoUnsub, DISPLAY_ALL, INPUT_SAS,
-    PROTO_VERSION,
+    SecureAttention, StreamKind, VideoCodec, VideoKeyframe, VideoSub, VideoUnsub, DISPLAY_ALL,
+    INPUT_SAS, PROTO_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -312,7 +312,14 @@ struct ControlFrameEvent {
     height: u32,
     fps: u16,
     bytes: usize,
+    /// `"jpeg"` 或 `"h264"`。
+    codec: String,
+    /// H.264 关键帧（含 SPS/PPS）；界面在解出关键帧前丢弃后续帧。
+    keyframe: bool,
+    /// JPEG 帧的 data URL（`data:image/jpeg;base64,…`），H.264 时为空串。
     data_url: String,
+    /// H.264 Annex-B 帧的 base64；JPEG 时为空串。
+    data: String,
 }
 
 /// 被控端确认收到电源指令。
@@ -422,6 +429,8 @@ struct ControlSession {
     /// 当前视频订阅的宽度上限与画质，自适应按这两个值做阶梯调整。
     max_width: u32,
     quality: u8,
+    /// 当前视频订阅商定的编码（以 `video.sub.ok` 为准）。
+    codec: VideoCodec,
     /// 当前订阅的显示器；`DISPLAY_ALL` 表示整块虚拟桌面。
     display: u32,
     /// 被控端在会话开始时上报的显示器列表。
@@ -609,6 +618,11 @@ struct Shared {
     http: reqwest::Client,
     view_tx: RwLock<Option<mpsc::UnboundedSender<ViewOut>>>,
     control: RwLock<Option<ControlSession>>,
+    /// 视频订阅的串行化锁：握手后的那次订阅和界面推来的画质参数可能同时到，
+    /// 两边都「先看状态再发 `video.sub`」，不串行就会发出两条订阅
+    /// （第二条会把第一条的流换掉，`video.sub.ok` 也会错位）。
+    /// 加锁顺序固定为 `video_sub` → `control`，任何地方都不要反过来。
+    video_sub: tokio::sync::Mutex<()>,
     pending_opens: StdMutex<HashMap<u32, oneshot::Sender<Result<u32, String>>>>,
     /// 异地开机代发的在途会话（最多一条）。
     pending_wake: StdMutex<Option<PendingWake>>,
@@ -642,6 +656,12 @@ struct Shared {
     next_group: AtomicU64,
     /// 当前控制会话的连接质量统计。
     quality: StdMutex<quality::Tracker>,
+    /// 界面里的 WebCodecs `VideoDecoder` 是否可用（前端探测后通过命令告诉我们）。
+    /// 只有为 true 时才会在能力声明里加 `video.h264`，否则老被控端会白白
+    /// 发出一条浏览器解不了的 H.264 流。
+    h264_decode: AtomicBool,
+    /// 这次运行里 H.264 已经失败过（解码报错/被控端拒绝），不再尝试。
+    h264_fallback: AtomicBool,
     /// 断线自动重连的进度与取消信号。
     reconnect: StdMutex<Option<ReconnectGuard>>,
     /// 主控连接（到服务器的 WebSocket）断开时暂存的重连计划，
@@ -2063,9 +2083,12 @@ async fn start_control_impl(
         video_id: None,
         width: 0,
         height: 0,
-        fps: 0,
-        max_width: 0,
-        quality: 0,
+        // 初始订阅参数：1080p / 30 / Q65。
+        // `welcome` 到达后会按协商出的编码立即订阅一次。
+        fps: 30,
+        max_width: 1920,
+        quality: 65,
+        codec: VideoCodec::Mjpeg,
         display: 0,
         displays: Vec::new(),
         audio_enabled: false,
@@ -2096,24 +2119,16 @@ async fn start_control_impl(
             name: hostname(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        caps: Capabilities::current(),
+        caps: Capabilities::current_with(local_caps(shared)),
     });
     if !send_tunnel_json(&out, session, &hello) {
         abort_pending_control(shared, client_token).await;
         return Err("主控连接已断开".into());
     }
 
-    let subscribe = match default_video_sub() {
-        Message::VideoSub(mut sub) => {
-            sub.max_bitrate = bitrate_cap(&shared.config.read().await.clone());
-            Message::VideoSub(sub)
-        }
-        other => other,
-    };
-    if !send_tunnel_json(&out, session, &subscribe) {
-        abort_pending_control(shared, client_token).await;
-        return Err("主控连接已断开".into());
-    }
+    // 视频订阅推迟到 `welcome`：只有拿到双方能力交集之后才知道该发 MJPEG
+    // 还是 H.264，先发一次再切换会多出一段空窗，也会让迟到的 `video.sub.ok`
+    // 覆盖新编码。`welcome` 由读循环处理，那里按协商结果订阅。
 
     Ok(ControlInfo {
         session,
@@ -2149,24 +2164,142 @@ async fn abort_pending_control(shared: &Arc<Shared>, client_token: u64) {
     shared.control_wanted.store(false, Ordering::Relaxed);
 }
 
-/// `start_control` 的默认视频订阅：1080p / 30 FPS / Q65 MJPEG。
-fn default_video_sub() -> Message {
-    Message::VideoSub(VideoSub {
+/// 本机（主控端）运行时额外能力。
+///
+/// 只有界面确认 `window.VideoDecoder` 可用、且这次运行里还没有回退过，
+/// 才声明 `video.h264`；否则握手交集里不会出现它，被控端也就不会发 H.264。
+pub(crate) fn local_caps(shared: &Shared) -> &'static [&'static str] {
+    if shared.h264_decode.load(Ordering::Relaxed) && !shared.h264_fallback.load(Ordering::Relaxed) {
+        &[screenwall_proto::caps::VIDEO_H264]
+    } else {
+        &[]
+    }
+}
+
+fn codec_name(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::Mjpeg => "mjpeg",
+        VideoCodec::H264 => "h264",
+    }
+}
+
+/// 按会话当前参数构造订阅消息。
+fn video_sub_for(
+    control: &ControlSession,
+    codec: VideoCodec,
+    max_bitrate: Option<u32>,
+) -> VideoSub {
+    VideoSub {
         stream: StreamKind::Focus,
-        display: 0,
-        fps: 30,
-        max_width: Some(1920),
-        quality: Some(65),
-        codec: VideoCodec::Mjpeg,
+        display: control.display,
+        fps: control.fps,
+        max_width: Some(control.max_width.max(320)),
+        quality: Some(control.quality.clamp(30, 90)),
+        codec,
         // 远程操作必须看得到被控端光标；界面暂无开关，默认开启。
         cursor: true,
-        max_bitrate: None,
-    })
+        max_bitrate,
+    }
+}
+
+/// 用当前会话参数重新订阅视频，可顺带切换编码。
+///
+/// 会先退订旧流再订阅新流；`video.sub.ok` 到达前宽高清零，在途的旧帧
+/// 因为尺寸不符会被丢弃，界面不会闪一下旧编码的画面。
+async fn subscribe_video(
+    shared: &Arc<Shared>,
+    control: &ControlSession,
+    codec: VideoCodec,
+) -> Result<(), String> {
+    let _serial = shared.video_sub.lock().await;
+    // 等到锁之后重新读一次会话：排队期间界面可能刚改过画质参数，
+    // 用调用方手上的旧快照会把它丢了。
+    let control = {
+        let guard = shared.control.read().await;
+        match guard.as_ref() {
+            Some(current)
+                if current.session == control.session
+                    && current.client_token == control.client_token =>
+            {
+                current.clone()
+            }
+            _ => control.clone(),
+        }
+    };
+    let out = control_out(shared, control.session)
+        .await
+        .ok_or_else(|| "主控连接尚未就绪".to_string())?;
+    if let Some(id) = control.video_id {
+        let unsub = Message::VideoUnsub(VideoUnsub { id });
+        if !send_tunnel_json(&out, control.session, &unsub) {
+            return Err("主控连接已断开".into());
+        }
+    }
+    let max_bitrate = {
+        let config = shared.config.read().await;
+        bitrate_cap(&config)
+    };
+    let subscribe = Message::VideoSub(video_sub_for(&control, codec, max_bitrate));
+    if !send_tunnel_json(&out, control.session, &subscribe) {
+        return Err("主控连接已断开".into());
+    }
+    let mut guard = shared.control.write().await;
+    if let Some(current) = guard.as_mut() {
+        if current.session == control.session && current.client_token == control.client_token {
+            current.codec = codec;
+            current.video_id = None;
+            current.width = 0;
+            current.height = 0;
+        }
+    }
+    tracing::info!(
+        session = control.session,
+        stream = "focus",
+        codec = codec_name(codec),
+        "已重新订阅视频"
+    );
+    Ok(())
 }
 
 /// 把配置里的码率上限规整成协议字段：`None` / 0 / 越界一律当作不限制。
 fn bitrate_cap(config: &ClientConfig) -> Option<u32> {
     config.max_bitrate.filter(|kbps| *kbps > 0)
+}
+
+/// 把新的视频订阅参数记进会话状态（握手订阅与重订阅共用）。
+async fn record_stream_options(
+    shared: &Shared,
+    session: u32,
+    client_token: u64,
+    fps: u16,
+    max_width: u32,
+    quality: u8,
+    display: u32,
+) {
+    let mut guard = shared.control.write().await;
+    if let Some(current) = guard.as_mut() {
+        if current.session == session && current.client_token == client_token {
+            current.fps = fps;
+            current.max_width = max_width;
+            current.quality = quality;
+            current.display = display;
+        }
+    }
+}
+
+/// 手动选参数即退出自动档，并记住用户要的分辨率上限与画质档位。
+fn remember_manual_quality(shared: &Shared, manual: bool, max_width: u32, quality: u8) {
+    if !manual {
+        return;
+    }
+    shared.auto_quality.store(false, Ordering::Relaxed);
+    // 记住用户要的分辨率上限：之后即使自适应临时降过，也只会回到这一档。
+    shared.user_max_width.store(max_width, Ordering::Relaxed);
+    let step = QUALITY_LADDER
+        .iter()
+        .position(|candidate| *candidate == quality)
+        .unwrap_or(0);
+    shared.quality_step.store(step, Ordering::Relaxed);
 }
 
 async fn stop_control_impl(app: &AppHandle, shared: &Arc<Shared>, only_token: Option<u64>) {
@@ -2878,6 +3011,39 @@ async fn set_stream_options_impl(
     {
         return Err(format!("显示器 {} 不存在", display.saturating_add(1)));
     }
+    // 和握手后的那次订阅串行：两边都要「先看状态再发 video.sub」。
+    let _serial = shared.video_sub.lock().await;
+    // 拿到锁之后重读一次会话：排队期间可能刚完成握手订阅（peer_caps 到位），
+    // 也可能刚有解码报错把编码退回 MJPEG，用过期的快照会发错编码。
+    let control = {
+        let guard = shared.control.read().await;
+        match guard.as_ref() {
+            Some(current)
+                if current.session == control.session && current.client_token == client_token =>
+            {
+                current.clone()
+            }
+            _ => return Err("控制会话已切换，请重新连接".into()),
+        }
+    };
+    // `welcome` 还没到：握手后的那次订阅还没发出去，参数记进会话状态即可，
+    // 由它一并带上。这里再发一条只会换来两次订阅（第一次的 `video.sub.ok`
+    // 还会指向随后被替换的流）。
+    if control.peer_caps.is_none() {
+        record_stream_options(
+            shared,
+            control.session,
+            client_token,
+            fps,
+            max_width,
+            quality,
+            display,
+        )
+        .await;
+        remember_manual_quality(shared, manual, max_width, quality);
+        return Ok(());
+    }
+
     let out = control_out(shared, control.session)
         .await
         .ok_or_else(|| "主控连接尚未就绪".to_string())?;
@@ -2895,8 +3061,8 @@ async fn set_stream_options_impl(
         fps,
         max_width: Some(max_width),
         quality: Some(quality),
-        codec: VideoCodec::Mjpeg,
-        // 与 default_video_sub 保持一致：重新订阅时不能把光标弄丢。
+        codec: control.codec,
+        // 重新订阅时不能把光标弄丢。
         cursor: true,
         // 自适应调画质时也要带着码率上限，否则调一档就把上限丢了。
         max_bitrate: bitrate_cap(&shared.config.read().await.clone()),
@@ -2920,17 +3086,7 @@ async fn set_stream_options_impl(
     }
     drop(guard);
 
-    if manual {
-        // 手动选参数即视为退出自动档：用户的选择优先于自适应。
-        shared.auto_quality.store(false, Ordering::Relaxed);
-        // 记住用户要的分辨率上限：之后即使自适应临时降过，也只会回到这一档。
-        shared.user_max_width.store(max_width, Ordering::Relaxed);
-        let step = QUALITY_LADDER
-            .iter()
-            .position(|candidate| *candidate == quality)
-            .unwrap_or(0);
-        shared.quality_step.store(step, Ordering::Relaxed);
-    }
+    remember_manual_quality(shared, manual, max_width, quality);
     Ok(())
 }
 
@@ -3177,6 +3333,8 @@ async fn get_control_info(shared: State<'_, Arc<Shared>>) -> Result<Value, Strin
             "deviceId": control.device_id,
             "session": control.session,
             "clientToken": control.client_token,
+            // 当前订阅的视频编码（`mjpeg` / `h264`）。
+            "codec": codec_name(control.codec),
             // 握手已完成才带；`null` 表示能力未知，前端沿用旧的兜底逻辑。
             "caps": control
                 .peer_caps
@@ -3185,6 +3343,82 @@ async fn get_control_info(shared: State<'_, Arc<Shared>>) -> Result<Value, Strin
         }),
         None => Value::Null,
     })
+}
+
+/// 界面探测 `window.VideoDecoder` 之后告诉后端本机能不能解 H.264。
+///
+/// 必须在 `start_control` 之前调用：握手里的能力声明要用到它。探测不到
+/// 就传 `false`，后端行为与加入 H.264 之前完全一致（只订 MJPEG）。
+#[tauri::command]
+fn set_video_decoder(shared: State<'_, Arc<Shared>>, available: bool) {
+    shared.h264_decode.store(available, Ordering::Relaxed);
+    tracing::info!(available, "WebCodecs H.264 解码能力");
+}
+
+/// 解码失败（或用户手动关掉）时停用 H.264：本次运行不再尝试，当前会话改订 MJPEG。
+///
+/// 「记住」是刻意的：解码器报错往往意味着这台机器的 WebCodecs 与硬件编码器
+/// 的组合不可用，反复重试只会让画面在两种编码之间来回闪。
+#[tauri::command]
+async fn disable_h264_video(
+    shared: State<'_, Arc<Shared>>,
+    client_token: u64,
+) -> Result<(), String> {
+    let shared = shared.inner().clone();
+    let control = {
+        let mut guard = shared.control.write().await;
+        let current = guard
+            .as_mut()
+            .ok_or_else(|| "控制会话尚未建立".to_string())?;
+        if current.client_token != client_token {
+            return Err("控制会话已切换，请重新连接".into());
+        }
+        // 会话核对通过之后才记「本次运行不再用 H.264」：迟到的报错来自上一次
+        // 会话时，不该把新会话也一起拖成 MJPEG。
+        shared.h264_fallback.store(true, Ordering::Relaxed);
+        if current.codec == VideoCodec::Mjpeg {
+            return Ok(());
+        }
+        // 先落下编码再发消息：并发的多次解码错误只会有一次真正重订。
+        // `video_id` 留给 `subscribe_video` 退订旧流。
+        current.codec = VideoCodec::Mjpeg;
+        current.clone()
+    };
+    tracing::warn!("界面停用 H.264，回退 MJPEG");
+    subscribe_video(&shared, &control, VideoCodec::Mjpeg).await
+}
+
+/// 请求被控端立刻产生一个关键帧（解码器丢帧、重配之后调用）。
+#[tauri::command]
+async fn request_video_keyframe(
+    shared: State<'_, Arc<Shared>>,
+    client_token: u64,
+) -> Result<(), String> {
+    let shared = shared.inner();
+    let control = shared
+        .control
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "控制会话尚未建立".to_string())?;
+    if control.client_token != client_token {
+        return Err("控制会话已切换，请重新连接".into());
+    }
+    let Some(id) = control.video_id else {
+        return Ok(());
+    };
+    let out = control_out(shared, control.session)
+        .await
+        .ok_or_else(|| "主控连接尚未就绪".to_string())?;
+    if !send_tunnel_json(
+        &out,
+        control.session,
+        &Message::VideoKeyframe(VideoKeyframe { id }),
+    ) {
+        return Err("主控连接已断开".into());
+    }
+    tracing::debug!(session = control.session, stream = id, "已请求关键帧");
+    Ok(())
 }
 
 /// 当前会话的连接质量（丢帧/丢包、实时帧率与码率、最大帧间隔、重连与 RTT）。
@@ -3508,7 +3742,7 @@ fn emit_control_state(
         width: (control.width > 0).then_some(control.width),
         height: (control.height > 0).then_some(control.height),
         fps: (control.fps > 0).then_some(control.fps),
-        codec: (control.width > 0).then_some("mjpeg".to_string()),
+        codec: (control.width > 0).then_some(codec_name(control.codec).to_string()),
     };
     let _ = app.emit("control-state", event);
 }
@@ -4062,6 +4296,7 @@ mod tests {
             fps: 0,
             max_width: 0,
             quality: 0,
+            codec: VideoCodec::Mjpeg,
             display: 0,
             displays: Vec::new(),
             audio_enabled: false,
@@ -4173,7 +4408,11 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                     let updated = {
                         let mut guard = shared.control.write().await;
                         if let Some(current) = guard.as_mut() {
-                            if current.session == header.session {
+                            // 退订和重新订阅之间会有一段在途消息：编码与当前请求
+                            // 不符的 `video.sub.ok` 来自上一次订阅，认它会把
+                            // `video_id` 指向已经退掉的流。
+                            if current.session == header.session && current.codec == ok.actual.codec
+                            {
                                 current.video_id = Some(ok.id);
                                 current.width = ok.actual.w;
                                 current.height = ok.actual.h;
@@ -4193,6 +4432,7 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                             w = ok.actual.w,
                             h = ok.actual.h,
                             fps = ok.actual.fps,
+                            codec = codec_name(ok.actual.codec),
                             "收到画面订阅确认"
                         );
                         emit_control_state(app, "streaming", &current, None);
@@ -4356,6 +4596,19 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                         // 旧被控端不认识音量消息：只提示一下，别把整页画面判成出错。
                         tracing::debug!(msg = %error.msg, "被控端不支持该消息");
                         let _ = app.emit("control-volume-error", text);
+                    } else if error.code == screenwall_proto::codes::ENCODER_UNAVAILABLE
+                        && control.codec == VideoCodec::H264
+                    {
+                        // 当前订阅的是 H.264 却被拒（编码器初始化失败、硬件被占用），
+                        // 不是会话错误：记住这次回退，本次运行不再请求 H.264，
+                        // 原地改订 MJPEG 把画面接上。
+                        shared.h264_fallback.store(true, Ordering::Relaxed);
+                        tracing::warn!(msg = %error.msg, "H.264 编码不可用，回退 MJPEG");
+                        if let Err(message) =
+                            subscribe_video(shared, &control, VideoCodec::Mjpeg).await
+                        {
+                            emit_control_state(app, "error", &control, Some(message));
+                        }
                     } else {
                         tracing::warn!(code = error.code, msg = %error.msg, "被控端返回错误");
                         emit_control_state(app, "error", &control, Some(text));
@@ -4364,7 +4617,9 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                 Message::Welcome(welcome) => {
                     // 记录双方交集：界面据此直接判断可选功能（如被控端音量），
                     // 不必先发一条消息等 `UNKNOWN_MESSAGE` 回来才知道不支持。
-                    let caps = Capabilities::with_peer(welcome.caps.clone());
+                    // 本机运行时能力（WebCodecs 可用时才有 `video.h264`）也要算进去。
+                    let caps =
+                        Capabilities::with_peer_and(welcome.caps.clone(), local_caps(shared));
                     let updated = {
                         let mut guard = shared.control.write().await;
                         match guard.as_mut() {
@@ -4388,12 +4643,22 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                         let _ = app.emit(
                             "control-caps",
                             ControlCapsEvent {
-                                device_id: current.device_id,
+                                device_id: current.device_id.clone(),
                                 session: current.session,
                                 client_token: current.client_token,
                                 caps: caps.iter().map(str::to_string).collect(),
                             },
                         );
+                        // 握手完成才知道该用哪种编码：双方都声明了 `video.h264`
+                        // 才请求 H.264，否则保持 MJPEG（行为与以前完全一致）。
+                        let codec = if caps.contains(screenwall_proto::caps::VIDEO_H264) {
+                            VideoCodec::H264
+                        } else {
+                            VideoCodec::Mjpeg
+                        };
+                        if let Err(message) = subscribe_video(shared, &current, codec).await {
+                            emit_control_state(app, "error", &current, Some(message));
+                        }
                     }
                 }
                 Message::DisplayList(list) => {
@@ -4482,30 +4747,34 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                 let _ = app.emit("control-audio", event);
                 return;
             }
-            let jpeg = body;
-            if frame.kind != FrameType::Video || frame.codec != FrameCodec::Jpeg {
+            let payload = body;
+            if frame.kind != FrameType::Video {
+                return;
+            }
+            if !matches!(frame.codec, FrameCodec::Jpeg | FrameCodec::H264) {
                 return;
             }
             if control.width == 0 || control.height == 0 {
                 return;
             }
             // 单帧过大通常是异常数据，直接丢弃，避免把 WebView 拖死。
-            if jpeg.len() > 2 * 1024 * 1024 {
+            if payload.len() > 2 * 1024 * 1024 {
                 return;
             }
             {
                 let mut stats = shared.stats.lock().unwrap();
                 stats.frames += 1;
-                stats.bytes += jpeg.len() as u64;
+                stats.bytes += payload.len() as u64;
             }
             // 真实帧头（stream/seq/到达时刻）喂给质量统计器。
             shared.quality.lock().unwrap().on_video(
                 frame.stream_id,
                 frame.seq,
-                jpeg.len() as u32,
+                payload.len() as u32,
                 Instant::now(),
             );
-            let encoded = base64::engine::general_purpose::STANDARD.encode(jpeg);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+            let h264 = frame.codec == FrameCodec::H264;
             let event = ControlFrameEvent {
                 device_id: control.device_id.clone(),
                 session: header.session,
@@ -4516,8 +4785,19 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                 width: control.width,
                 height: control.height,
                 fps: control.fps,
-                bytes: jpeg.len(),
-                data_url: format!("data:image/jpeg;base64,{encoded}"),
+                bytes: payload.len(),
+                codec: if h264 {
+                    "h264".to_string()
+                } else {
+                    "jpeg".to_string()
+                },
+                keyframe: frame.is_keyframe(),
+                data_url: if h264 {
+                    String::new()
+                } else {
+                    format!("data:image/jpeg;base64,{encoded}")
+                },
+                data: if h264 { encoded } else { String::new() },
             };
             let _ = app.emit("control-frame", event);
         }
@@ -5040,6 +5320,7 @@ fn main() {
             .expect("HTTP 客户端"),
         view_tx: RwLock::new(None),
         control: RwLock::new(None),
+        video_sub: tokio::sync::Mutex::new(()),
         pending_opens: StdMutex::new(HashMap::new()),
         pending_wake: StdMutex::new(None),
         next_request: AtomicU32::new(0),
@@ -5057,6 +5338,8 @@ fn main() {
         group: StdMutex::new(group::Hub::default()),
         next_group: AtomicU64::new(0),
         quality: StdMutex::new(quality::Tracker::new(Instant::now(), now_ms())),
+        h264_decode: AtomicBool::new(false),
+        h264_fallback: AtomicBool::new(false),
         reconnect: StdMutex::new(None),
         pending_resume: StdMutex::new(None),
         control_wanted: AtomicBool::new(false),
@@ -5143,6 +5426,9 @@ fn main() {
             stop_control,
             send_control_input,
             set_stream_options,
+            set_video_decoder,
+            disable_h264_video,
+            request_video_keyframe,
             set_audio_enabled,
             get_remote_volume,
             set_remote_volume,

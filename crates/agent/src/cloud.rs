@@ -64,6 +64,8 @@ pub(crate) fn close_session(sessions: &Sessions, session: u32) {
 enum VideoCommand {
     Subscribe(VideoSub),
     Unsubscribe(u16),
+    /// 主控端解码器丢了参考帧，要求下一帧强制关键帧（H.264）。
+    Keyframe(u16),
 }
 
 #[derive(Debug, Clone)]
@@ -432,7 +434,7 @@ async fn session_task(
     }
 
     // 对端没声明 caps 时按 v1 基线处理，这样老主控端仍然能用全部 v1 功能。
-    let agreed = Capabilities::with_peer(hello.caps.clone());
+    let agreed = Capabilities::with_peer_and(hello.caps.clone(), crate::h264::capabilities());
     // 新主控端才认识 `input.status`；老主控端连解析都会失败，直接不发。
     let report_uipi = agreed.contains(INPUT_UIPI);
     tracing::info!(
@@ -894,12 +896,16 @@ async fn session_task(
                         };
                         match command {
                             Some(VideoCommand::Subscribe(sub)) => {
-                                if sub.codec != VideoCodec::Mjpeg {
+                                // H.264 只在硬件编码器确实可用时才接受；否则明确
+                                // 报错，主控端据此回退 MJPEG 并记住这次回退。
+                                if sub.codec == VideoCodec::H264
+                                    && !crate::h264::hardware_available()
+                                {
                                     send_error(
                                         &session,
                                         &out,
                                         codes::ENCODER_UNAVAILABLE,
-                                        "当前只支持 MJPEG 编码",
+                                        "被控端没有可用的硬件 H.264 编码器",
                                     );
                                     continue;
                                 }
@@ -974,17 +980,21 @@ async fn session_task(
                                 let session_id = session;
                                 let sender = out.clone();
                                 let video_traffic = traffic.clone();
-                                let (handle, ready) = capture::spawn(id, options, move |frame| {
-                                    let bytes = frame.len();
-                                    let tunnel = encode_tunnel_frame(
-                                        TunnelKind::Binary,
-                                        session_id,
-                                        &frame,
-                                    );
-                                    if sender.send(WsMessage::Binary(tunnel.into())).is_ok() {
-                                        video_traffic.add(bytes);
-                                    }
-                                });
+                                // 编码器创建失败时，编码线程会自己回退 MJPEG；
+                                // 这里只按主控端选择的编码回报 `video.sub.ok`。
+                                let codec = sub.codec;
+                                let (handle, ready) =
+                                    capture::spawn(id, options, codec, move |frame| {
+                                        let bytes = frame.len();
+                                        let tunnel = encode_tunnel_frame(
+                                            TunnelKind::Binary,
+                                            session_id,
+                                            &frame,
+                                        );
+                                        if sender.send(WsMessage::Binary(tunnel.into())).is_ok() {
+                                            video_traffic.add(bytes);
+                                        }
+                                    });
 
                                 let started = tokio::time::timeout(
                                     Duration::from_secs(3),
@@ -993,6 +1003,16 @@ async fn session_task(
                                 .await;
                                 match started {
                                     Ok(Ok(Ok((w, h)))) => {
+                                        // H.264 的宽高会补齐到偶数，`video.sub.ok`
+                                        // 报编码后的实际尺寸，免得界面按差 1 像素算坐标。
+                                        let (w, h) = if codec == VideoCodec::H264 {
+                                            let (pw, ph) = crate::nv12::padded_dims(
+                                                w as usize, h as usize,
+                                            );
+                                            (pw as u32, ph as u32)
+                                        } else {
+                                            (w, h)
+                                        };
                                         video = Some((id, handle));
                                         video_sub = Some(SubInfo {
                                             id,
@@ -1017,7 +1037,7 @@ async fn session_task(
                                                 id,
                                                 stream: sub.stream,
                                                 actual: ActualVideo {
-                                                    codec: VideoCodec::Mjpeg,
+                                                    codec,
                                                     w,
                                                     h,
                                                     fps: options.fps,
@@ -1055,6 +1075,15 @@ async fn session_task(
                                     video = None;
                                     video_sub = None;
                                     tracing::info!(session, stream = id, "画面订阅已停止");
+                                }
+                            }
+                            Some(VideoCommand::Keyframe(id)) => {
+                                // 只在请求的是当前流时处理；旧流的迟到请求忽略。
+                                if let Some((current, handle)) = video.as_ref() {
+                                    if *current == id {
+                                        handle.request_keyframe();
+                                        tracing::debug!(session, stream = id, "主控端请求关键帧");
+                                    }
                                 }
                             }
                             None => {}
@@ -1173,10 +1202,8 @@ fn handle_message(
         }
         Message::VideoSub(sub) => Some(VideoCommand::Subscribe(sub)),
         Message::VideoUnsub(unsub) => Some(VideoCommand::Unsubscribe(unsub.id)),
-        Message::VideoKeyframe(_) => {
-            // MJPEG 每帧都是完整图像，无需单独请求关键帧。
-            None
-        }
+        // MJPEG 每帧都是完整图像；H.264 下由视频订阅分支处理这个请求。
+        Message::VideoKeyframe(keyframe) => Some(VideoCommand::Keyframe(keyframe.id)),
         Message::WolRequest(request) => {
             let mac = &request.mac;
             if wol::normalize_mac(mac).is_none() {

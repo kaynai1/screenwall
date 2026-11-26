@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import {
   DISPLAY_ALL,
+  disableH264Video,
   getAutoQuality,
   getClipboardSync,
   getConnectionQuality,
@@ -46,6 +47,7 @@ import {
   isTauri,
   reconnectDirect,
   reportAudioStats,
+  requestVideoKeyframe,
   saveScreenshot,
   sendControlInput,
   sendPower,
@@ -54,6 +56,7 @@ import {
   setAutoQuality as saveAutoQuality,
   setRemoteVolume,
   setStreamOptions,
+  setVideoDecoder,
   startControl,
   stopControl,
   subscribeControlAudio,
@@ -75,6 +78,7 @@ import {
   subscribeControlVolumeError,
   type AudioSource,
   type ConnectionQuality,
+  type ControlFrameEvent,
   type ControlReconnectOutcome,
   type ControlStats,
   type InputEvent,
@@ -246,6 +250,81 @@ function readFitMode(): FitMode {
   return "cover";
 }
 
+/** base64（后端把 Annex-B 帧编码后随事件发来）→ 字节。 */
+function base64ToBytes(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+/**
+ * 从 Annex-B 码流里读 SPS（NAL 类型 7）的 profile / 约束 / level，
+ * 拼成 WebCodecs 需要的 `avc1.PPCCLL`。
+ *
+ * 硬件编码器每个关键帧前都会重发 SPS/PPS，所以分辨率或编码参数变了也能
+ * 拿到新值；读不到就说明这不是我们认识的码流，交给调用方回退。
+ */
+function spsCodecString(bytes: Uint8Array): string | null {
+  let index = 0;
+  while (index + 4 <= bytes.length) {
+    const sc3 = bytes[index] === 0 && bytes[index + 1] === 0 && bytes[index + 2] === 1;
+    const sc4 =
+      bytes[index] === 0 &&
+      bytes[index + 1] === 0 &&
+      bytes[index + 2] === 0 &&
+      bytes[index + 3] === 1;
+    if (!sc3 && !sc4) {
+      index += 1;
+      continue;
+    }
+    const start = index + (sc3 ? 3 : 4);
+    if (start + 3 < bytes.length && (bytes[start] & 0x1f) === 7) {
+      const hex = (value: number) =>
+        value.toString(16).toUpperCase().padStart(2, "0");
+      return `avc1.${hex(bytes[start + 1])}${hex(bytes[start + 2])}${hex(
+        bytes[start + 3],
+      )}`;
+    }
+    index = start;
+  }
+  return null;
+}
+
+/** 这个运行环境有没有 WebCodecs 的 H.264 解码器（WebView2 / Chromium 内核）。 */
+function supportsWebCodecsH264(): boolean {
+  return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
+}
+
+/** 一次会话里的 H.264 解码状态；放在 ref 里是因为帧回调是同步的。 */
+type H264State = {
+  decoder: VideoDecoder | null;
+  codec: string | null;
+  /** 配置好之后必须先见到关键帧才能解 P 帧。 */
+  waitingKey: boolean;
+  /** 解码时间戳（微秒）：只要求单调递增，用本地计数避免对端时钟回绕。 */
+  timestamp: number;
+  /** 上次向被控端要关键帧的时刻，避免丢帧时把请求打成洪水。 */
+  lastKeyRequestAt: number;
+  errors: number;
+  /** 已经回退过 MJPEG：本次会话不再尝试解 H.264。 */
+  disabled: boolean;
+};
+
+function newH264State(): H264State {
+  return {
+    decoder: null,
+    codec: null,
+    waitingKey: true,
+    timestamp: 0,
+    lastKeyRequestAt: 0,
+    errors: 0,
+    disabled: false,
+  };
+}
+
 export default function ControlPage({
   devices,
   deviceId,
@@ -289,6 +368,8 @@ export default function ControlPage({
   const [sideOpen, setSideOpen] = useState(true);
   const [stageTone, setStageTone] = useState<StageTone>(readStageTone);
   const [fitMode, setFitMode] = useState<FitMode>(readFitMode);
+  // 当前画面的编码：决定渲染用 <img>（MJPEG）还是 <canvas>（H.264）。
+  const [videoCodec, setVideoCodec] = useState<"mjpeg" | "h264">("mjpeg");
   // 自动模式下的判断结果：画面整体偏亮就用白底，偏暗就用黑底。
   const [stageLight, setStageLight] = useState(false);
   const [keyboardOn, setKeyboardOn] = useState(true);
@@ -357,6 +438,13 @@ export default function ControlPage({
   const qualityMenuRef = useRef<HTMLDivElement | null>(null);
   const streamOptionsRef = useRef(streamOptions);
   const screenRef = useRef<HTMLImageElement | null>(null);
+  const screenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  // 解码出来的原始画面（远端分辨率），每次重绘按 cover/contain 缩放贴到可见画布。
+  const h264SrcRef = useRef<HTMLCanvasElement | null>(null);
+  const h264Ref = useRef<H264State>(newH264State());
+  const paintH264Ref = useRef<() => void>(() => {});
+  const videoCodecRef = useRef<"mjpeg" | "h264">("mjpeg");
   const hasFrameRef = useRef(false);
   const openedRef = useRef(false);
   const errorRef = useRef(false);
@@ -708,6 +796,9 @@ export default function ControlPage({
     setFrameStats({ fps: 0, mbps: 0, width: 0, height: 0 });
     setStreamError(null);
     setDisplays([]);
+    h264Ref.current = newH264State();
+    videoCodecRef.current = "mjpeg";
+    setVideoCodec("mjpeg");
 
     if (!device) return;
     if (!device.online) {
@@ -743,6 +834,170 @@ export default function ControlPage({
       setStreamError(message);
     };
 
+    // ---- H.264 解码 --------------------------------------------------
+    // WebCodecs 的 VideoDecoder 是异步的，而帧事件回调是同步的：状态一律放
+    // 在 `h264Ref` 里，React 只负责在编码切换时重渲染一次。
+
+    if (!h264SrcRef.current) {
+      h264SrcRef.current = document.createElement("canvas");
+    }
+
+    const closeDecoder = () => {
+      const state = h264Ref.current;
+      const decoder = state.decoder;
+      state.decoder = null;
+      state.codec = null;
+      state.waitingKey = true;
+      if (decoder) {
+        try {
+          decoder.close();
+        } catch {
+          // 解码器已经因错误自行关闭（再 close 会抛 InvalidStateError）。
+        }
+      }
+    };
+
+    /** 把远端原始画面按 cover/contain 贴到可见画布上。 */
+    const paintH264 = () => {
+      const canvas = screenCanvasRef.current;
+      const source = h264SrcRef.current;
+      if (!canvas || !source || source.width === 0 || source.height === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.clearRect(0, 0, width, height);
+      const scale = (fitModeRef.current === "cover" ? Math.max : Math.min)(
+        width / source.width,
+        height / source.height,
+      );
+      const drawWidth = source.width * scale;
+      const drawHeight = source.height * scale;
+      context.drawImage(
+        source,
+        (width - drawWidth) / 2,
+        (height - drawHeight) / 2,
+        drawWidth,
+        drawHeight,
+      );
+    };
+    paintH264Ref.current = paintH264;
+
+    const onDecoderError = () => {
+      if (cancelled) return;
+      const state = h264Ref.current;
+      closeDecoder();
+      state.errors += 1;
+      // 连续失败说明这条机器的 WebCodecs 解不了我们的码流：别再让画面
+      // 在两种编码之间来回闪，让后端改订 MJPEG（后端会记住本次运行的回退）。
+      if (state.errors >= 3) {
+        state.disabled = true;
+        void disableH264Video(clientToken).catch(() => {});
+        return;
+      }
+      // 多半只是丢了关键帧：请被控端立刻补一个。
+      void requestVideoKeyframe(clientToken).catch(() => {});
+    };
+
+    const drawDecoded = (frame: VideoFrame) => {
+      const source = h264SrcRef.current;
+      if (source) {
+        if (source.width !== frame.displayWidth || source.height !== frame.displayHeight) {
+          source.width = frame.displayWidth;
+          source.height = frame.displayHeight;
+        }
+        source.getContext("2d")?.drawImage(frame, 0, 0);
+      }
+      frame.close();
+      paintH264();
+      if (!hasFrameRef.current) {
+        hasFrameRef.current = true;
+        setHasFrame(true);
+      }
+    };
+
+    const ensureDecoder = (codec: string): VideoDecoder | null => {
+      const state = h264Ref.current;
+      if (state.disabled) return null;
+      if (state.decoder && state.codec === codec && state.decoder.state === "configured") {
+        return state.decoder;
+      }
+      closeDecoder();
+      try {
+        const decoder = new VideoDecoder({
+          output: drawDecoded,
+          error: onDecoderError,
+        });
+        // Annex-B 输入：不传 description，让解码器自己从码流里取 SPS/PPS。
+        decoder.configure({ codec, optimizeForLatency: true });
+        state.decoder = decoder;
+        state.codec = codec;
+        state.waitingKey = true;
+        return decoder;
+      } catch {
+        onDecoderError();
+        return null;
+      }
+    };
+
+    const decodeH264Frame = (frame: ControlFrameEvent) => {
+      const state = h264Ref.current;
+      if (state.disabled) return;
+      const bytes = base64ToBytes(frame.data);
+      if (frame.keyframe) {
+        const codec = spsCodecString(bytes);
+        const decoder = codec ? ensureDecoder(codec) : null;
+        if (!decoder) {
+          if (!codec) onDecoderError();
+          return;
+        }
+        state.waitingKey = false;
+        state.timestamp += 1000;
+        try {
+          decoder.decode(
+            new EncodedVideoChunk({
+              type: "key",
+              timestamp: state.timestamp,
+              data: bytes,
+            }),
+          );
+        } catch {
+          onDecoderError();
+        }
+        return;
+      }
+      // 配好之前、或等关键帧期间的 P 帧一律丢弃：硬解不会替我们补参考帧。
+      // 首帧关键帧可能在 `video.sub.ok` 之前就到了（那时宽高还是 0，被后端丢弃），
+      // 所以这里主动补要一个，否则要等到 10 秒的周期关键帧才出画面。
+      if (!state.decoder || state.waitingKey) {
+        const now = performance.now();
+        if (now - state.lastKeyRequestAt > 800) {
+          state.lastKeyRequestAt = now;
+          void requestVideoKeyframe(clientToken).catch(() => {});
+        }
+        return;
+      }
+      // 解码跟不上就丢帧（P 帧互不依赖），别让排队延迟越积越大。
+      if (state.decoder.decodeQueueSize > 8) return;
+      state.timestamp += 1000;
+      try {
+        state.decoder.decode(
+          new EncodedVideoChunk({
+            type: "delta",
+            timestamp: state.timestamp,
+            data: bytes,
+          }),
+        );
+      } catch {
+        onDecoderError();
+      }
+    };
+
     const offFrame = subscribeControlFrame((frame) => {
       if (cancelled || frame.clientToken !== clientToken) return;
       if (frame.deviceId !== deviceId) return;
@@ -753,16 +1008,30 @@ export default function ControlPage({
       if (frame.width > 0) info.width = frame.width;
       if (frame.height > 0) info.height = frame.height;
 
-      pendingFrameRef.current = frame.dataUrl;
       openedRef.current = true;
       stalledRef.current = false;
       lastFrameAtRef.current = performance.now();
-      if (screenRef.current) {
-        screenRef.current.src = frame.dataUrl;
-      }
-      if (!hasFrameRef.current) {
-        hasFrameRef.current = true;
-        setHasFrame(true);
+
+      if (frame.codec === "h264") {
+        if (videoCodecRef.current !== "h264") {
+          videoCodecRef.current = "h264";
+          setVideoCodec("h264");
+        }
+        // 只有解出画面才算「有帧」：首帧由 `drawDecoded` 点亮。
+        decodeH264Frame(frame);
+      } else {
+        pendingFrameRef.current = frame.dataUrl;
+        if (videoCodecRef.current !== "mjpeg") {
+          videoCodecRef.current = "mjpeg";
+          setVideoCodec("mjpeg");
+        }
+        if (screenRef.current) {
+          screenRef.current.src = frame.dataUrl;
+        }
+        if (!hasFrameRef.current) {
+          hasFrameRef.current = true;
+          setHasFrame(true);
+        }
       }
       setFrameStats((current) =>
         current.width === frame.width && current.height === frame.height
@@ -1120,7 +1389,11 @@ export default function ControlPage({
     const startRelay = () => {
       clientToken = ++controlTokenSeq;
       controlTokenRef.current = clientToken;
-      startControl(deviceId, clientToken)
+      // 会话握手时就要声明 `video.h264`：探测结果必须先落进后端。
+      // 探测本身不失败；后端调用失败也只是退回 MJPEG，不要中断会话。
+      void setVideoDecoder(supportsWebCodecsH264())
+        .catch(() => {})
+        .then(() => startControl(deviceId, clientToken))
         .then(onSessionReady)
         .catch((error) => {
           // 启动失败（设备离线、被拒、服务器没连上）：不是「断线」，不要重连，
@@ -1163,6 +1436,13 @@ export default function ControlPage({
 
     return () => {
       cancelled = true;
+      // 解码器必须显式关掉：它持有 GPU 侧的硬解会话。
+      try {
+        h264Ref.current.decoder?.close();
+      } catch {
+        // 已经因错误关闭。
+      }
+      h264Ref.current = newH264State();
       offFrame();
       offState();
       offCaps();
@@ -1217,6 +1497,20 @@ export default function ControlPage({
       // 真正的断开由 App 的页面跳转（stopActiveSession）或后端换会话时完成。
     };
   }, [device?.id, device?.online, retryKey]);
+
+  // H.264 画在 canvas 上，缩放与留白由代码算：舞台尺寸一变就得重绘最后一帧。
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || videoCodec !== "h264") return;
+    const observer = new ResizeObserver(() => paintH264Ref.current());
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [videoCodec]);
+
+  // 切换 cover / contain 立即生效，不必等下一帧到达。
+  useEffect(() => {
+    paintH264Ref.current();
+  }, [fitMode, videoCodec]);
 
   // 声音开着时每 2 秒回报一次播放缓冲，被控端按它调整 Opus 码率。
   useEffect(() => {
@@ -1459,7 +1753,12 @@ export default function ControlPage({
 
   async function requestScreenshot() {
     setMenuOpen(false);
-    const dataUrl = pendingFrameRef.current;
+    // H.264 没有现成的 JPEG：从保存原始画面的离屏画布导出 PNG。
+    const source = h264SrcRef.current;
+    const dataUrl =
+      videoCodecRef.current === "h264" && source && source.width > 0
+        ? source.toDataURL("image/png")
+        : pendingFrameRef.current;
     if (!dataUrl) {
       notify("还没有可用画面，等画面出来再试", "error");
       return;
@@ -2276,6 +2575,7 @@ export default function ControlPage({
         <main className="ctrl-main">
           <div className="ctrl-stage-wrap">
             <div
+              ref={stageRef}
               className={`ctrl-screen ctrl-stage ${live ? "is-live" : ""} ${
                 stageTone === "light" || (stageTone === "auto" && stageLight)
                   ? "is-light"
@@ -2284,13 +2584,22 @@ export default function ControlPage({
               style={stageStyle}
             >
               {hasFrame ? (
-                <img
-                  ref={screenRef}
-                  className="ctrl-live-frame ctrl-video"
-                  style={{ objectFit: fitMode }}
-                  alt={`${device.name} 实时画面`}
-                  draggable={false}
-                />
+                videoCodec === "h264" ? (
+                  <canvas
+                    ref={screenCanvasRef}
+                    className="ctrl-live-frame ctrl-video"
+                    role="img"
+                    aria-label={`${device.name} 实时画面`}
+                  />
+                ) : (
+                  <img
+                    ref={screenRef}
+                    className="ctrl-live-frame ctrl-video"
+                    style={{ objectFit: fitMode }}
+                    alt={`${device.name} 实时画面`}
+                    draggable={false}
+                  />
+                )
               ) : (
                 <DesktopPreview device={device} large live={!offline} />
               )}
