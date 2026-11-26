@@ -154,7 +154,11 @@ const HTTP_ERRORS: Record<string, ErrorCopy> = {
   },
   conflict: {
     title: "操作冲突",
-    detail: "这台设备刚被其他端修改过，刷新后再试。",
+    detail: "服务器上的数据刚被其他端改过，刷新后再试。",
+  },
+  username_taken: {
+    title: "这个用户名已经有人用了",
+    detail: "如果这本来就是你注册的账号，切到「登录」用原来的密码登录；不是的话换一个用户名再注册。",
   },
   invalid_input: {
     title: "输入不合法",
@@ -173,6 +177,12 @@ const HTTP_ERRORS: Record<string, ErrorCopy> = {
  * 这些串本身已经是人话，只需要补一个标题。
  */
 const MESSAGE_HINTS: { match: RegExp; copy: ErrorCopy }[] = [
+  {
+    // 注册时用户名已被占用：服务器回 409 + 「用户名已存在」。这条必须排在
+    // HTTP 状态映射前面，否则会被统一说成「操作冲突 / 设备被其他端修改过」。
+    match: /用户名已存在|用户名已被占用|用户名.*已注册/,
+    copy: HTTP_ERRORS.username_taken,
+  },
   {
     match: /尚未登录|未登录|请先登录/,
     copy: {

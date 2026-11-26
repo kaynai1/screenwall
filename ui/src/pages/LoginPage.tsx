@@ -75,6 +75,13 @@ export default function LoginPage({
     if (account.username) setUsername(account.username);
   }, [account.serverUrl, account.username]);
 
+  useEffect(() => {
+    // 注册时提示「用户名已存在」：切到「登录」，密码还留在输入框里，点一下就好。
+    if (mode === "register" && error?.startsWith("这个用户名已经有人用了")) {
+      setMode("login");
+    }
+  }, [error, mode]);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
