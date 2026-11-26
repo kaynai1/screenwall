@@ -60,10 +60,10 @@ export default function Sidebar({
         </div>
         <div className="brand-text">
           <strong>ScreenWall</strong>
-          {/* 「远程工作台」副标题让位给局域网直连状态胶囊：一样的符号+字体，
-              直连开着绿色常显；局域网模式下关着灰色也显示；账号模式下
-              没开直连就不占位（退回静默）。 */}
-          {(account.local || directOn) && (
+          {/* 直连状态胶囊只在局域网模式下显示（开着绿色、关着灰色）。
+              账号模式下连接走服务器，这里再显示「局域网直连」会被误读成
+              「当前正在用局域网」；本机是否在线看左下角那条更准确。 */}
+          {account.local && (
             <span
               className={`brand-direct ${directOn ? "is-on" : "is-off"}`}
               title={directOn ? "局域网直连已开启" : "局域网直连已关闭"}
