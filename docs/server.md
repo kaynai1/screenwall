@@ -578,7 +578,7 @@ jsDelivr 或 GitHub 直连地址。）
 能访问 jsDelivr 的机器可以完全不落地文件：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh \
+curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.8/scripts/deploy-server.sh \
   | bash -s -- --yes --account kay --password '至少8位密码'
 ```
 
@@ -599,7 +599,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-
 日志 / 重启 / 备份 / 卸载）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.7/scripts/deploy-server.sh | bash
+curl -fsSL https://cdn.jsdelivr.net/gh/kaynai1/screenwall@v0.2.8/scripts/deploy-server.sh | bash
 # 或者用上面克隆的目录：
 # bash /tmp/sw/scripts/deploy-server.sh
 ```
