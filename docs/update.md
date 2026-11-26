@@ -56,7 +56,7 @@
 scripts\tauri-build.bat build --bundles nsis
 
 # 3. 建 Release 并上传安装包（$v 换成这次要发的版本）
-$v = "0.2.8"
+$v = "0.2.9"
 gh release create "v$v" `
   "target\release\bundle\nsis\ScreenWall_${v}_x64-setup.exe" `
   --title "ScreenWall $v" `
@@ -91,12 +91,12 @@ curl -fsSL -H 'Accept: application/vnd.github.raw' \
 ```bash
 # 指定版本
 curl -fsSL -H 'Accept: application/vnd.github.raw' \
-  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash -s -- -v 0.2.8
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash -s -- -v 0.2.9
 
 # 用服务器上已有的安装包
 curl -fsSL -H 'Accept: application/vnd.github.raw' \
   https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh \
-  | bash -s -- -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe
+  | bash -s -- -v 0.2.9 -f /root/ScreenWall_0.2.9_x64-setup.exe
 ```
 
 脚本做的事：
@@ -117,7 +117,7 @@ SHA256 不用手填，服务器首次被请求时会自己算并缓存。想先�
 
 ```powershell
 # $v 与路线 A 同一版本
-$v = "0.2.8"
+$v = "0.2.9"
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
 ```
 
@@ -139,7 +139,7 @@ ui/package.json                   →  "version": "<版本>"
 crates/client/tauri.conf.json     →  "version": "<版本>"
 ```
 
-三处必须写成同一个版本号（当前是 `0.2.8`）。
+三处必须写成同一个版本号（当前是 `0.2.9`）。
 
 漏改 `tauri.conf.json` 会导致安装包文件名和内部版本对不上；漏改 `Cargo.toml` 会让客户端报的版本号还是旧的（`CURRENT_VERSION` 取自 `CARGO_PKG_VERSION`）。
 
