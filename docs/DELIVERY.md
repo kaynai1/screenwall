@@ -500,3 +500,11 @@ sidecar 模式下：
 | 界面 | 控制页「连接方式」新增「P2P 直连」，副标题写「画面与输入走 P2P 直连（UDP 打洞），不经服务器中转」；`ControlInfo` / `get_control_info` 新增 `link`（`relay` / `direct` / `p2p`），重连后也能显示真实链路 |
 | 路由修正 | 控制帧的路由改为按「会话有没有链路登记」判断，而不是按设备 ID 前缀：同账号 P2P 的设备 ID 仍是账号里的设备，但帧必须走链路。服务器发来的 `closed` 不再误收链路会话，服务器断线也不会收掉 P2P 会话 |
 | 版本门槛 | 主控端按设备列表里的版本号判断（≥ 0.2.11 才发 `p2p.offer`），旧被控端完全不受影响，也不会白等一轮超时 |
+
+## v0.2.12（2026-11-26）
+
+| 项目 | 内容 |
+| --- | --- |
+| 检查更新永远「已是最新」 | 两个原因叠加：① 客户端 HTTP 客户端没设 User-Agent（reqwest 默认不发），GitHub REST API 直接回 403 `Request forbidden by administrative rules`，GitHub 这一路其实一直失败；② 服务器没配置 `[update]` 时 `/api/v1/version` 回 404，被当成「这一源说已是最新」，于是 GitHub 那路的失败被静默吞掉。哪怕 GitHub 上已经发了新版，界面也一直显示「已是最新版本」 |
+| 修法 | ① 客户端 HTTP 客户端统一加 `User-Agent: ScreenWall/<版本>`；② 更新检查改成三种结论 `Newer` / `Latest` / `Unknown`：「没有更新」和「这一源回答不了」分开，只有至少一源明确说「已是最新」时才按已是最新处理，否则把失败原因如实显示出来 |
+| 测试 | `cargo test -p screenwall-client --bins` 62 passed，新增 `unknown_source_does_not_hide_the_other_failure` |

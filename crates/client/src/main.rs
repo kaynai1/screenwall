@@ -4435,42 +4435,42 @@ mod tests {
         }
     }
 
+    fn newer(version: &str) -> update::SourceCheck {
+        update::SourceCheck::Newer(update_info(version))
+    }
+
     #[test]
     fn update_takes_newer_of_the_two_sources() {
         // 服务器还是旧版、GitHub 已发新版：必须报 GitHub 那个，
         // 否则用户永远停在服务器滞后时的那一版。
-        let merged = merge_update_sources(
-            Ok(Some(update_info("0.2.4"))),
-            Ok(Some(update_info("0.2.5"))),
-        )
-        .expect("两边都成功");
+        let merged =
+            merge_update_sources(Ok(newer("0.2.4")), Ok(newer("0.2.5"))).expect("两边都成功");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
 
         // 反过来也一样。
-        let merged = merge_update_sources(
-            Ok(Some(update_info("0.2.6"))),
-            Ok(Some(update_info("0.2.5"))),
-        )
-        .expect("两边都成功");
+        let merged =
+            merge_update_sources(Ok(newer("0.2.6")), Ok(newer("0.2.5"))).expect("两边都成功");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.6"));
     }
 
     #[test]
     fn update_survives_one_source_being_down() {
         // 纯内网：GitHub 不可达，服务器说有新版。
-        let merged = merge_update_sources(Ok(Some(update_info("0.2.5"))), Err("网络不通".into()))
-            .expect("一边失败不算错");
+        let merged =
+            merge_update_sources(Ok(newer("0.2.5")), Err("网络不通".into())).expect("一边失败不算错");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
 
         // 服务器挂了，GitHub 说有新版。
-        let merged = merge_update_sources(Err("服务器超时".into()), Ok(Some(update_info("0.2.5"))))
-            .expect("一边失败不算错");
+        let merged =
+            merge_update_sources(Err("服务器超时".into()), Ok(newer("0.2.5"))).expect("一边失败不算错");
         assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.5"));
 
-        // 服务器说已是最新、GitHub 连不上：按已是最新处理，不弹错。
-        assert!(merge_update_sources(Ok(None), Err("网络不通".into()))
-            .expect("一边成功")
-            .is_none());
+        // 服务器明确说已是最新、GitHub 连不上：按已是最新处理，不弹错。
+        assert!(
+            merge_update_sources(Ok(update::SourceCheck::Latest), Err("网络不通".into()))
+                .expect("一边成功")
+                .is_none()
+        );
     }
 
     #[test]
@@ -4480,6 +4480,31 @@ mod tests {
         assert!(err.contains("服务器超时"), "应保留服务器侧的原始原因");
         // 两个原因都要出现，否则用户只看到服务器那条，会误判成服务器的问题。
         assert!(err.contains("GitHub 不可达"), "应同时带上 GitHub 侧的原因");
+    }
+
+    /// 服务器没配 `[update]`（404）时不能当成「已是最新」：
+    /// 否则 GitHub 那一路哪怕挂了也显示已是最新，用户永远收不到新版本。
+    #[test]
+    fn unknown_source_does_not_hide_the_other_failure() {
+        let err = merge_update_sources(
+            Ok(update::SourceCheck::Unknown),
+            Err("检查更新失败：无法访问 GitHub（HTTP 403）".into()),
+        )
+        .expect_err("没有源给出结论时不能假装已是最新");
+        assert!(err.contains("GitHub"), "应带上 GitHub 的失败原因：{err}");
+
+        // 一源没有结论、另一源确实有新版：照常报更新。
+        let merged = merge_update_sources(Ok(update::SourceCheck::Unknown), Ok(newer("0.2.11")))
+            .expect("有结论的源说了算");
+        assert_eq!(merged.map(|info| info.version).as_deref(), Some("0.2.11"));
+
+        // 两源都没有结论：真正无从判断，按已是最新处理。
+        assert!(merge_update_sources(
+            Ok(update::SourceCheck::Unknown),
+            Ok(update::SourceCheck::Unknown)
+        )
+        .expect("两边都没结论")
+        .is_none());
     }
 
     fn direct_session(reconnectable: bool) -> ControlSession {
@@ -5390,7 +5415,10 @@ async fn check_update(
         // 局域网模式没有自建服务器，只依赖 GitHub。这里必须把 GitHub 的失败
         // 如实返回，不能静默成「已是最新」——否则国内网络下 GitHub 一超时，
         // 用户就会一直以为没有新版本（0.2.5 检测不到 0.2.6 就是这个原因）。
-        return update::check_update_github(&shared.http).await;
+        return Ok(match update::check_update_github(&shared.http).await? {
+            update::SourceCheck::Newer(info) => Some(info),
+            update::SourceCheck::Latest | update::SourceCheck::Unknown => None,
+        });
     }
     let (server, github) = tokio::join!(
         update::check_update(&shared.http, &base),
@@ -5404,8 +5432,8 @@ async fn check_update(
 /// 抽成纯函数是为了能测：这里的分支决定了用户到底会不会看到更新，
 /// 出错的代价是「明明有新版却一直显示已是最新」。
 fn merge_update_sources(
-    server: Result<Option<update::UpdateInfo>, String>,
-    github: Result<Option<update::UpdateInfo>, String>,
+    server: Result<update::SourceCheck, String>,
+    github: Result<update::SourceCheck, String>,
 ) -> Result<Option<update::UpdateInfo>, String> {
     let newest = |a: update::UpdateInfo, b: update::UpdateInfo| {
         if update::version_gt(&b.version, &a.version) {
@@ -5414,18 +5442,47 @@ fn merge_update_sources(
             a
         }
     };
-    match (server, github) {
-        (Ok(server), Ok(github)) => Ok(match (server, github) {
-            (Some(a), Some(b)) => Some(newest(a, b)),
-            (Some(one), None) | (None, Some(one)) => Some(one),
-            (None, None) => None,
-        }),
-        // 一边不可达就用另一边的结论；只有两边都失败才算真的查不了。
-        (Ok(found), Err(_)) | (Err(_), Ok(found)) => Ok(found),
-        // 两边都失败时把两个原因都带上：只报服务器那条会误导用户
-        // （v0.2.9 之前有人看到「登录已失效」，其实是服务器与 GitHub 都不通）。
-        (Err(server), Err(github)) => Err(format!("{server}；{github}")),
+
+    // 任一源给出新版本就算数，取版本号最大的那个。
+    let mut found: Option<update::UpdateInfo> = None;
+    let mut saw_latest = false;
+    let mut saw_unknown = false;
+    let mut errors: Vec<String> = Vec::new();
+    for result in [server, github] {
+        match result {
+            Ok(update::SourceCheck::Newer(info)) => {
+                found = Some(match found {
+                    Some(current) => newest(current, info),
+                    None => info,
+                });
+            }
+            Ok(update::SourceCheck::Latest) => saw_latest = true,
+            Ok(update::SourceCheck::Unknown) => saw_unknown = true,
+            Err(error) => errors.push(error),
+        }
     }
+
+    if let Some(info) = found {
+        return Ok(Some(info));
+    }
+    // 有一源明确说「已是最新」，另一源失败或没结论：按已是最新处理，不打扰
+    // 用户（内网环境 GitHub 永远连不上是常态）。
+    if saw_latest {
+        return Ok(None);
+    }
+    if !errors.is_empty() {
+        // 没有任何源给出「已是最新」的结论，且至少一源报错：如实报出来。
+        // 这里若再返回 None，就回到「服务器没配更新 + GitHub 被拦 → 假装已是最新」
+        // 的老毛病（0.2.11 之前就是这样，用户永远收不到新版本）。
+        let mut all = errors;
+        if saw_unknown {
+            all.push("另一来源没有提供版本信息".into());
+        }
+        return Err(all.join("；"));
+    }
+    // 两个源都「没有结论」（服务器未配置更新、GitHub 仓库没有 Release）：
+    // 这是真正无从判断，继续按已是最新处理。
+    Ok(None)
 }
 
 /// 下载新版本安装包并校验 SHA256，返回本地路径。
@@ -5532,6 +5589,10 @@ fn main() {
         tasks: StdMutex::new(Tasks::default()),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            // GitHub 的 REST API 会拒绝没有 User-Agent 的请求（403
+            // "Request forbidden by administrative rules"），而 reqwest
+            // 默认不发 UA。没有这一行，「检查更新」的 GitHub 那一路永远失败。
+            .user_agent(concat!("ScreenWall/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("HTTP 客户端"),
         view_tx: RwLock::new(None),

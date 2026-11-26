@@ -77,17 +77,33 @@ fn parse_version(raw: &str) -> Vec<u64> {
         .collect()
 }
 
-/// 检查服务器是否发布了新版本；`Ok(None)` 表示已是最新。
+/// 一个更新信息源的结论。
+///
+/// 「没有更新」和「这一源回答不了」必须分开：混在一起时，服务器没配置
+/// `[update]`（404）会被当成「已是最新」，于是 GitHub 那一路再怎么失败
+/// 都会被静默吞掉，用户明明有新版本却一直看到「已是最新版本」。
+#[derive(Debug, Clone)]
+pub enum SourceCheck {
+    /// 这一源给出了比当前更新的版本。
+    Newer(UpdateInfo),
+    /// 这一源明确回答：已经是最新。
+    Latest,
+    /// 这一源没有结论（服务器未配置更新、接口被前置代理拦下、
+    /// 仓库还没有发布过任何 Release）。
+    Unknown,
+}
+
+/// 检查服务器是否发布了新版本。
 ///
 /// **不带账号令牌**：`/api/v1/version` 本来就不需要登录，带上一个过期的令牌
 /// 只会让「检查更新」莫名报「登录已失效」（v0.2.9 之前就是这样，用户看到
 /// 红字却和更新毫无关系），也可能让口径更严的反向代理直接拒绝请求。
-/// 服务器还没发布过更新时返回 404，这里按「这一源没有更新」处理，
-/// 与 GitHub 仓库没有 Release 的语义一致。
+/// 服务器还没发布过更新时返回 404，这里按「这一源没有结论」处理，
+/// 交给 GitHub 那一路下判断。
 pub async fn check_update(
     client: &reqwest::Client,
     base_url: &str,
-) -> Result<Option<UpdateInfo>, String> {
+) -> Result<SourceCheck, String> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/version");
     let response = client
@@ -106,7 +122,7 @@ pub async fn check_update(
         // 服务器前面挂了反向代理 / 鉴权（版本接口本身免登录）。都不算错误，
         // 交给 GitHub 那一路下结论——否则「检查更新」会冒出一条
         // 「登录已失效」，看着像账号问题，其实跟更新无关。
-        return Ok(None);
+        return Ok(SourceCheck::Unknown);
     }
     let body: Value = response
         .json()
@@ -147,10 +163,10 @@ pub async fn check_update(
     let published_at = body.get("publishedAt").and_then(Value::as_i64).unwrap_or(0);
 
     if !version_gt(&version, CURRENT_VERSION) {
-        return Ok(None);
+        return Ok(SourceCheck::Latest);
     }
 
-    Ok(Some(UpdateInfo {
+    Ok(SourceCheck::Newer(UpdateInfo {
         current: CURRENT_VERSION.to_string(),
         version,
         notes,
@@ -167,7 +183,7 @@ pub async fn check_update(
 /// 校验值用附件自带的 `digest`（GitHub 现在会返回 `sha256:<hex>`）。
 ///
 /// 网络不可达时返回 Err，由界面显示原因 —— 不静默当成「已是最新」。
-pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<UpdateInfo>, String> {
+pub async fn check_update_github(client: &reqwest::Client) -> Result<SourceCheck, String> {
     // 全局 HTTP 超时只有 10s，国内访问 api.github.com 常常不够；这里单独
     // 给 30s，而且把失败原因说成「网络问题」而不是让上层静默当成「已是最新」。
     let response = client
@@ -186,8 +202,8 @@ pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<Upda
         })?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
-        // 仓库还没有发布任何 Release：按「已是最新」处理，不当作错误。
-        return Ok(None);
+        // 仓库还没有发布任何 Release：这一源没有结论，不当作错误。
+        return Ok(SourceCheck::Unknown);
     }
     let body: Value = response
         .json()
@@ -209,7 +225,7 @@ pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<Upda
         .ok_or_else(|| "GitHub 返回的版本号无效".to_string())?
         .to_string();
     if !version_gt(&version, CURRENT_VERSION) {
-        return Ok(None);
+        return Ok(SourceCheck::Latest);
     }
 
     let assets = body
@@ -252,7 +268,7 @@ pub async fn check_update_github(client: &reqwest::Client) -> Result<Option<Upda
         .and_then(parse_rfc3339_ms)
         .unwrap_or(0);
 
-    Ok(Some(UpdateInfo {
+    Ok(SourceCheck::Newer(UpdateInfo {
         current: CURRENT_VERSION.to_string(),
         version,
         notes,
