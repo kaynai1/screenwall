@@ -15,6 +15,10 @@ use crate::session;
 pub struct ApprovalRequest {
     pub session: u32,
     pub viewer: String,
+    /// 主控端和这台被控端在同一个账号下（中转服务器在 `open` 里标
+    /// `sameAccount: true`）。意思是「主控端就是账号主人」，宿主可以跳过
+    /// 确认直接放行；直连和连接码会话不带这个标记，仍然逐次弹窗。
+    pub same_account: bool,
     /// 宿主界面的答复；`false` 或通道被丢弃都按拒绝处理。
     pub reply: tokio::sync::oneshot::Sender<bool>,
 }

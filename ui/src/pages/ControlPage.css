@@ -1352,3 +1352,40 @@
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 全屏：只留被控端画面                                                */
+/* 侧栏、顶栏、控制页工具栏、右侧信息栏全部收起；底部操作条浮在画面     */
+/* 右下角（半透明，悬停恢复），随时能退出全屏或切声音。                 */
+/* ------------------------------------------------------------------ */
+
+body.is-immersive .app-shell {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.is-immersive .sidebar,
+body.is-immersive .app-main > .topbar,
+body.is-immersive .ctrl-toolbar,
+body.is-immersive .ctrl-side {
+  display: none;
+}
+
+body.is-immersive .ctrl-stage-wrap {
+  padding: 0;
+  background: #000;
+}
+
+body.is-immersive .ctrl-dock {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 30;
+  margin: 0;
+  opacity: 0.4;
+  transition: opacity var(--dur) var(--ease);
+}
+
+body.is-immersive .ctrl-dock:hover,
+body.is-immersive .ctrl-dock:focus-within {
+  opacity: 1;
+}

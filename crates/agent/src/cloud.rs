@@ -245,6 +245,11 @@ async fn handle_control(
                 .get("trusted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            // 同账号会话：主控端登录的是这台设备的账号主人，宿主可以免确认。
+            let same_account = value
+                .get("sameAccount")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             // 授权要等人点按钮，必须放到独立任务里，否则会卡住整条服务器连接。
             let viewer = value
                 .get("viewer")
@@ -255,7 +260,17 @@ async fn handle_control(
             let out = out.clone();
             let sessions = sessions.clone();
             tokio::spawn(async move {
-                open_session(&state, session, viewer, view_only, trusted, &out, &sessions).await;
+                open_session(
+                    &state,
+                    session,
+                    viewer,
+                    view_only,
+                    trusted,
+                    same_account,
+                    &out,
+                    &sessions,
+                )
+                .await;
             });
         }
         "close" => {
@@ -278,6 +293,7 @@ pub(crate) async fn open_session(
     viewer: String,
     view_only: bool,
     auto_approve: bool,
+    same_account: bool,
     out: &mpsc::UnboundedSender<WsMessage>,
     sessions: &Sessions,
 ) {
@@ -287,6 +303,7 @@ pub(crate) async fn open_session(
             approval(ApprovalRequest {
                 session,
                 viewer: viewer.clone(),
+                same_account,
                 reply: tx,
             });
             let allowed = match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {

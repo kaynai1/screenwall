@@ -4884,6 +4884,7 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
                 let ApprovalRequest {
                     session,
                     viewer,
+                    same_account,
                     reply,
                 } = request;
                 let app = app.clone();
@@ -4892,6 +4893,14 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
                 if !shared.allow_control.load(Ordering::Relaxed) {
                     tracing::info!("已关闭允许被控，拒绝 {viewer} 的请求（会话 {session}）");
                     let _ = reply.send(false);
+                    return;
+                }
+                // 同一账号的设备免确认：主控端登录的就是本机这个账号，等于账号
+                // 主人自己操作，没必要每台机器点一次「允许控制」。直连和连接码
+                // 会话不带 sameAccount，仍然逐次弹窗。
+                if same_account {
+                    tracing::info!("同账号 {viewer} 请求控制，直接允许（会话 {session}）");
+                    let _ = reply.send(true);
                     return;
                 }
                 shared.pending_control_requests.lock().unwrap().insert(

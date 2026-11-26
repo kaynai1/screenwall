@@ -2179,3 +2179,19 @@ button:not(:disabled),
     transition: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 窗口拖动区                                                          */
+/* `data-tauri-drag-region` 只对带属性的元素本身生效，子元素会把       */
+/* mousedown 吞掉。这里让顶栏和侧栏品牌区的非交互内容不接收鼠标事件，   */
+/* mousedown 才能落到带属性的父元素上；按钮不受影响。                   */
+/* ------------------------------------------------------------------ */
+
+.topbar > .topbar-titles,
+.topbar > .topbar-titles *,
+.topbar > .topbar-actions,
+.brand > .brand-mark,
+.brand > .brand-text,
+.brand > .brand-text * {
+  pointer-events: none;
+}

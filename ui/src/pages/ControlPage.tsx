@@ -579,6 +579,13 @@ export default function ControlPage({
       document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
+  // 全屏是「只看被控端画面」：进入后侧栏、顶栏、控制页工具栏和右侧信息栏都收起来，
+  // 只留远端画面和底部操作条（方便退出全屏、切声音）。退出时原样恢复。
+  useEffect(() => {
+    document.body.classList.toggle("is-immersive", fullscreen);
+    return () => document.body.classList.remove("is-immersive");
+  }, [fullscreen]);
+
   // 背景偏好按本机记忆，换设备或重开应用都保持。
   useEffect(() => {
     try {

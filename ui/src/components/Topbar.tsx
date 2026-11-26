@@ -4,31 +4,19 @@ import type { PageKey } from "../types";
 import WindowChrome from "./WindowChrome";
 
 /**
- * 在无边框窗口里拖动窗口。
+ * 无边框窗口的拖动区。
  *
- * 不用 `data-tauri-drag-region` 属性：它只对**带属性的那个元素本身**生效，
- * 子元素（标题、副标题、空白块）会把 mousedown 吞掉，表现为「只有标题之间
- * 的缝隙能拖」。这里直接调 `startDragging()`，整条顶栏任意位置都能拖。
+ * 用 Tauri 的 `data-tauri-drag-region`：它只对带属性的元素本身生效，
+ * 所以标题文字这些子元素在 `styles.css` 里设了 `pointer-events: none`，
+ * 让 mousedown 落到顶栏本身（按钮不设，仍然可点）。
+ * 之前这里走 `startDragging()` 的异步调用，用户反馈长按拖不动窗口，
+ * 改回属性方式（和登录页的拖动区一致）。
  */
-async function beginDrag(event: React.MouseEvent) {
-  if (event.button !== 0) return;
-  const target = event.target as HTMLElement | null;
-  // 按钮、输入框、链接这些不该触发拖动，否则点它们会变成拖窗口。
-  if (target?.closest("button, a, input, select, textarea")) return;
-  if (!("__TAURI_INTERNALS__" in window)) return;
-  try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().startDragging();
-  } catch {
-    // 浏览器预览或权限不足时忽略。
-  }
-}
-
 export default function Topbar({ page }: { page: PageKey }) {
   const meta = PAGE_META[page];
 
   return (
-    <header className="topbar" onMouseDown={(event) => void beginDrag(event)}>
+    <header className="topbar" data-tauri-drag-region>
       <div className="topbar-titles">
         <h1>{meta.title}</h1>
         <span className="topbar-sub">{meta.sub}</span>

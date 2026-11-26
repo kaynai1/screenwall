@@ -42,17 +42,7 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div
-        className="brand"
-        onMouseDown={(event) => {
-          // 侧栏顶部和顶栏一样可以拖动窗口。
-          if (event.button !== 0) return;
-          if (!("__TAURI_INTERNALS__" in window)) return;
-          void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
-            getCurrentWindow().startDragging(),
-          ).catch(() => {});
-        }}
-      >
+      <div className="brand" data-tauri-drag-region>
         <div className="brand-mark" aria-hidden="true">
           <span />
           <span />
@@ -60,18 +50,25 @@ export default function Sidebar({
         </div>
         <div className="brand-text">
           <strong>ScreenWall</strong>
-          {/* 直连状态胶囊只在局域网模式下显示（开着绿色、关着灰色）。
-              账号模式下连接走服务器，这里再显示「局域网直连」会被误读成
-              「当前正在用局域网」；本机是否在线看左下角那条更准确。 */}
-          {account.local && (
-            <span
-              className={`brand-direct ${directOn ? "is-on" : "is-off"}`}
-              title={directOn ? "局域网直连已开启" : "局域网直连已关闭"}
-            >
-              <Wifi size={12} strokeWidth={2} aria-hidden="true" />
-              局域网直连
-            </span>
-          )}
+          {/* 这里显示的永远是「当前用什么方式连」：账号模式是服务器中转，
+              局域网模式是直连（绿色=直连开着，灰色=关着），连接码会话单独标出来。 */}
+          <span
+            className={`brand-direct ${
+              account.local ? (directOn ? "" : "is-off") : account.connected ? "" : "is-off"
+            }`}
+            title={
+              account.quick
+                ? "通过连接码连接到这台设备"
+                : account.local
+                  ? directOn
+                    ? "局域网直连已开启"
+                    : "局域网直连已关闭"
+                  : `画面与控制经服务器中转：${serverHost}`
+            }
+          >
+            <Wifi size={12} strokeWidth={2} aria-hidden="true" />
+            {account.quick ? "连接码" : account.local ? "局域网直连" : "服务器中转"}
+          </span>
         </div>
       </div>
 

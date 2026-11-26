@@ -187,6 +187,8 @@ where
     let open = next_json_t(device, "open").await;
     let session = open["session"].as_u64().expect("session") as u32;
     assert_eq!(open["mode"], "control");
+    // 普通账号会话：主控端和被控端同账号，被控端可以免「允许控制」确认。
+    assert_eq!(open["sameAccount"], true);
     device
         .send(WsMessage::Text(
             json!({ "t": "open.ok", "session": session })

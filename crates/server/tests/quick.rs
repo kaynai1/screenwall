@@ -218,6 +218,8 @@ async fn quick_connect_issues_scoped_token() {
     let opened = next_json(&mut device).await;
     assert_eq!(opened["t"], "open");
     assert_eq!(opened["trusted"], true);
+    // 连接码会话不走「同账号免确认」这条路，避免两个标记混在一起。
+    assert_eq!(opened["sameAccount"], false);
 }
 
 #[tokio::test]

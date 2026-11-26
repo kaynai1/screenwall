@@ -585,6 +585,7 @@ fn approval_fn(app: AppHandle, shared: Arc<Shared>) -> ApprovalFn {
         let ApprovalRequest {
             session,
             viewer,
+            same_account: _,
             reply,
         } = request;
         let app = app.clone();

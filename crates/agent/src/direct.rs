@@ -531,6 +531,8 @@ where
                                 false,
                                 // 直连保持「每次确认」，不做免弹窗。
                                 false,
+                                // 直连没有「同一账号」的概念（不走账号体系）。
+                                false,
                                 &task_out,
                                 &task_sessions,
                             )
@@ -643,6 +645,7 @@ fn promoting_approval(
         inner(crate::server::ApprovalRequest {
             session,
             viewer: request.viewer,
+            same_account: request.same_account,
             reply: reply_tx,
         });
         let auth = auth.clone();

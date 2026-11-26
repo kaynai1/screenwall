@@ -490,7 +490,10 @@ async fn handle_view_text(
                 "viewer": viewer_name,
                 "mode": mode,
                 // 连接码 + 密码已经验证过身份，被控端不再逐次弹窗。
-                "trusted": restricted.is_some()
+                "trusted": restricted.is_some(),
+                // 普通账号会话：主控端登录的就是这台设备所属的账号，
+                // 被控端可以跳过「允许控制」确认（总开关「允许被控」仍然优先）。
+                "sameAccount": restricted.is_none()
             })
             .to_string();
             if !state.send_to_device(&key, WsOut::Text(message)).await {
