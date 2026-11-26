@@ -2,11 +2,12 @@
 #
 # ScreenWall 中转服务器 · 一键安装与管理脚本
 #
-# 交互安装（推荐先看菜单）：
-#   bash deploy-server.sh
+# 交互安装（一条命令，装的途中依次问账号、密码、端口，端口回车用默认 8787）：
+#   curl -fsSL <脚本地址> | bash
+#   或者先保存成文件：bash deploy-server.sh
 #
 # 完全无交互的一键安装（适合复制一条命令就跑）：
-#   bash deploy-server.sh --yes --account kay --password '至少8位密码'
+#   curl -fsSL <脚本地址> | bash -s -- --yes --account kay --password '至少8位密码'
 #   可选：--port 8787  --allow-register
 #
 # 脚本会自动：修复异常的 /dev/null、安装依赖（失败自动重试）、安装 Rust
@@ -44,10 +45,14 @@ REGISTER=""
 usage() {
   cat <<'USAGE'
 用法：
-  bash deploy-server.sh                     打开交互菜单
+  bash deploy-server.sh                     交互安装：依次问账号、密码、端口
+                                            （端口直接回车用默认 8787）；装过之后
+                                            再次运行显示管理菜单
   bash deploy-server.sh --yes --account 账号 --password 密码 [--port 8787] [--allow-register]
                                             无交互一键安装
   bash deploy-server.sh --help              显示本帮助
+
+可以用管道直接执行：curl -fsSL <脚本地址> | bash
 USAGE
 }
 
@@ -84,7 +89,21 @@ else
   die "需要 root 或 sudo 权限。"
 fi
 
-pause() { [[ $YES -eq 1 ]] && return 0; read -rp "按回车返回菜单..." _ || true; }
+# 用 curl ... | bash 的方式跑时，stdin 是脚本本身，交互提示一律从终端读，
+# 否则 read 会吃掉脚本后面的内容。没有终端（cron / ssh 不分配 tty）就退回普通 read，
+# 入口处会拦住这种情况。
+if [[ -t 0 ]] || { true >/dev/tty; } 2>/dev/null; then
+  HAVE_TTY=1
+else
+  HAVE_TTY=0
+fi
+if [[ $HAVE_TTY -eq 1 ]]; then
+  tty_read() { read "$@" < /dev/tty; }
+else
+  tty_read() { read "$@"; }
+fi
+
+pause() { [[ $YES -eq 1 ]] && return 0; tty_read -rp "按回车返回菜单..." _ || true; }
 
 # ---------- 自检与修复 ----------
 # /dev/null 被换成了普通文件/软链接时，apt、gpgv、cargo 全都会报
@@ -112,11 +131,11 @@ apt_install() {
   command -v apt-get >/dev/null 2>&1 || { warn "没有 apt-get，跳过系统依赖安装。"; return 0; }
   info "安装系统依赖：${packages[*]}"
   # update 失败多半是镜像源问题，不阻断：只要 install 能成就行。
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 \
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y </dev/null >/dev/null 2>&1 \
     || warn "apt-get update 有失败项（镜像源可能不全），继续尝试安装。"
   local attempt
   for attempt in 1 2 3; do
-    if $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"; then
+    if $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}" </dev/null; then
       ok "系统依赖就绪。"
       return 0
     fi
@@ -151,7 +170,7 @@ ensure_rust() {
   info "安装 Rust（走 rsproxy 镜像）…"
   export RUSTUP_DIST_SERVER=https://rsproxy.cn
   export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable </dev/null \
     || die "Rust 安装失败，请检查网络后重试。"
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
@@ -188,7 +207,7 @@ fetch_source() {
   if command -v git >/dev/null 2>&1; then
     rm -rf "$SRC_DIR"
     for url in "$REPO_URL" "$REPO_MIRROR"; do
-      if git clone --depth 1 "$url" "$SRC_DIR" 2>/dev/null; then
+      if GIT_TERMINAL_PROMPT=0 git clone --depth 1 "$url" "$SRC_DIR" </dev/null 2>/dev/null; then
         ok "源码就绪（git）。"
         return 0
       fi
@@ -345,19 +364,19 @@ install_server() {
   echo
   if [[ -f "$CONFIG" ]]; then
     warn "检测到已安装（$CONFIG 存在）。"
-    read -rp "仍要重新安装吗? (y/N): " ans
+    tty_read -rp "仍要重新安装吗? (y/N): " ans
     [[ "${ans,,}" != "y" ]] && return
   fi
 
-  read -rp "账号名（登录用，如 kay）: " ACCOUNT
+  tty_read -rp "请输入账号（登录用，如 kay）: " ACCOUNT
   [[ -z "$ACCOUNT" ]] && { warn "账号名不能为空。"; return; }
-  read -rsp "账号密码（≥8 位，输入不显示）: " PASSWORD; echo
+  tty_read -rsp "请输入密码（至少 8 位，输入不显示）: " PASSWORD; echo
   [[ -z "$PASSWORD" ]] && { warn "密码不能为空。"; return; }
   [[ ${#PASSWORD} -lt 8 ]] && { warn "密码至少 8 位。"; return; }
   local port
-  read -rp "监听端口 [$DEFAULT_PORT]: " port; port=${port:-$DEFAULT_PORT}
+  tty_read -rp "请输入端口（直接回车用默认 $DEFAULT_PORT）: " port; port=${port:-$DEFAULT_PORT}
   local register
-  read -rp "允许客户端自助注册账号? (y/N): " register; register=${register:-N}
+  tty_read -rp "允许客户端自助注册账号? (y/N): " register; register=${register:-N}
 
   echo
   info "配置确认："
@@ -365,7 +384,7 @@ install_server() {
   printf '   端口        : %s\n' "$port"
   printf '   自助注册    : %s\n' "$([ "$register" = "y" ] && echo 是 || echo 否)"
   echo
-  read -rp "确认开始部署? (Y/n): " CONFIRM
+  tty_read -rp "确认开始部署? (Y/n): " CONFIRM
   [[ "${CONFIRM,,}" == "n" ]] && { info "已取消。"; return; }
 
   do_install "$ACCOUNT" "$PASSWORD" "$port" "$register"
@@ -424,7 +443,7 @@ uninstall_server() {
   echo
   warn "这会停止并移除服务。"
   local ans
-  read -rp "确认卸载? (y/N): " ans
+  tty_read -rp "确认卸载? (y/N): " ans
   [[ "${ans,,}" != "y" ]] && return
   $SUDO systemctl stop "$SERVICE" 2>/dev/null || true
   $SUDO systemctl disable "$SERVICE" 2>/dev/null || true
@@ -432,7 +451,7 @@ uninstall_server() {
   $SUDO systemctl daemon-reload
   ok "服务已移除。"
   local rmdata
-  read -rp "是否删除数据目录 $APP_DIR（含数据库）? (y/N): " rmdata
+  tty_read -rp "是否删除数据目录 $APP_DIR（含数据库）? (y/N): " rmdata
   if [[ "${rmdata,,}" == "y" ]]; then
     $SUDO rm -rf "$APP_DIR"
     ok "已删除 $APP_DIR"
@@ -456,7 +475,7 @@ main_menu() {
  0. 退出
 MENU
     printf '%s\n' "${C_BLU}═══════════════════════════════════════${C_OFF}"
-    read -rp "请输入编号: " choice || exit 0
+    tty_read -rp "请输入编号: " choice || exit 0
     case "$choice" in
       1) install_server ;;
       2) update_server ;;
@@ -480,12 +499,16 @@ if [[ $YES -eq 1 || -n "$ACCOUNT" ]]; then
   exit 0
 fi
 
-# 交互菜单要从键盘读输入。用 curl ... | bash 方式跑时 stdin 是脚本本身，
-# 没有终端可读，提前说清楚该怎么带参数，而不是让 read 直接读到 EOF。
-if [[ ! -t 0 ]]; then
-  die "当前不是交互终端，菜单用不了。无交互安装请带参数：
-  bash -s -- --yes --account 账号 --password '至少8位密码'
-想用菜单的话，先把脚本存成文件（curl -o deploy-server.sh ...），再执行 bash deploy-server.sh"
+# 没有终端（cron、CI 之类）又没有参数时，问也没人答，直接说明用法。
+if [[ $YES -eq 0 && -z "$ACCOUNT" && $HAVE_TTY -eq 0 ]]; then
+  die "当前环境没法交互。无交互安装请带参数：
+  bash -s -- --yes --account 账号 --password '至少8位密码'"
+fi
+
+# 没装过就直接进安装向导（依次问账号、密码、端口），装过才显示菜单。
+if [[ $YES -eq 0 && -z "$ACCOUNT" && ! -f "$CONFIG" ]]; then
+  install_server
+  exit 0
 fi
 
 main_menu

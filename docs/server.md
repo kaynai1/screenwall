@@ -565,13 +565,33 @@ Linux 上编译运行。
 如果只要一台 Ubuntu 云主机当中转、不需要域名和 Caddy，用仓库里的
 `scripts/deploy-server.sh`。**一条命令、无需交互**。
 
-一台全新的 Ubuntu / Debian 服务器，登录后执行这一条就装完（账号密码换成你自己的，
-密码至少 8 位）：
+一台全新的 Ubuntu / Debian 服务器，用 SSH 登录后执行这一条：
 
 ```bash
 curl -fsSL -H 'Accept: application/vnd.github.raw' \
   https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
-  | bash -s -- --yes --account kay --password '至少8位密码'
+  | bash
+```
+
+它会依次提示：
+
+```text
+请输入账号（登录用，如 kay）: kay
+请输入密码（至少 8 位，输入不显示）:
+请输入端口（直接回车用默认 8787）:
+允许客户端自助注册账号? (y/N):
+确认开始部署? (Y/n):
+```
+
+端口直接回车就用 8787。装完之后客户端登录页填 `http://<公网IP>:8787`、
+账号和刚才输入的密码。
+
+不想交互就把答案写在命令里：
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
+  | bash -s -- --yes --account kay --password '至少8位密码' --port 8787
 ```
 
 `api.github.com` 不通时换 jsDelivr（内容取自 main，可能有缓存延迟）：
@@ -599,18 +619,18 @@ git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/
 - **Rust 与 crates 走 rsproxy.cn 镜像**，国内编译快。
 - 编译、写配置、建账号、装 systemd、放行 ufw，最后打印中转地址并做健康检查。
 
-可选参数：`--port 8787`、`--allow-register`。想用菜单管理模式（更新 / 状态 /
-日志 / 重启 / 备份 / 卸载）：
+可选参数：`--port 8787`、`--allow-register`。**已经装过**之后再运行同一条命令，
+就不会再走安装向导，而是显示管理菜单（更新 / 状态 / 日志 / 重启 / 备份 / 卸载）：
 
 ```bash
-# 存成文件再跑，菜单才能从键盘读输入（管道执行时没有终端）
 curl -fsSL -H 'Accept: application/vnd.github.raw' \
   https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
-  -o deploy-server.sh
-bash deploy-server.sh
-# 或者用上面克隆的目录：
-# bash /tmp/sw/scripts/deploy-server.sh
+  | bash
 ```
+
+> 交互问答是从 `/dev/tty` 读的，所以要用 SSH 登录进服务器再执行（分配了终端）。
+> 像 `ssh root@host 'curl ... | bash'` 这种不分配终端的写法会提示没有交互环境，
+> 那种场景请改用 `--yes --account ... --password ...` 的无交互形式。
 
 装完记得去云控制台 **安全组** 放行 TCP 端口 `8787`。需要域名 + HTTPS / WSS 的
 完整分步（含 Caddy）见下文。

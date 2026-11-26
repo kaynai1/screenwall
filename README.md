@@ -49,13 +49,21 @@ scripts\cargo.bat run -p screenwall-server -- run --config server.toml
 
 然后在客户端登录页用「账号」或「连接码」走服务器，服务器地址填 `http://127.0.0.1:8787`。
 
-**服务器一键安装（Linux / Ubuntu / Debian）**：一台全新的服务器，登录后执行这一条就装完 —— 脚本会自己修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址：
+**服务器一键安装（Linux / Ubuntu / Debian）**：一台全新的服务器，用 SSH 登录后执行这一条：
 
 ```bash
-curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash -s -- --yes --account kay --password '至少8位密码'
+curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash
 ```
 
-`--account` / `--password` 换成你自己的（密码至少 8 位），可选 `--port 8787`、`--allow-register`。装完到云控制台**安全组**放行该端口。想用菜单管理（更新 / 状态 / 日志 / 重启 / 备份 / 卸载），先把脚本存成文件再执行：`curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh -o deploy-server.sh && bash deploy-server.sh`。`api.github.com` 不通时的备用地址和完整分步见 [服务器规格](docs/server.md#0-一键部署ubuntu--无域名--直绑公网最快路径)。
+运行后会依次问你 **请输入账号** → **请输入密码（至少 8 位，输入不显示）** → **请输入端口（直接回车用默认 8787）**，然后自动修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址。装完到云控制台**安全组**放行该端口。
+
+不想交互就一次给全：
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash -s -- --yes --account kay --password '至少8位密码' --port 8787
+```
+
+装过之后再运行同一条命令会显示管理菜单（更新 / 状态 / 日志 / 重启 / 备份 / 卸载）。`api.github.com` 不通时的备用地址和完整分步见 [服务器规格](docs/server.md#0-一键部署ubuntu--无域名--直绑公网最快路径)。
 
 ## 当前状态
 
