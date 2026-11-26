@@ -74,28 +74,42 @@ gh release create "v$v" `
 | Linux（绝大多数情况） | `scripts/publish-update.sh` | 服务器上，用 SSH 过去执行 |
 | Windows | `scripts\publish-update.ps1` | 服务器本机（通常也是打包机） |
 
-#### B1. 服务器是 Linux
+#### B1. 服务器是 Linux（一条命令）
 
-安装包在 Windows 打包机上生成，先传上去，再用服务器上的脚本发布。
-`publish-update.ps1` **不能**在这儿用（`powershell: command not found`）。
+登录服务器（root，或能 sudo 的账号），直接执行：
 
 ```bash
-# 在打包机的 Git Bash / PowerShell 里
-scp target/release/bundle/nsis/ScreenWall_0.2.8_x64-setup.exe root@<服务器>:/root/
-scp scripts/publish-update.sh root@<服务器>:/root/
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash
+```
 
-# 发布（脚本自己会重启服务并校验版本）
-ssh root@<服务器> 'bash /root/publish-update.sh -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe'
+不需要先传任何文件：脚本自己去 GitHub 找最新的正式版，下载 `ScreenWall_<版本>_x64-setup.exe`，
+再把服务器配置好。`publish-update.ps1` **不能**在这儿用（`powershell: command not found`）。
+
+要发指定版本，或服务器上已经有安装包：
+
+```bash
+# 指定版本
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash -s -- -v 0.2.8
+
+# 用服务器上已有的安装包
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh \
+  | bash -s -- -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe
 ```
 
 脚本做的事：
 
-1. 把安装包复制到 `[update].dir`（默认 `/opt/screenwall/downloads`）；
-2. 删掉旧的 `[update]` 段、追加新的（`dir` / `version` / `file` / `notes`），旧配置留一份 `.bak.<时间>`；
-3. 重启 `screenwall` 服务（`--no-restart` 可跳过）；
-4. 请求一次 `http://127.0.0.1:<端口>/api/v1/version`，确认真的返回了新版本。
+1. 定出版本号：`-v` 指定 → 文件名推断 → 否则取 GitHub 最新正式版；
+2. 下载安装包（先试 `github.com` 直链，不通再走 `api.github.com` 的附件接口）；
+3. 把安装包复制到 `[update].dir`（默认 `/opt/screenwall/downloads`）；
+4. 删掉旧的 `[update]` 段、追加新的（`dir` / `version` / `file` / `notes`），旧配置留一份 `.bak.<时间>`；
+5. 重启 `screenwall` 服务（`--no-restart` 可跳过）；
+6. 请求一次 `http://127.0.0.1:<端口>/api/v1/version`，确认真的返回了新版本。
 
-SHA256 不用手填，服务器首次被请求时会自己算并缓存。
+SHA256 不用手填，服务器首次被请求时会自己算并缓存。想先看看脚本内容再跑：
+`curl -fsSL ... | less`，或直接从仓库拿 `scripts/publish-update.sh`。
 
 #### B2. 服务器是 Windows（少见）
 

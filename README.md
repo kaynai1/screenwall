@@ -114,10 +114,15 @@ gh release create "v$v" "target\release\bundle\nsis\ScreenWall_${v}_x64-setup.ex
 ```
 
 ```bash
-# B. 自建服务器是 Linux（绝大多数情况）：在打包机上传这两个文件，再在服务器上执行
-scp "target/release/bundle/nsis/ScreenWall_0.2.8_x64-setup.exe" root@<服务器>:/root/
-scp scripts/publish-update.sh root@<服务器>:/root/
-ssh root@<服务器> 'bash /root/publish-update.sh -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe'
+# B. 自建服务器是 Linux（绝大多数情况）：登录服务器，就这一条命令。
+#    脚本自己从 GitHub 下载最新正式版安装包 → 放进 [update].dir → 改 server.toml
+#    → 重启服务 → 校验 /api/v1/version 真的是新版本。
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash
+
+# 要指定版本/用服务器上已有的安装包，在末尾加参数：
+#   ... | bash -s -- -v 0.2.8
+#   ... | bash -s -- -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe
 ```
 
 ```powershell
@@ -127,11 +132,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -
 ```
 
 > 两段不能混用：`publish-update.ps1` 是 **Windows** 脚本，在 Linux 服务器上跑会报
-> `powershell: command not found`；它改写的也是本机 `server.toml`。
-> Linux 服务器用 B 的 `publish-update.sh`，它会在服务器上把安装包放进
-> `[update].dir`、改写配置并重启服务。
+> `powershell: command not found`；它改写的也是本机 `server.toml`。Linux 服务器用 B，
+> 脚本会下载安装包、放进 `[update].dir`、改写配置、重启并自检。
 
-4. 走 B 的话重启服务器（或让它重读配置）后生效（`publish-update.sh` 默认会自动重启，加 `--no-restart` 可跳过）。
+4. B 默认会自动重启服务，重启后客户端点「检查更新」就能看到新版本（加 `--no-restart` 可跳过重启）。
 
 客户端的更新源选择：配了服务器就读 `GET /api/v1/version`，没配（局域网模式）就回退到 GitHub Releases，服务器不可达时也退到 GitHub。**显示「已是最新版本」不是没接上**，而是那个源的版本号不高于当前客户端。
 
