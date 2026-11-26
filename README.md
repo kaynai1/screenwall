@@ -113,23 +113,23 @@ $v = "0.2.8"   # ← 换成这次要发的版本
 gh release create "v$v" "target\release\bundle\nsis\ScreenWall_${v}_x64-setup.exe" --title "ScreenWall $v" --notes "更新说明"
 ```
 
-```powershell
-# B. 自建服务器（服务器跑在 Windows 上，在打包机上执行）
-$v = "0.2.8"   # ← 同上
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
-```
-
 ```bash
-# B'. 自建服务器是 Linux（最常见）：安装包先传上去，再在服务器上执行
+# B. 自建服务器是 Linux（绝大多数情况）：在打包机上传这两个文件，再在服务器上执行
 scp "target/release/bundle/nsis/ScreenWall_0.2.8_x64-setup.exe" root@<服务器>:/root/
 scp scripts/publish-update.sh root@<服务器>:/root/
 ssh root@<服务器> 'bash /root/publish-update.sh -v 0.2.8 -f /root/ScreenWall_0.2.8_x64-setup.exe'
 ```
 
-> `publish-update.ps1` 是 **Windows** 脚本，在 Linux 服务器上跑会报
-> `powershell: command not found`；它改写的也是本机 `server.toml`，所以只适合
-> 服务器就跑在 Windows 上的情况。Linux 服务器用 B' 的 `publish-update.sh`，
-> 它会在服务器上把安装包放进 `[update].dir`、改写配置并重启服务。
+```powershell
+# B'. 服务器跑在 Windows 上（少见）：在服务器本机执行
+$v = "0.2.8"   # ← 同上
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
+```
+
+> 两段不能混用：`publish-update.ps1` 是 **Windows** 脚本，在 Linux 服务器上跑会报
+> `powershell: command not found`；它改写的也是本机 `server.toml`。
+> Linux 服务器用 B 的 `publish-update.sh`，它会在服务器上把安装包放进
+> `[update].dir`、改写配置并重启服务。
 
 4. 走 B 的话重启服务器（或让它重读配置）后生效（`publish-update.sh` 默认会自动重启，加 `--no-restart` 可跳过）。
 

@@ -71,23 +71,13 @@ gh release create "v$v" `
 
 | 服务器跑在 | 用哪个脚本 | 在哪执行 |
 |---|---|---|
+| Linux（绝大多数情况） | `scripts/publish-update.sh` | 服务器上，用 SSH 过去执行 |
 | Windows | `scripts\publish-update.ps1` | 服务器本机（通常也是打包机） |
-| Linux（最常见） | `scripts/publish-update.sh` | 服务器上，用 SSH 过去执行 |
 
-#### B1. 服务器是 Windows
+#### B1. 服务器是 Linux
 
-```powershell
-# $v 与路线 A 同一版本
-$v = "0.2.8"
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
-```
-
-它会把安装包复制到 `dist\update\`、算出 SHA256、改写 `server.toml` 的 `[update]` 段。
-
-#### B2. 服务器是 Linux
-
-`publish-update.ps1` **不能**在 Linux 上跑（`powershell: command not found`），改用仓库里的
-`scripts/publish-update.sh`：安装包在 Windows 打包机上生成，先传上去，再在服务器上执行。
+安装包在 Windows 打包机上生成，先传上去，再用服务器上的脚本发布。
+`publish-update.ps1` **不能**在这儿用（`powershell: command not found`）。
 
 ```bash
 # 在打包机的 Git Bash / PowerShell 里
@@ -106,6 +96,18 @@ ssh root@<服务器> 'bash /root/publish-update.sh -v 0.2.8 -f /root/ScreenWall_
 4. 请求一次 `http://127.0.0.1:<端口>/api/v1/version`，确认真的返回了新版本。
 
 SHA256 不用手填，服务器首次被请求时会自己算并缓存。
+
+#### B2. 服务器是 Windows（少见）
+
+在服务器本机执行：
+
+```powershell
+# $v 与路线 A 同一版本
+$v = "0.2.8"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
+```
+
+它会把安装包复制到 `dist\update\`、算出 SHA256、改写 `server.toml` 的 `[update]` 段。
 
 然后客户端点「检查更新」就能看到新版本。
 
