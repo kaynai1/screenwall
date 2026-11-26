@@ -166,7 +166,7 @@ async fn handle_device(
             Err(_) | Ok(None) => break,
             Ok(Some(Err(_))) => break,
             Ok(Some(Ok(Message::Text(text)))) => {
-                handle_device_text(&state, &key, &tx, text.as_str()).await;
+                handle_device_text(&state, user_id, &key, &tx, text.as_str()).await;
             }
             Ok(Some(Ok(Message::Binary(data)))) => {
                 handle_device_binary(&state, &key, data.as_ref()).await;
@@ -186,6 +186,7 @@ async fn handle_device(
 
 async fn handle_device_text(
     state: &Arc<AppState>,
+    user_id: i64,
     key: &str,
     tx: &mpsc::UnboundedSender<WsOut>,
     text: &str,
@@ -276,6 +277,9 @@ async fn handle_device_text(
                 state.send_to_viewer(&session, WsOut::Text(message)).await;
             }
         }
+        "p2p" => {
+            handle_device_p2p(state, user_id, key, &value).await;
+        }
         "ping" => {
             let _ = tx.send(WsOut::Text(
                 json!({ "t": "pong", "ts": now_ms() }).to_string(),
@@ -283,6 +287,71 @@ async fn handle_device_text(
         }
         _ => {}
     }
+}
+
+/// 把被控端的 P2P 应答转回发起请求的那条主控连接。
+///
+/// 只在登记表里查得到、且登记的设备就是这台时才转发 —— 被控端不能凭空
+/// 往别人的主控连接里塞消息。字段逐项重建，不原样透传。
+async fn handle_device_p2p(state: &Arc<AppState>, user_id: i64, key: &str, value: &Value) {
+    let (Some(request), Some(viewer_id)) = (
+        value.get("request").and_then(Value::as_u64).map(|r| r as u32),
+        value.get("viewerId").and_then(Value::as_u64),
+    ) else {
+        return;
+    };
+    let event = match value.get("event").and_then(Value::as_str) {
+        Some("answer") => "answer",
+        Some("reject") => "reject",
+        _ => return,
+    };
+    if !state.take_p2p(viewer_id, request, key).await {
+        return;
+    }
+    let viewer = state.viewers.read().await.get(&viewer_id).cloned();
+    let Some(viewer) = viewer else { return };
+    if viewer.user_id != user_id {
+        return;
+    }
+    let message = if event == "answer" {
+        let candidates: Vec<String> = value
+            .get("candidates")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|addr| !addr.is_empty() && addr.len() <= 64)
+                    .take(8)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fingerprint = value
+            .get("fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let token = value.get("token").and_then(Value::as_str).unwrap_or_default();
+        if candidates.is_empty() || fingerprint.len() > 200 || token.is_empty() || token.len() > 200 {
+            return;
+        }
+        json!({
+            "t": "p2p",
+            "request": request,
+            "event": "answer",
+            "candidates": candidates,
+            "fingerprint": fingerprint,
+            "token": token
+        })
+    } else {
+        let msg = value
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("device rejected p2p");
+        json!({ "t": "p2p", "request": request, "event": "reject", "msg": msg })
+    };
+    let _ = viewer.tx.send(WsOut::Text(message.to_string()));
 }
 
 async fn handle_device_binary(state: &Arc<AppState>, key: &str, data: &[u8]) {
@@ -380,6 +449,8 @@ async fn handle_view(
     heartbeat.abort();
     writer.abort();
     state.viewers.write().await.remove(&viewer_id);
+    // 主控端已经走了，它没等到应答的 P2P 请求没有意义，别让被控端白打洞。
+    state.clear_p2p_for_viewer(viewer_id).await;
     state.close_sessions_for_viewer(viewer_id).await;
 }
 
@@ -527,12 +598,108 @@ async fn handle_view_text(
                     .await;
             }
         }
+        "p2p" => {
+            // 主控端想绕过中转直连被控端：只把候选地址转给设备，
+            // 真正的打洞与传输都在两端之间完成，服务器不碰这条链路。
+            handle_view_p2p(state, viewer_id, user_id, restricted, tx, &value).await;
+        }
         "ping" => {
             let _ = tx.send(WsOut::Text(
                 json!({ "t": "pong", "ts": now_ms() }).to_string(),
             ));
         }
         _ => {}
+    }
+}
+
+/// 转发一条 P2P 打洞请求到目标设备。
+///
+/// 校验和 `open` 一样严：设备要在本账号下、允许被控、在线，连接码会话
+/// 还只能打自己那一台。通过了才登记 (主控连接, request)，设备回
+/// `answer` 时凭这份登记把结果送回同一个主控连接。
+async fn handle_view_p2p(
+    state: &Arc<AppState>,
+    viewer_id: u64,
+    user_id: i64,
+    restricted: Option<&str>,
+    tx: &mpsc::UnboundedSender<WsOut>,
+    value: &Value,
+) {
+    let Some(request) = value
+        .get("request")
+        .and_then(Value::as_u64)
+        .map(|id| id as u32)
+        .filter(|id| *id != 0)
+    else {
+        return;
+    };
+    let device_id = value
+        .get("deviceId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !valid_device_id(device_id) {
+        return;
+    }
+    if let Some(allowed) = restricted {
+        if device_id != allowed {
+            return;
+        }
+    }
+    match state.db.device(user_id, device_id) {
+        Ok(Some(device)) if device.controllable => {}
+        _ => return,
+    }
+    let key = AppState::device_key(user_id, device_id);
+    if !state.devices.read().await.contains_key(&key) {
+        return;
+    }
+    let candidates: Vec<String> = value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|addr| !addr.is_empty() && addr.len() <= 64)
+                .take(8)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if candidates.is_empty() {
+        return;
+    }
+    if !state.register_p2p(viewer_id, request, key.clone()).await {
+        return;
+    }
+    let viewer_name = value
+        .get("viewer")
+        .and_then(Value::as_str)
+        .unwrap_or("ScreenWall");
+    let message = json!({
+        "t": "p2p",
+        "request": request,
+        // 设备把这两个字段原样带回，服务器据此找回这条主控连接。
+        "viewerId": viewer_id,
+        "event": "offer",
+        "viewer": viewer_name,
+        "candidates": candidates
+    })
+    .to_string();
+    if !state.send_to_device(&key, WsOut::Text(message)).await {
+        // 设备刚好掉线：撤掉登记，明确告诉主控端走中转，别让它干等。
+        state.take_p2p(viewer_id, request, &key).await;
+        state.metrics.add_dropped();
+        let _ = tx.send(WsOut::Text(
+            json!({
+                "t": "p2p",
+                "request": request,
+                "event": "reject",
+                "msg": "device offline"
+            })
+            .to_string(),
+        ));
     }
 }
 

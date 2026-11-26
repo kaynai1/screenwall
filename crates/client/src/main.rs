@@ -6,6 +6,7 @@ mod files;
 mod firewall;
 mod group;
 mod logging;
+mod p2p;
 mod panels;
 mod quality;
 mod tray;
@@ -199,7 +200,7 @@ impl ClientConfig {
     }
 }
 
-fn base_dir() -> PathBuf {
+pub(crate) fn base_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -274,6 +275,9 @@ struct ControlInfo {
     device_id: String,
     request: u32,
     client_token: u64,
+    /// 这条会话实际走的链路：`relay`（服务器中转）、`direct`（局域网直连）
+    /// 或 `p2p`（同账号 UDP 打洞）。界面按它显示「连接方式」。
+    link: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -624,6 +628,12 @@ struct Shared {
     /// 加锁顺序固定为 `video_sub` → `control`，任何地方都不要反过来。
     video_sub: tokio::sync::Mutex<()>,
     pending_opens: StdMutex<HashMap<u32, oneshot::Sender<Result<u32, String>>>>,
+    /// 等待被控端 P2P 应答的请求（`request` → 应答内容）。
+    ///
+    /// 和 `pending_opens` 分开：P2P 失败要静默回退到中转，不能当成会话失败。
+    p2p_waits: StdMutex<HashMap<u32, oneshot::Sender<serde_json::Value>>>,
+    /// 正在进行的 P2P 升级（同一时间只允许一条，失败就回退中转）。
+    p2p_busy: AtomicBool,
     /// 异地开机代发的在途会话（最多一条）。
     pending_wake: StdMutex<Option<PendingWake>>,
     next_request: AtomicU32,
@@ -1999,6 +2009,161 @@ async fn set_stream_options(
 
 // ---------------------------------------------------------------- 控制会话
 
+/// 支持同账号 P2P 的最低被控端版本。
+///
+/// 更早的被控端不认识 `p2p` 消息，发了只会白等一轮超时。版本号由服务器
+/// 随设备列表下发，所以这里能先判断再决定要不要试。
+const P2P_MIN_VERSION: &str = "0.2.10";
+
+/// 同一时间只允许一条 P2P 尝试（用户连续点两台设备时不至于同时打两条洞）。
+struct P2pBusyGuard<'a>(&'a AtomicBool);
+
+impl Drop for P2pBusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+/// 同账号 P2P 直连：经服务器交换候选地址 → 双向打洞 → 在 QUIC 上建会话。
+///
+/// 返回 `None` 表示这次不走 P2P（版本不够、打洞失败、对端拒绝），
+/// 调用方继续用服务器中转，用户看不到错误。
+async fn try_p2p(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    device_id: &str,
+    client_token: u64,
+) -> Option<ControlInfo> {
+    if shared.quick_mode.load(Ordering::Relaxed) {
+        // 连接码会话的目标设备不在本账号下，服务器不会替它转发 P2P 请求。
+        return None;
+    }
+    if !shared.config.read().await.punch_through {
+        return None;
+    }
+    let capable = {
+        let devices = shared.devices.read().await;
+        devices.iter().find(|device| device.id == device_id).is_some_and(|device| {
+            // 离线的设备连中转都建不起来，更别说打洞：直接走中转，
+            // 由服务器回一条明确的「设备离线」。
+            device.online
+                && device.controllable
+                && update::version_gt(&device.version, P2P_MIN_VERSION)
+        })
+    };
+    if !capable {
+        return None;
+    }
+    if shared.p2p_busy.swap(true, Ordering::Relaxed) {
+        return None;
+    }
+    let _busy = P2pBusyGuard(&shared.p2p_busy);
+
+    let out = shared.view_tx.read().await.clone()?;
+    // 绑定 + STUN 是阻塞的（每个 STUN 服务器上限 2 秒），放阻塞线程池。
+    let (punch, mapping) = tokio::task::spawn_blocking(|| {
+        let mut punch = screenwall_agent::nat::PunchSocket::bind(0)?;
+        // 只给 3 秒：拿不到公网映射还能靠内网地址打通，没必要为它
+        // 让「点连接」卡上十几秒。
+        let mapping = punch
+            .discover_within(Duration::from_secs(3))
+            .ok();
+        Ok::<_, std::io::Error>((punch, mapping))
+    })
+    .await
+    .ok()?
+    .ok()?;
+
+    let port = punch.local_addr().ok()?.port();
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(mapping) = mapping {
+        candidates.push(mapping.public.to_string());
+    }
+    for ip in direct::local_addresses() {
+        candidates.push(format!("{ip}:{port}"));
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let request = shared
+        .next_request
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+        .max(1);
+    let (tx, rx) = oneshot::channel();
+    shared.p2p_waits.lock().unwrap().insert(request, tx);
+    let offer = json!({
+        "t": "p2p",
+        "request": request,
+        "deviceId": device_id,
+        "viewer": hostname(),
+        "candidates": candidates
+    })
+    .to_string();
+    if out.send(ViewOut::Text(offer)).is_err() {
+        shared.p2p_waits.lock().unwrap().remove(&request);
+        return None;
+    }
+
+    let answer = match tokio::time::timeout(Duration::from_secs(8), rx).await {
+        Ok(Ok(answer)) => answer,
+        _ => {
+            shared.p2p_waits.lock().unwrap().remove(&request);
+            tracing::debug!("P2P 请求没有应答，回退服务器中转");
+            return None;
+        }
+    };
+    if answer.get("event").and_then(Value::as_str) != Some("answer") {
+        let reason = answer.get("msg").and_then(|value| value.as_str()).unwrap_or("");
+        tracing::info!(msg = reason, "被控端拒绝 P2P，回退服务器中转");
+        return None;
+    }
+    let peers: Vec<std::net::SocketAddr> = answer
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|addr| addr.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let fingerprint = answer
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let token = answer
+        .get("token")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if peers.is_empty() || fingerprint.is_empty() || token.is_empty() {
+        return None;
+    }
+
+    match direct::connect_offer(
+        app,
+        shared,
+        device_id.to_string(),
+        punch,
+        peers,
+        fingerprint,
+        token,
+        client_token,
+    )
+    .await
+    {
+        Ok(info) => Some(info),
+        Err(error) => {
+            tracing::info!("P2P 直连失败，回退服务器中转: {error}");
+            None
+        }
+    }
+}
+
 async fn start_control_impl(
     app: &AppHandle,
     shared: &Arc<Shared>,
@@ -2036,6 +2201,13 @@ async fn start_control_impl(
         stop_control_impl(app, shared, None).await;
     } else {
         close_control_session(app, shared, None).await;
+    }
+
+    // 先试同账号 P2P 直连：两端打洞通了就不经过中转，带宽和延迟都由
+    // 实际链路决定。失败（被控端旧版本、NAT 打不通、对端关闭打洞）就
+    // 安静地走下面的中转流程，用户无感。
+    if let Some(info) = try_p2p(app, shared, device_id, client_token).await {
+        return Ok(info);
     }
 
     let request = shared
@@ -2135,6 +2307,7 @@ async fn start_control_impl(
         device_id: device_id.to_string(),
         request,
         client_token,
+        link: "relay",
     })
 }
 
@@ -2148,11 +2321,12 @@ async fn abort_pending_control(shared: &Arc<Shared>, client_token: u64) {
         }
     };
     if let Some(control) = control {
-        // 会话已经取走，`control_out` 查不到它是不是直连；这里直接按设备 ID 判断。
+        // 会话已经取走，`control_out` 查不到它挂在哪个通道上，直接按链路登记判断：
+        // 有链路（局域网直连或同账号 P2P）就走链路，否则走服务器。
         if let Some(out) = route_control_out(
             shared,
             control.session,
-            is_direct_device(&control.device_id),
+            control.direct_link.is_some(),
             control.direct_link,
         )
         .await
@@ -2333,7 +2507,7 @@ async fn close_control_session(app: &AppHandle, shared: &Arc<Shared>, only_token
     if let Some(out) = route_control_out(
         shared,
         control.session,
-        is_direct_device(&control.device_id),
+        control.direct_link.is_some(),
         control.direct_link,
     )
     .await
@@ -2720,8 +2894,10 @@ pub(crate) async fn control_out(
     let (is_direct, link_id) = {
         let control = shared.control.read().await;
         match control.as_ref() {
+            // 路由看的是「挂在链路还是服务器上」，不是设备 ID：
+            // 同账号 P2P 的 device_id 仍然是账号里的那台设备，但帧走链路。
             Some(control) if control.session == session => {
-                (is_direct_device(&control.device_id), control.direct_link)
+                (control.direct_link.is_some(), control.direct_link)
             }
             _ => (false, None),
         }
@@ -2916,8 +3092,9 @@ async fn send_secure_attention_impl(shared: &Arc<Shared>, client_token: u64) -> 
     if control.client_token != client_token {
         return Err("控制会话已切换，请重新连接".into());
     }
-    // 直连会话不提供键鼠注入，Ctrl+Alt+Del 同样拒绝。
-    if control.direct_link.is_some() {
+    // 局域网直连不提供键鼠注入，Ctrl+Alt+Del 同样拒绝；同账号 P2P 是
+    // 完整会话（走的就是中转那套协议），不受这条限制。
+    if is_direct_device(&control.device_id) {
         return Err("局域网直连不提供键鼠控制".into());
     }
     // 老被控端没有这个能力：直接给出可读错误，别让它回一条 BAD_REQUEST。
@@ -3333,6 +3510,14 @@ async fn get_control_info(shared: State<'_, Arc<Shared>>) -> Result<Value, Strin
             "deviceId": control.device_id,
             "session": control.session,
             "clientToken": control.client_token,
+            // 实际链路：有链路登记说明不走服务器，再看是不是局域网直连。
+            "link": if control.direct_link.is_none() {
+                "relay"
+            } else if is_direct_device(&control.device_id) {
+                "direct"
+            } else {
+                "p2p"
+            },
             // 当前订阅的视频编码（`mjpeg` / `h264`）。
             "codec": codec_name(control.codec),
             // 握手已完成才带；`null` 表示能力未知，前端沿用旧的兜底逻辑。
@@ -4049,6 +4234,18 @@ async fn handle_view_text(app: &AppHandle, shared: &Arc<Shared>, text: &str) {
                 resolve_pending_open(shared, request, Ok(session));
             }
         }
+        "p2p" => {
+            // 被控端对打洞请求的应答（或拒绝）：唤醒正在等它的升级任务。
+            // 等不到就走了中转，所以这里只需要把内容交出去。
+            let request = value.get("request").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if request == 0 {
+                return;
+            }
+            let waiter = shared.p2p_waits.lock().unwrap().remove(&request);
+            if let Some(waiter) = waiter {
+                let _ = waiter.send(value.clone());
+            }
+        }
         "open.err" => {
             let request = value.get("request").and_then(Value::as_u64).unwrap_or(0) as u32;
             let code = value.get("code").and_then(Value::as_u64).unwrap_or(0) as u16;
@@ -4078,14 +4275,12 @@ async fn handle_view_text(app: &AppHandle, shared: &Arc<Shared>, text: &str) {
             // 缩略图会话结束：保留「想看哪些设备」，由 tick 退避重开。
             wall::on_closed(app, shared, session);
             group::on_closed(app, shared, session);
-            // 这条 `closed` 来自服务器连接，只可能关掉中转会话：直连会话号
+            // 这条 `closed` 来自服务器连接，只可能关掉中转会话：直连/P2P 会话号
             // 由对方按连接独立分配，和服务器会话号会撞车，不能按号误收。
             let control = {
                 let mut guard = shared.control.write().await;
                 match guard.as_ref() {
-                    Some(current)
-                        if current.session == session && !is_direct_device(&current.device_id) =>
-                    {
+                    Some(current) if current.session == session && current.direct_link.is_none() => {
                         guard.take()
                     }
                     _ => None,
@@ -4283,6 +4478,8 @@ mod tests {
         let err = merge_update_sources(Err("服务器超时".into()), Err("GitHub 不可达".into()))
             .expect_err("两边都失败应报错");
         assert!(err.contains("服务器超时"), "应保留服务器侧的原始原因");
+        // 两个原因都要出现，否则用户只看到服务器那条，会误判成服务器的问题。
+        assert!(err.contains("GitHub 不可达"), "应同时带上 GitHub 侧的原因");
     }
 
     fn direct_session(reconnectable: bool) -> ControlSession {
@@ -4841,12 +5038,12 @@ async fn cleanup_view(app: &AppHandle, shared: &Arc<Shared>) {
     // 群控会话无法自动恢复（需要被控端重新授权），交给界面重新开始。
     group::reset_sessions(app, shared);
 
-    // 直连会话不经过服务器：服务器连接断了不该把它一起收掉，
-    // 它的链路自己会走 `direct::connect` 里的收尾逻辑。
+    // 直连 / P2P 会话不经过服务器：服务器连接断了不该把它一起收掉，
+    // 它的链路自己会走收尾逻辑。
     let control = {
         let mut guard = shared.control.write().await;
         match guard.as_ref() {
-            Some(current) if is_direct_device(&current.device_id) => None,
+            Some(current) if current.direct_link.is_some() => None,
             _ => guard.take(),
         }
     };
@@ -4857,6 +5054,66 @@ async fn cleanup_view(app: &AppHandle, shared: &Arc<Shared>) {
 
 /// 被控端授权请求在 Agent 侧的等待上限，和 UI 倒计时保持一致。
 const APPROVAL_TIMEOUT_SECS: u64 = 30;
+
+/// 被控端的授权回调（中转会话与同账号 P2P 共用一份）。
+///
+/// 「允许被控」总开关优先；同账号会话直接放行；其余弹窗等人点。
+pub(crate) fn host_approval(app: AppHandle, shared: Arc<Shared>) -> ApprovalFn {
+    Arc::new(move |request: ApprovalRequest| {
+        let ApprovalRequest {
+            session,
+            viewer,
+            same_account,
+            reply,
+        } = request;
+        let app = app.clone();
+        let shared = shared.clone();
+        // 「允许被控」关闭时静默拒绝，不打扰本机用户。
+        if !shared.allow_control.load(Ordering::Relaxed) {
+            tracing::info!("已关闭允许被控，拒绝 {viewer} 的请求（会话 {session}）");
+            let _ = reply.send(false);
+            return;
+        }
+        // 同一账号的设备免确认：主控端登录的就是本机这个账号，等于账号
+        // 主人自己操作，没必要每台机器点一次「允许控制」。直连和连接码
+        // 会话不带 sameAccount，仍然逐次弹窗。
+        if same_account {
+            tracing::info!("同账号 {viewer} 请求控制，直接允许（会话 {session}）");
+            let _ = reply.send(true);
+            return;
+        }
+        shared.pending_control_requests.lock().unwrap().insert(
+            session,
+            PendingControlRequest {
+                viewer: viewer.clone(),
+                reply,
+            },
+        );
+        // 被控请求必须让人看见：把窗口拉回前台。
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        let _ = app.emit(
+            "control-request",
+            json!({
+                "session": session,
+                "viewer": viewer,
+                "timeoutSec": APPROVAL_TIMEOUT_SECS,
+            }),
+        );
+        // Agent 30 秒后自动拒绝；这里晚一点清掉残留的答复通道。
+        let cleanup = shared.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(APPROVAL_TIMEOUT_SECS + 5)).await;
+            cleanup
+                .pending_control_requests
+                .lock()
+                .unwrap()
+                .remove(&session);
+        });
+    })
+}
 
 async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
     loop {
@@ -4877,64 +5134,7 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
             ca_path: config.ca_path.clone().unwrap_or_default(),
             virtual_display: config.virtual_display,
         };
-        let approval: ApprovalFn = {
-            let app = app.clone();
-            let shared = shared.clone();
-            Arc::new(move |request: ApprovalRequest| {
-                let ApprovalRequest {
-                    session,
-                    viewer,
-                    same_account,
-                    reply,
-                } = request;
-                let app = app.clone();
-                let shared = shared.clone();
-                // 「允许被控」关闭时静默拒绝，不打扰本机用户。
-                if !shared.allow_control.load(Ordering::Relaxed) {
-                    tracing::info!("已关闭允许被控，拒绝 {viewer} 的请求（会话 {session}）");
-                    let _ = reply.send(false);
-                    return;
-                }
-                // 同一账号的设备免确认：主控端登录的就是本机这个账号，等于账号
-                // 主人自己操作，没必要每台机器点一次「允许控制」。直连和连接码
-                // 会话不带 sameAccount，仍然逐次弹窗。
-                if same_account {
-                    tracing::info!("同账号 {viewer} 请求控制，直接允许（会话 {session}）");
-                    let _ = reply.send(true);
-                    return;
-                }
-                shared.pending_control_requests.lock().unwrap().insert(
-                    session,
-                    PendingControlRequest {
-                        viewer: viewer.clone(),
-                        reply,
-                    },
-                );
-                // 被控请求必须让人看见：把窗口拉回前台。
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
-                let _ = app.emit(
-                    "control-request",
-                    json!({
-                        "session": session,
-                        "viewer": viewer,
-                        "timeoutSec": APPROVAL_TIMEOUT_SECS,
-                    }),
-                );
-                // Agent 30 秒后自动拒绝；这里晚一点清掉残留的答复通道。
-                let cleanup = shared.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(APPROVAL_TIMEOUT_SECS + 5)).await;
-                    cleanup
-                        .pending_control_requests
-                        .lock()
-                        .unwrap()
-                        .remove(&session);
-                });
-            })
-        };
+        let approval = host_approval(app.clone(), shared.clone());
         let state = Arc::new(AgentState {
             config: agent_config,
             displays: display::list_displays(),
@@ -4942,6 +5142,11 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
         });
         let Some(options) = CloudOptions::from_state(&state) else {
             return;
+        };
+        // 同账号会话优先尝试 P2P 直连（被打洞失败挡回来时主控端会走中转）。
+        let options = CloudOptions {
+            p2p: Some(Arc::new(p2p::P2pHost::new(app.clone(), shared.clone()))),
+            ..options
         };
         if let Err(error) = cloud::run(state, options).await {
             tracing::warn!("被控端连接中断: {error:#}");
@@ -5176,9 +5381,9 @@ async fn check_update(
     shared: State<'_, Arc<Shared>>,
 ) -> Result<Option<update::UpdateInfo>, String> {
     let shared = shared.inner().clone();
-    let (base, token) = {
+    let base = {
         let config = shared.config.read().await;
-        (config.server_url.clone(), config.token.clone())
+        config.server_url.clone()
     };
 
     if base.is_empty() {
@@ -5188,7 +5393,7 @@ async fn check_update(
         return update::check_update_github(&shared.http).await;
     }
     let (server, github) = tokio::join!(
-        update::check_update(&shared.http, &base, &token),
+        update::check_update(&shared.http, &base),
         update::check_update_github(&shared.http)
     );
     merge_update_sources(server, github)
@@ -5217,7 +5422,9 @@ fn merge_update_sources(
         }),
         // 一边不可达就用另一边的结论；只有两边都失败才算真的查不了。
         (Ok(found), Err(_)) | (Err(_), Ok(found)) => Ok(found),
-        (Err(error), Err(_)) => Err(error),
+        // 两边都失败时把两个原因都带上：只报服务器那条会误导用户
+        // （v0.2.9 之前有人看到「登录已失效」，其实是服务器与 GitHub 都不通）。
+        (Err(server), Err(github)) => Err(format!("{server}；{github}")),
     }
 }
 
@@ -5331,6 +5538,8 @@ fn main() {
         control: RwLock::new(None),
         video_sub: tokio::sync::Mutex::new(()),
         pending_opens: StdMutex::new(HashMap::new()),
+        p2p_waits: StdMutex::new(HashMap::new()),
+        p2p_busy: AtomicBool::new(false),
         pending_wake: StdMutex::new(None),
         next_request: AtomicU32::new(0),
         stats: StdMutex::new(NetStats::default()),

@@ -22,6 +22,11 @@ export type ControlInfo = {
   /** 直连会回传本次会话的令牌；中转路径不带这个字段。 */
   clientToken?: number;
   /**
+   * 这条会话实际走的链路：`relay`（服务器中转）、`direct`（局域网直连）
+   * 或 `p2p`（同账号 UDP 打洞）。旧后端不带这个字段。
+   */
+  link?: "relay" | "direct" | "p2p";
+  /**
    * 握手后双方能力交集（`welcome.caps`）；`null` / 缺省表示尚未握手、能力未知。
    * 标识与 `crates/proto/src/caps.rs` 一致，例如 `audio.volume`。
    */
@@ -1392,6 +1397,8 @@ export type ActiveControl = {
   caps?: string[] | null;
   /** 当前订阅的视频编码。 */
   codec?: "mjpeg" | "h264";
+  /** 这条会话实际走的链路；旧后端不带这个字段。 */
+  link?: "relay" | "direct" | "p2p";
 };
 
 /**

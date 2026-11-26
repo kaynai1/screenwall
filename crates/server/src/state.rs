@@ -133,8 +133,19 @@ pub struct AppState {
     pub metrics: Metrics,
     /// 自托管更新源（`[update]` 段）；未配置时相关接口返回 404。
     pub update: UpdateState,
+    /// P2P 打洞请求：`(viewer_id, request)` → 发起方与目标设备。
+    ///
+    /// 只用来把被控端的 `answer` 送回正确的主控端连接，不参与会话。
+    /// 条目由超时或应答消费，避免主控端一直等。
+    pub p2p_pending: RwLock<HashMap<(u64, u32), PendingP2p>>,
     next_session: AtomicU32,
     next_viewer: AtomicU64,
+}
+
+/// 一条还没被应答的 P2P 请求。
+pub struct PendingP2p {
+    pub device_key: String,
+    pub created: std::time::Instant,
 }
 
 impl AppState {
@@ -188,6 +199,7 @@ impl AppState {
             quick_connect_rate,
             metrics: Metrics::default(),
             update: UpdateState::default(),
+            p2p_pending: RwLock::new(HashMap::new()),
             next_session: AtomicU32::new(1),
             next_viewer: AtomicU64::new(1),
         }
@@ -414,6 +426,48 @@ impl AppState {
                 self.metrics.add_dropped();
             }
         }
+    }
+
+    /// 登记一条 P2P 打洞请求。表满（防止刷内存）或已有同键时返回 false。
+    pub async fn register_p2p(&self, viewer_id: u64, request: u32, device_key: String) -> bool {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(90);
+        const CAP: usize = 256;
+        let now = std::time::Instant::now();
+        let mut pending = self.p2p_pending.write().await;
+        pending.retain(|_, entry| now.duration_since(entry.created) < TTL);
+        if pending.len() >= CAP {
+            return false;
+        }
+        pending.insert(
+            (viewer_id, request),
+            PendingP2p {
+                device_key,
+                created: now,
+            },
+        );
+        true
+    }
+
+    /// 取出并删除一条 P2P 请求；设备不匹配时不动它。
+    ///
+    /// 返回 `true` 表示这条请求归该设备，可以把应答转回主控端。
+    pub async fn take_p2p(&self, viewer_id: u64, request: u32, device_key: &str) -> bool {
+        let mut pending = self.p2p_pending.write().await;
+        match pending.get(&(viewer_id, request)) {
+            Some(entry) if entry.device_key == device_key => {
+                pending.remove(&(viewer_id, request));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 主控连接断开：它没等到应答的 P2P 请求全部作废。
+    pub async fn clear_p2p_for_viewer(&self, viewer_id: u64) {
+        self.p2p_pending
+            .write()
+            .await
+            .retain(|(owner, _), _| *owner != viewer_id);
     }
 
     /// 会话真正建立（设备回 `open.ok`）时写入审计开始记录。

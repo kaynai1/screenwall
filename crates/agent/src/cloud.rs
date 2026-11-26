@@ -68,7 +68,28 @@ enum VideoCommand {
     Keyframe(u16),
 }
 
-#[derive(Debug, Clone)]
+/// 同账号会话的 P2P 打洞服务（被控端侧）。
+///
+/// 中转连接只负责把「主控端想直连」的请求转过来；真正的打洞、QUIC 服务端
+/// 与会话派发由宿主实现。做成 trait 而不是写死在这里，是因为只有客户端
+/// （Tauri 应用）具备证书、直连白名单和授权回调，纯 agent 二进制没有。
+pub trait P2pProvider: Send + Sync {
+    /// 主控端请求 P2P 直连。
+    ///
+    /// `request` 由主控端分配、原样带回；`candidates` 是主控端的候选地址
+    /// （公网映射 + 内网地址）。实现方应尽快通过 `out` 回一条
+    /// `{"t":"p2p","request":…,"viewerId":…,"event":"answer"|"reject",…}`，
+    /// 否则主控端会在超时后回退到服务器中转。
+    fn handle_offer(
+        &self,
+        request: u32,
+        viewer_id: u64,
+        viewer: String,
+        candidates: Vec<String>,
+        out: mpsc::UnboundedSender<WsMessage>,
+    );
+}
+
 pub struct CloudOptions {
     pub server_url: String,
     pub token: String,
@@ -76,6 +97,32 @@ pub struct CloudOptions {
     pub name: String,
     /// 自定义 CA 根证书路径；`None` 表示用系统默认信任库。
     pub ca_path: Option<std::path::PathBuf>,
+    /// P2P 打洞服务；`None` 表示只走中转。
+    pub p2p: Option<Arc<dyn P2pProvider>>,
+}
+
+impl std::fmt::Debug for CloudOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudOptions")
+            .field("server_url", &self.server_url)
+            .field("device_id", &self.device_id)
+            .field("name", &self.name)
+            .field("p2p", &self.p2p.is_some())
+            .finish()
+    }
+}
+
+impl Clone for CloudOptions {
+    fn clone(&self) -> Self {
+        Self {
+            server_url: self.server_url.clone(),
+            token: self.token.clone(),
+            device_id: self.device_id.clone(),
+            name: self.name.clone(),
+            ca_path: self.ca_path.clone(),
+            p2p: self.p2p.clone(),
+        }
+    }
 }
 
 impl CloudOptions {
@@ -97,6 +144,9 @@ impl CloudOptions {
             } else {
                 Some(std::path::PathBuf::from(ca_path))
             },
+            // 纯 agent 二进制没有证书与直连白名单，不提供 P2P；
+            // 客户端会把它替换成真正的实现。
+            p2p: None,
         })
     }
 }
@@ -170,7 +220,7 @@ async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<
 
         match message {
             WsMessage::Text(text) => {
-                handle_control(&state, text.as_str(), &out_tx, &sessions).await;
+                handle_control(&state, options, text.as_str(), &out_tx, &sessions).await;
             }
             WsMessage::Binary(data) => dispatch(&data, &sessions),
             WsMessage::Ping(payload) => {
@@ -209,6 +259,7 @@ fn device_url(options: &CloudOptions) -> Result<String> {
 
 async fn handle_control(
     state: &Arc<AgentState>,
+    options: &CloudOptions,
     text: &str,
     out: &mpsc::UnboundedSender<WsMessage>,
     sessions: &Sessions,
@@ -278,6 +329,58 @@ async fn handle_control(
                 close_session(sessions, session);
                 tracing::info!("主控端关闭中转会话 {session}");
             }
+        }
+        "p2p" => {
+            // 主控端希望绕过中转直连。这里只做「交给宿主去建链路」，
+            // 真正的打洞在 `P2pProvider` 里；没有实现就静默忽略，
+            // 主控端等不到 answer 会自己回退到中转。
+            let (Some(provider), Some(request)) = (
+                options.p2p.as_ref(),
+                value.get("request").and_then(Value::as_u64).map(|r| r as u32),
+            ) else {
+                return;
+            };
+            let viewer_id = value
+                .get("viewerId")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let candidates: Vec<String> = value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|addr| !addr.is_empty() && addr.len() <= 64)
+                        .take(8)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if candidates.is_empty() {
+                return;
+            }
+            // 「允许被控」总开关关闭时连中转会话都不建，P2P 当然也不能建。
+            if !state.config.allow_control {
+                send_control(
+                    out,
+                    json!({
+                        "t": "p2p",
+                        "request": request,
+                        "viewerId": viewer_id,
+                        "event": "reject",
+                        "msg": "本机已关闭被控"
+                    }),
+                );
+                return;
+            }
+            let viewer = value
+                .get("viewer")
+                .and_then(Value::as_str)
+                .unwrap_or("未知设备")
+                .to_string();
+            provider.handle_offer(request, viewer_id, viewer, candidates, out.clone());
         }
         "ping" => send_control(out, json!({ "t": "pong", "ts": now_ms() })),
         _ => {}

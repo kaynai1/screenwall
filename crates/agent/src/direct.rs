@@ -57,6 +57,8 @@ pub struct DirectAuth {
     /// 配对 token → 过期时刻（`None` 表示不过期，仅测试用）。
     pairing: RwLock<HashMap<String, Option<Instant>>>,
     promoted: RwLock<HashSet<String>>,
+    /// 属于同账号 P2P 的 token（免「允许控制」弹窗），见 [`DirectAuth::mark_auto`]。
+    auto: RwLock<HashSet<String>>,
     /// 当前活跃的直连连接数，界面用来显示「正在被控」。
     active: std::sync::atomic::AtomicUsize,
     /// 新提升一个长期 token 时通知宿主落盘。宿主重启后靠它恢复白名单，
@@ -86,10 +88,12 @@ impl DirectAuth {
     /// 过期必须由这里管，不能只靠界面上的倒计时：界面只是不再显示这个码，
     /// 白名单里留着它的话，10 分钟后照样能连进来。
     pub async fn allow_for(&self, token: String, ttl: Duration) {
-        self.pairing
-            .write()
-            .await
-            .insert(token, Some(Instant::now() + ttl));
+        let now = Instant::now();
+        let mut pairing = self.pairing.write().await;
+        // 顺手清掉已经过期的条目：同账号 P2P 每个会话签发一次，
+        // 长时间开着不清理就是一条缓慢增长的白名单。
+        pairing.retain(|_, expires| expires.is_none_or(|deadline| deadline > now));
+        pairing.insert(token, Some(now + ttl));
     }
 
     /// 放行一个配对 token，不过期（仅测试与内部使用）。
@@ -101,6 +105,7 @@ impl DirectAuth {
     pub async fn revoke(&self, token: &str) {
         self.pairing.write().await.remove(token);
         self.promoted.write().await.remove(token);
+        self.auto.write().await.remove(token);
     }
 
     /// 只从「配对 token」集合里撤掉，长期集合保留。
@@ -109,12 +114,33 @@ impl DirectAuth {
     /// 但用这个码连上来的那台设备已经升级成长期凭据，不能跟着一起吊销。
     pub async fn revoke_pairing(&self, token: &str) {
         self.pairing.write().await.remove(token);
+        self.auto.write().await.remove(token);
     }
 
     /// 整体替换长期 token 集合（配对码轮换时用；配对 token 不受影响）。
     pub async fn replace_all(&self, tokens: impl IntoIterator<Item = String>) {
         let fresh: HashSet<String> = tokens.into_iter().collect();
         *self.promoted.write().await = fresh;
+    }
+
+    /// 标记一个 token 属于「同账号会话的 P2P 直连」。
+    ///
+    /// 这类 token 由被控端在账号会话里临时签发，主控端本来就是账号主人
+    /// （和中转会话的 `sameAccount` 同源），所以建会话时免掉「允许控制」
+    /// 弹窗。只影响授权提示，不改变白名单判定 —— token 本身仍然要校验。
+    pub async fn mark_auto(&self, token: String) {
+        let mut auto = self.auto.write().await;
+        // P2P token 的有效期只有几分钟；集合异常膨胀时直接清空，
+        // 最坏结果只是下一轮会话重新弹一次授权，不会无限吃内存。
+        if auto.len() >= 512 {
+            auto.clear();
+        }
+        auto.insert(token);
+    }
+
+    /// 这个 token 是否属于同账号 P2P（免逐次确认）。
+    pub async fn is_auto(&self, token: &str) -> bool {
+        self.auto.read().await.contains(token)
     }
 
     /// 注册「长期 token 新增」的落盘回调。宿主在启动时调一次。
@@ -394,6 +420,10 @@ where
         bail!("直连 token 不在白名单");
     }
     limiter.record_success(peer_ip);
+    // 同账号 P2P：token 是账号会话里签发的，主控端本来就是账号主人，
+    // 和中转会话的 `sameAccount` 等价，建会话时免掉「允许控制」弹窗。
+    // 局域网直连 / 配对码的 token 不在这个集合里，仍然逐次确认。
+    let same_account = auth.is_auto(&hello.token).await;
     // 直连绕过了账号服务器，安全边界要求每次会话都必须有人在本机点「允许」，
     // 所以没有授权回调就整条连接拒绝，而不是退化成「直接放行」。
     let Some(inner_approval) = state.approval.clone() else {
@@ -528,11 +558,14 @@ where
                                 &task_state,
                                 session,
                                 viewer,
+                                // 直连没有「屏幕墙缩略图」模式。
                                 false,
-                                // 直连保持「每次确认」，不做免弹窗。
+                                // 一律走授权回调：「允许被控」总开关由宿主在
+                                // 回调里判，同账号 P2P 也由它直接放行。
                                 false,
-                                // 直连没有「同一账号」的概念（不走账号体系）。
-                                false,
+                                // 局域网直连没有账号概念，仍然逐次确认；
+                                // 同账号 P2P 靠 token 标记免弹窗。
+                                same_account,
                                 &task_out,
                                 &task_sessions,
                             )

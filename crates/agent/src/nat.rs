@@ -49,6 +49,8 @@ const ATTR_MAPPED: u16 = 0x0001;
 
 /// 一次 STUN 探测的超时。公共服务器通常几十毫秒就回。
 const STUN_TIMEOUT: Duration = Duration::from_secs(2);
+/// 默认探测预算：依次试完 [`STUN_SERVERS`] 的上限。
+const STUN_BUDGET: Duration = Duration::from_secs(12);
 
 /// 本机在公网上的映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,14 +80,27 @@ impl Mapping {
 /// 全程用 `send_to` / `recv_from`，**不调用 `connect`**：Windows 上把 UDP
 /// socket `connect` 到未指定地址并不能可靠地解除绑定，那样后续打洞会发不出去。
 pub fn discover(socket: &UdpSocket) -> io::Result<Mapping> {
+    discover_within(socket, STUN_BUDGET)
+}
+
+/// 带总预算的 STUN 探测。
+///
+/// 有的网络会把 UDP 直接吞掉（不回包也不报错），这时每个服务器都要等满
+/// 读超时，一轮探测能拖到十几秒。会话建立前只愿意花几秒钟试 P2P 的场景
+/// （同账号直连）用这个版本，超了就放弃、走中转。
+pub fn discover_within(socket: &UdpSocket, budget: Duration) -> io::Result<Mapping> {
     let local = socket.local_addr()?;
+    let deadline = Instant::now() + budget;
     let mut last_error = io::Error::new(io::ErrorKind::NotFound, "没有可用的 STUN 服务器");
 
     for server in STUN_SERVERS {
+        if Instant::now() >= deadline {
+            break;
+        }
         let Ok(addr) = resolve(server) else {
             continue;
         };
-        match query(socket, addr) {
+        match query(socket, addr, deadline) {
             Ok(public) => return Ok(Mapping { public, local }),
             Err(error) => {
                 tracing::debug!("STUN {server} 探测失败: {error}");
@@ -106,7 +121,10 @@ fn resolve(target: &str) -> io::Result<SocketAddr> {
 }
 
 /// 发一次 Binding Request 并解析响应里的映射地址。
-fn query(socket: &UdpSocket, server: SocketAddr) -> io::Result<SocketAddr> {
+///
+/// `deadline` 是整轮探测的截止时刻：每次等待都按剩余预算收紧，
+/// 静默丢包的服务器不会把后面的候选服务器一起拖死。
+fn query(socket: &UdpSocket, server: SocketAddr, deadline: Instant) -> io::Result<SocketAddr> {
     let mut txid = [0u8; 12];
     getrandom::getrandom(&mut txid)
         .map_err(|error| io::Error::other(format!("随机数失败: {error}")))?;
@@ -117,23 +135,41 @@ fn query(socket: &UdpSocket, server: SocketAddr) -> io::Result<SocketAddr> {
     request.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
     request.extend_from_slice(&txid);
 
-    socket.set_read_timeout(Some(STUN_TIMEOUT))?;
     socket.send_to(&request, server)?;
 
     let mut buf = [0u8; 512];
     // 可能收到杂包（别的进程的探测回包、无关的 UDP 流量），重试几次。
     for _ in 0..4 {
-        let (read, from) = socket.recv_from(&mut buf)?;
-        // 只认我们发过去的那个服务器回包。
-        if from.ip() != server.ip() {
-            continue;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
         }
-        if let Some(mapped) = parse_response(&buf[..read], &txid) {
-            return Ok(mapped);
+        // 单次最多等 `STUN_TIMEOUT`，但不超过总预算：每轮都很短，
+        // 好让外层的 deadline 及时生效。
+        socket.set_read_timeout(Some(left.min(STUN_TIMEOUT)))?;
+        match socket.recv_from(&mut buf) {
+            Ok((read, from)) => {
+                // 只认我们发过去的那个服务器回包。
+                if from.ip() != server.ip() {
+                    continue;
+                }
+                if let Some(mapped) = parse_response(&buf[..read], &txid) {
+                    return Ok(mapped);
+                }
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::TimedOut =>
+            {
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(io::Error::new(
-        io::ErrorKind::InvalidData,
+        io::ErrorKind::TimedOut,
         "STUN 响应里没有映射地址",
     ))
 }
@@ -276,6 +312,13 @@ impl PunchSocket {
     /// 探测并缓存公网映射。
     pub fn discover(&mut self) -> io::Result<Mapping> {
         let mapping = discover(&self.socket)?;
+        self.mapping = Some(mapping);
+        Ok(mapping)
+    }
+
+    /// 带总预算的探测：到点就放弃，不为了一个公网映射把会话建立拖住。
+    pub fn discover_within(&mut self, budget: Duration) -> io::Result<Mapping> {
+        let mapping = discover_within(&self.socket, budget)?;
         self.mapping = Some(mapping);
         Ok(mapping)
     }

@@ -561,7 +561,7 @@ async fn wait_disabled(shared: Arc<Shared>, current_port: u16) {
     }
 }
 
-fn agent_config(config: &crate::ClientConfig) -> screenwall_agent::config::AgentConfig {
+pub(crate) fn agent_config(config: &crate::ClientConfig) -> screenwall_agent::config::AgentConfig {
     screenwall_agent::config::AgentConfig {
         name: hostname(),
         port: config.direct_port,
@@ -747,7 +747,21 @@ pub async fn connect(
         return Err("对方的证书指纹与配对时不一致，已拒绝连接".into());
     }
 
-    finish_connect(app, shared, address, code, token, actual, ws, client_token).await
+    let device_id = format!("direct:{address}");
+    finish_connect(
+        app,
+        shared,
+        address,
+        code,
+        token,
+        actual,
+        ws,
+        client_token,
+        device_id,
+        true,
+        "direct",
+    )
+    .await
 }
 
 /// 走 QUIC 打洞连一条直连会话（跨网段）。
@@ -847,8 +861,115 @@ pub async fn connect_punch(
     std::mem::forget(connection);
 
     tracing::info!(peer = %reached, "跨网段直连已建立（QUIC 打洞）");
-    finish_connect(app, shared, address, code, token, actual, ws, client_token).await
+    let device_id = format!("direct:{address}");
+    finish_connect(
+        app,
+        shared,
+        address,
+        code,
+        token,
+        actual,
+        ws,
+        client_token,
+        device_id,
+        true,
+        "direct",
+    )
+    .await
 }
+
+/// 用同账号会话的 P2P 应答连上被控端。
+///
+/// 与 [`connect_punch`] 的区别只有三点：
+///
+/// - 地址、证书指纹、握手 token 都来自服务器转发过来的 `p2p.answer`；
+/// - `punch` 用的 socket 是请求方先绑好、STUN 探测过的那个（候选地址就是它）；
+/// - 会话登记用的 `device_id` 保持账号里的那台设备，界面不跳成「直连地址」。
+///
+/// QUIC 层证书固定到应答里的指纹：即使打洞链路被中间人盯上，证书对不上
+/// 也连不进去；token 同时是一次性白名单凭据，被控端据此认出这是本次会话。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn connect_offer(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    device_id: String,
+    punch: screenwall_agent::nat::PunchSocket,
+    peers: Vec<std::net::SocketAddr>,
+    fingerprint: String,
+    token: String,
+    client_token: u64,
+) -> Result<crate::ControlInfo, String> {
+    use screenwall_agent::quic;
+
+    if fingerprint.trim().is_empty() || token.trim().is_empty() {
+        return Err("P2P 应答缺少指纹或令牌".into());
+    }
+
+    let reached = tokio::task::spawn_blocking(move || {
+        let reached = punch.punch(&peers, Duration::from_secs(6));
+        (punch, reached)
+    })
+    .await
+    .map_err(|error| format!("打洞任务异常结束: {error}"))?;
+    let (punch, reached) = reached;
+    let reached = reached.map_err(|error| format!("打洞失败: {error}"))?;
+
+    let socket = punch.into_socket();
+    let _ = socket.set_read_timeout(None);
+    let _ = socket.set_write_timeout(None);
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("切换非阻塞失败: {error}"))?;
+    let seen_fingerprint = Arc::new(std::sync::Mutex::new(None));
+    let client = quic::client_endpoint(socket, Some(fingerprint.clone()), seen_fingerprint.clone())
+        .map_err(|error| format!("QUIC 配置失败: {error}"))?;
+    let connection = client
+        .connect(reached)
+        .await
+        .map_err(|error| format!("QUIC 握手失败: {error}"))?;
+    let stream = quic::QuicStream::open(&connection)
+        .await
+        .map_err(|error| format!("打开 QUIC 流失败: {error}"))?;
+
+    let actual = seen_fingerprint.lock().unwrap().clone().unwrap_or_default();
+    if !actual.eq_ignore_ascii_case(fingerprint.trim()) {
+        return Err("被控端证书指纹与 P2P 应答不一致，已拒绝连接".into());
+    }
+
+    let address = reached.to_string();
+    let url = format!("wss://{address}/ws");
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| format!("地址无效: {error}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| "令牌格式无效")?,
+    );
+    let (ws, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .map_err(|error| format!("QUIC 上的 WebSocket 握手失败: {error}"))?;
+    std::mem::forget(connection);
+
+    tracing::info!(peer = %reached, device = %device_id, "同账号 P2P 直连已建立");
+    finish_connect(
+        app,
+        shared,
+        address,
+        None,
+        token,
+        actual,
+        ws,
+        client_token,
+        device_id,
+        // 服务器自己会记这条账号会话的审计，这里不重复上报。
+        false,
+        "p2p",
+    )
+    .await
+}
+
 /// 传输建好之后的公共部分：握手、开会话、登记、转入读循环。
 ///
 /// TCP + TLS 和 QUIC 打洞都走这里，保证两条路径的协议行为完全一致 ——
@@ -864,6 +985,14 @@ async fn finish_connect<S>(
     fingerprint: String,
     ws: tokio_tungstenite::WebSocketStream<S>,
     client_token: u64,
+    // 会话登记用的设备 ID。局域网直连是 `direct:<地址>`；同账号 P2P
+    // 仍然是账号里的那台设备（界面、输入、文件页都认这个 ID）。
+    device_id: String,
+    // 是否在会话结束时补报「直连审计」。账号 P2P 不报：服务器本来就
+    // 记录了这条账号会话，再补一条 `direct:` 记录会把审计页弄乱。
+    report_audit: bool,
+    // 这条链路的类型，随 `ControlInfo` 回给界面显示（`direct` / `p2p`）。
+    link: &'static str,
 ) -> Result<crate::ControlInfo, String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -977,7 +1106,7 @@ where
     let started_ms = now_ms();
     *shared.control.write().await = Some(crate::ControlSession {
         session,
-        device_id: format!("direct:{address}"),
+        device_id: device_id.clone(),
         client_token,
         video_id: None,
         width: 0,
@@ -1018,9 +1147,10 @@ where
 
     let info = crate::ControlInfo {
         session,
-        device_id: format!("direct:{address}"),
+        device_id: device_id.clone(),
         request: request_id,
         client_token,
+        link,
     };
 
     let app = app.clone();
@@ -1057,8 +1187,11 @@ where
         if !mine {
             return;
         }
-        // 直连不经过服务器，审计只能由这里补报。本地直连（没登录）直接跳过。
-        report_direct_audit(&shared, &address, started_ms, crate::now_ms()).await;
+        // 直连不经过服务器，审计只能由这里补报。本地直连（没登录）直接跳过；
+        // 账号 P2P 由服务器自己记录会话，不需要也不该补报。
+        if report_audit {
+            report_direct_audit(&shared, &address, started_ms, crate::now_ms()).await;
+        }
         let _ = app.emit("direct-state", direct_state(&shared).await);
         // 会话没了，界面也该知道。只收掉属于这条链路的控制会话：用户可能已经
         // 切到另一台设备（中转或另一条直连），那条会话不归这条链路管。

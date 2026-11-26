@@ -335,6 +335,11 @@ export default function ControlPage({
   // 账号设备列表里能查到的设备；直连设备用合成 ID，不在这里。
   const listedDevice = devices.find((item) => item.id === deviceId);
   const direct = isDirectDeviceId(deviceId);
+  // 实际链路：后端建会话时会告诉我们这次是中转、局域网直连还是 P2P。
+  // `direct` 只看设备 ID，同账号 P2P 的 ID 仍然是账号里的设备，看不出来。
+  const [linkMode, setLinkMode] = useState<"relay" | "direct" | "p2p">(
+    direct ? "direct" : "relay",
+  );
   // 直连设备的合成 ID 不在设备列表里，用占位对象补齐页面需要的字段。
   // 占位对象只在本页使用，绝不写回 devices 列表。
   const placeholderDevice = useMemo(
@@ -1401,7 +1406,11 @@ export default function ControlPage({
       void setVideoDecoder(supportsWebCodecsH264())
         .catch(() => {})
         .then(() => startControl(deviceId, clientToken))
-        .then(onSessionReady)
+        .then((info) => {
+          // 后端可能已经升级成 P2P 直连（两端打洞成功时不走服务器）。
+          if (info?.link === "p2p") setLinkMode("p2p");
+          onSessionReady();
+        })
         .catch((error) => {
           // 启动失败（设备离线、被拒、服务器没连上）：不是「断线」，不要重连，
           // 直接给错误态，用户点「重新连接」再走一遍。
@@ -1425,6 +1434,7 @@ export default function ControlPage({
             // 否则后端事件的 clientToken 过滤会全部失配。
             clientToken = active.clientToken;
             controlTokenRef.current = clientToken;
+            if (active.link) setLinkMode(active.link);
             // 直连的 welcome 在建会话时就到了，事件早于本页订阅：
             // 从会话信息里补一次能力交集，避免能力永远未知。
             if (active.caps) {
@@ -2897,7 +2907,11 @@ export default function ControlPage({
                 <dt>连接方式</dt>
                 <dd>
                   <Wifi size={14} strokeWidth={1.75} aria-hidden="true" />
-                  {direct ? "局域网直连" : "服务器中转"}
+                  {linkMode === "direct"
+                    ? "局域网直连"
+                    : linkMode === "p2p"
+                      ? "P2P 直连"
+                      : "服务器中转"}
                 </dd>
               </div>
               <div>
@@ -3087,7 +3101,11 @@ export default function ControlPage({
 
           <div className="ctrl-secure">
             <ShieldCheck size={14} strokeWidth={1.75} />
-            {direct ? "画面与输入走局域网直连，不经服务器" : "画面与输入经服务器中转"}
+            {linkMode === "direct"
+              ? "画面与输入走局域网直连，不经服务器"
+              : linkMode === "p2p"
+                ? "画面与输入走 P2P 直连（UDP 打洞），不经服务器中转"
+                : "画面与输入经服务器中转"}
           </div>
         </aside>
       </div>

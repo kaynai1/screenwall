@@ -79,23 +79,35 @@ fn parse_version(raw: &str) -> Vec<u64> {
 
 /// 检查服务器是否发布了新版本；`Ok(None)` 表示已是最新。
 ///
-/// `token` 可为空：版本接口不需要登录，传令牌只是兼容未来的鉴权收紧。
+/// **不带账号令牌**：`/api/v1/version` 本来就不需要登录，带上一个过期的令牌
+/// 只会让「检查更新」莫名报「登录已失效」（v0.2.9 之前就是这样，用户看到
+/// 红字却和更新毫无关系），也可能让口径更严的反向代理直接拒绝请求。
+/// 服务器还没发布过更新时返回 404，这里按「这一源没有更新」处理，
+/// 与 GitHub 仓库没有 Release 的语义一致。
 pub async fn check_update(
     client: &reqwest::Client,
     base_url: &str,
-    token: &str,
 ) -> Result<Option<UpdateInfo>, String> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/version");
-    let mut request = client.get(&url);
-    if !token.is_empty() {
-        request = request.bearer_auth(token);
-    }
-    let response = request
+    let response = client
+        .get(&url)
         .send()
         .await
         .map_err(|error| format!("检查更新失败: {error}"))?;
     let status = response.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::UNAUTHORIZED
+            | reqwest::StatusCode::FORBIDDEN
+    ) {
+        // 这一源回答不了版本：404 是服务器没配置 `[update]`，401/403 往往是
+        // 服务器前面挂了反向代理 / 鉴权（版本接口本身免登录）。都不算错误，
+        // 交给 GitHub 那一路下结论——否则「检查更新」会冒出一条
+        // 「登录已失效」，看着像账号问题，其实跟更新无关。
+        return Ok(None);
+    }
     let body: Value = response
         .json()
         .await
