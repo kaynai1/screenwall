@@ -481,3 +481,10 @@ sidecar 模式下：
 | 服务端管理脚本 | `scripts/deploy-server.sh` 改为六趣式横幅菜单（安装/更新/状态/日志/重启/备份/卸载），交互一律从 `/dev/tty` 读，`curl \| bash` 下也能提问 |
 | 工具链 | `rust-toolchain.toml` 的 `channel` 不再钉死 `stable-x86_64-pc-windows-msvc`（Linux 服务器上会报 `target tuple in channel name`），安装脚本另加 `normalize_toolchain` 兜底修正 `~/.rustup/settings.toml` |
 | 测试 | `group.rs` 断言 `sameAccount=true`、`quick.rs` 断言 `false`；`cargo check` 三个 crate、集成测试 3 passed、`tsc --noEmit`、`vite build` 通过 |
+
+## v0.2.10（2026-11-26）
+
+| 项目 | 内容 |
+| --- | --- |
+| 检查更新误报登录失效 | 版本接口 `/api/v1/version` 本免登录，旧代码却带账号令牌，令牌过期后服务器回 401、界面映射成「登录已失效」。修复：检查更新不再带令牌；服务器 404（未配置 `[update]`）/401/403（前置反向代理或鉴权）按「这一源没有信息」处理，交给 GitHub 那一路；两个源同时失败时把两个原因都显示 |
+| 测试 | `cargo test -p screenwall-client` 60 passed（含 `merge_update_sources` 新增断言） |

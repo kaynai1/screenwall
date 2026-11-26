@@ -125,7 +125,7 @@ CI 与代码签名的完整说明见 [CI 文档](docs/ci.md) 和 [签名文档](
 
 ```powershell
 # A. GitHub：局域网模式（没配服务器）的用户从这里拿更新
-$v = "0.2.9"   # ← 换成这次要发的版本
+$v = "0.2.10"   # ← 换成这次要发的版本
 gh release create "v$v" "target\release\bundle\nsis\ScreenWall_${v}_x64-setup.exe" --title "ScreenWall $v" --notes "更新说明"
 ```
 
@@ -137,13 +137,13 @@ curl -fsSL -H 'Accept: application/vnd.github.raw' \
   https://api.github.com/repos/kaynai1/screenwall/contents/scripts/publish-update.sh | bash
 
 # 要指定版本/用服务器上已有的安装包，在末尾加参数：
-#   ... | bash -s -- -v 0.2.9
-#   ... | bash -s -- -v 0.2.9 -f /root/ScreenWall_0.2.9_x64-setup.exe
+#   ... | bash -s -- -v 0.2.10
+#   ... | bash -s -- -v 0.2.10 -f /root/ScreenWall_0.2.10_x64-setup.exe
 ```
 
 ```powershell
 # B'. 服务器跑在 Windows 上（少见）：在服务器本机执行
-$v = "0.2.9"   # ← 同上
+$v = "0.2.10"   # ← 同上
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-update.ps1 -Version $v
 ```
 
