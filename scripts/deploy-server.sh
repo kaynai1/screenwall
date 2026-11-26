@@ -289,6 +289,14 @@ build_server() {
     jobs=(-j 2)
   fi
   normalize_toolchain
+  # 旧版本源码的 rust-toolchain.toml 写死了 Windows 的 channel，在 Linux 上
+  # rustup 会报 "target tuple in channel name"。镜像缓存的源码可能还是旧的，
+  # 这里兜底改掉。
+  if [[ -f "$SRC_DIR/rust-toolchain.toml" ]] &&
+     grep -qE 'windows|apple-darwin' "$SRC_DIR/rust-toolchain.toml"; then
+    warn "源码里的 rust-toolchain.toml 钉死了非 Linux 工具链，改成 stable"
+    sed -i 's|^channel *= *".*"|channel = "stable"|' "$SRC_DIR/rust-toolchain.toml"
+  fi
   info "编译 screenwall-server（约 3–5 分钟）…"
   ( cd "$SRC_DIR" && cargo build --release -p screenwall-server ${jobs[@]+"${jobs[@]}"} </dev/null ) \
     || die "编译失败。看上方第一处 error；常见原因是内存不足（可加 swap）、网络拉不到依赖，或 rustup 工具链不对（看上面是否提示修复过工具链）。"
