@@ -33,7 +33,6 @@ import {
   ShieldCheck,
   Volume2,
   VolumeX,
-  Wifi,
 } from "lucide-react";
 import {
   DISPLAY_ALL,

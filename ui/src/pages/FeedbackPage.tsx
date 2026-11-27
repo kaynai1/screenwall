@@ -30,6 +30,44 @@ function charCount(value: string): number {
   return Array.from(value.trim()).length;
 }
 
+/**
+ * 反馈提交的报错：0.2.20 之前的服务器没有这个接口（404），限流（429）也有自己的说法，
+ * 不能套用通用的「设备不存在」「登录过于频繁」文案。
+ */
+function feedbackErrorLine(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  if (/HTTP\s+404\b/i.test(raw)) {
+    return "当前服务器版本较旧，还不支持提交反馈，请先升级服务器端。";
+  }
+  if (/HTTP\s+429\b/i.test(raw)) {
+    return "提交反馈过于频繁，请稍后再试。";
+  }
+  return errorLine(error);
+}
+
+/** 剪贴板 API 不可用时的兜底：临时 textarea + execCommand。 */
+function copyWithSelection(value: string): boolean {
+  try {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    document.body.removeChild(area);
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
 export default function FeedbackPage({ account, active, notify }: FeedbackPageProps) {
   const [category, setCategory] = useState<FeedbackCategory>("suggestion");
   const [content, setContent] = useState("");
@@ -49,32 +87,24 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
   );
 
   async function copyContact(what: "qq" | "email", value: string) {
-    // 内嵌 WebView 不一定给 clipboard 权限，而且被拒绝时 Promise 可能一直不落定；
+    // 内嵌 WebView 不一定给 clipboard 权限（有的环境连 navigator.clipboard 都没有，
+    // 直接调用会同步抛错），而且被拒绝时 Promise 可能一直不落定；
     // 用 800ms 超时兜底，再退回选中 + execCommand。
-    const ok = await Promise.race([
-      navigator.clipboard
-        .writeText(value)
-        .then(() => true)
-        .catch(() => false),
-      new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 800)),
-    ]).then((written) => {
-      if (written) return true;
-      const area = document.createElement("textarea");
-      area.value = value;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.opacity = "0";
-      document.body.appendChild(area);
-      area.select();
-      let copied = false;
+    const written = await (async () => {
       try {
-        copied = document.execCommand("copy");
+        if (!navigator.clipboard?.writeText) return false;
+        return await Promise.race([
+          navigator.clipboard.writeText(value).then(
+            () => true,
+            () => false,
+          ),
+          new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 800)),
+        ]);
       } catch {
-        copied = false;
+        return false;
       }
-      document.body.removeChild(area);
-      return copied;
-    });
+    })();
+    const ok = written || copyWithSelection(value);
     if (!ok) {
       notify("复制失败，请手动选择", "error");
       return;
@@ -90,7 +120,12 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
     !busy && active && length >= MIN_LENGTH && length <= MAX_LENGTH;
 
   function changeContent(value: string) {
-    setContent(value);
+    // 按码点截断，和字数统计、服务端 `chars().count()` 保持同一口径；
+    // textarea 自带的 maxLength 按 UTF-16 码元算，emoji 会提前被卡住。
+    const chars = Array.from(value);
+    setContent(
+      chars.length > MAX_LENGTH ? chars.slice(0, MAX_LENGTH).join("") : value,
+    );
     // 改内容就收起「已提交」，避免用户改完以为已经发出去了。
     if (sent) setSent(false);
     if (error) setError(null);
@@ -107,7 +142,7 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
       setContact("");
       notify("反馈已提交，谢谢你的建议", "success");
     } catch (submitError) {
-      setError(errorLine(submitError));
+      setError(feedbackErrorLine(submitError));
     } finally {
       setBusy(false);
     }
@@ -137,8 +172,8 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
           <div>
             <h3>局域网模式连不上服务器</h3>
             <p>
-              反馈要保存在服务器上，请在「设置 → 账号」里连接服务器并登录，
-              再回来提交。
+              反馈要保存在服务器上。请先在「设置 → 账号」退出登录，
+              再在登录页填写服务器地址并登录，然后回来提交。
             </p>
           </div>
         </section>
@@ -172,7 +207,6 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
           <textarea
             className="fb-textarea"
             value={content}
-            maxLength={MAX_LENGTH}
             rows={8}
             placeholder={
               category === "bug"

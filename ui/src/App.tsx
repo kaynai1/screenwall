@@ -157,17 +157,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // 换服务器或退出登录后先清掉，避免把上一台的版本提示带过来。
+    setUpdateVersion(null);
     if (!account?.loggedIn) return;
     let alive = true;
     checkUpdate()
       .then((info) => {
-        if (alive && info) setUpdateVersion(info.version);
+        if (alive) setUpdateVersion(info ? info.version : null);
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [account?.loggedIn, account?.local]);
+  }, [account?.loggedIn, account?.local, account?.serverUrl]);
 
   // 直连开关状态：只在局域网模式下有意义，但登录状态下也读一次，
   // 这样侧栏底部能反映真实状态而不是猜。

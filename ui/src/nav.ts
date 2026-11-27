@@ -58,7 +58,7 @@ export const PAGE_META: Record<PageKey, { title: string; sub: string }> = {
   devices: { title: "设备管理", sub: "设备、权限与在线状态" },
   audit: { title: "会话审计", sub: "谁在什么时候连过哪台设备" },
   server: { title: "服务器管理", sub: "通过 SSH 管理 Linux 主机" },
-  feedback: { title: "建议与 BUG", sub: "你的反馈会直接送到开发者手上" },
+  feedback: { title: "建议与 BUG", sub: "反馈保存在当前服务器，管理员可见" },
   settings: { title: "设置", sub: "账号、安全与使用偏好" },
   control: { title: "远程控制", sub: "低延迟画面与键鼠直通" },
 };

@@ -124,7 +124,11 @@ fn feedback_action(db: &Db, action: FeedbackAction) -> Result<()> {
                 return Ok(());
             }
             for row in rows {
-                let category = if row.category == "bug" { "BUG" } else { "建议" };
+                let category = if row.category == "bug" {
+                    "BUG"
+                } else {
+                    "建议"
+                };
                 let device = if row.device_name.is_empty() {
                     row.device_id.as_str()
                 } else {
@@ -140,16 +144,33 @@ fn feedback_action(db: &Db, action: FeedbackAction) -> Result<()> {
                     row.id,
                     format_time_ms(row.created_at),
                     category,
-                    row.username,
-                    device,
-                    row.app_version,
-                    contact,
-                    row.content.replace('\n', "\n  ")
+                    printable(&row.username),
+                    printable(device),
+                    printable(&row.app_version),
+                    printable(contact),
+                    printable(&row.content).replace('\n', "\n  ")
                 );
             }
         }
     }
     Ok(())
+}
+
+/// 打印用户提交的内容前清洗控制字符（保留换行和制表符）。
+///
+/// 反馈内容、联系方式、设备名都来自请求体；不处理的话，ANSI 转义序列可以
+/// 清屏、改终端标题，`\r` 还能覆盖掉前面的记录行，让管理员看到伪造的输出。
+fn printable(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c == '\n' || c == '\t' || !c.is_control() {
+                c
+            } else {
+                '\u{fffd}'
+            }
+        })
+        .collect()
 }
 
 /// 把毫秒时间戳格式化为北京时间 `YYYY-MM-DD HH:MM`。
@@ -169,7 +190,11 @@ fn format_time_ms(ms: i64) -> String {
     let mp = (5 * doy + 2) / 153;
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    let year = if month <= 2 {
+        yoe + era * 400 + 1
+    } else {
+        yoe + era * 400
+    };
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
@@ -324,7 +349,17 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use super::format_time_ms;
+    use super::{format_time_ms, printable};
+
+    #[test]
+    fn strips_terminal_control_characters() {
+        // ANSI 清屏 + 回车覆盖 + 退格都要替换掉，换行和制表符保留。
+        assert_eq!(
+            printable("\x1b[2Jhi\r\tthere\nok"),
+            "\u{fffd}[2Jhi\u{fffd}\tthere\nok"
+        );
+        assert_eq!(printable("正常中文"), "正常中文");
+    }
 
     #[test]
     fn formats_epoch_and_known_dates_in_beijing_time() {

@@ -739,10 +739,7 @@ pub async fn resolve_local_id(
         return Err(bad_request("识别码是 9 位数字"));
     };
     let rows = state.db.list_devices(auth.user_id).map_err(internal)?;
-    let matches: Vec<_> = rows
-        .into_iter()
-        .filter(|row| row.local_id == id)
-        .collect();
+    let matches: Vec<_> = rows.into_iter().filter(|row| row.local_id == id).collect();
     if matches.is_empty() {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
@@ -815,11 +812,6 @@ pub async fn submit_feedback(
     Json(req): Json<FeedbackReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let auth = authorize_account(&state, &headers)?;
-    // 按账号限流：正常用户不会一小时发五条以上。
-    if let Some(seconds) = state.feedback_rate.check(&auth.user_id.to_string()) {
-        state.metrics.add_error();
-        return Err(too_many_requests("提交反馈", seconds));
-    }
     let category = match req.category.trim() {
         "bug" => "bug",
         "suggestion" => "suggestion",
@@ -832,6 +824,12 @@ pub async fn submit_feedback(
     }
     if length > 4000 {
         return Err(bad_request("内容太长，最多 4000 字"));
+    }
+    // 按账号限流：正常用户不会一小时发五条以上。放在参数校验之后，
+    // 格式错误的请求不消耗令牌，否则连续几次写错就会把配额耗光。
+    if let Some(seconds) = state.feedback_rate.check(&auth.user_id.to_string()) {
+        state.metrics.add_error();
+        return Err(too_many_requests("提交反馈", seconds));
     }
     let contact: String = req.contact.trim().chars().take(120).collect();
     let app_version: String = req.app_version.trim().chars().take(32).collect();
