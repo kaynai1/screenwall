@@ -30,6 +30,8 @@ async fn main() -> Result<()> {
     let state = Arc::new(AgentState {
         config: config.clone(),
         displays,
+        gpu: screenwall_agent::sys::gpu_name(),
+        ip: screenwall_agent::sys::local_ipv4(),
         approval: None,
     });
 

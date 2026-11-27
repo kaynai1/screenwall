@@ -64,6 +64,7 @@ import {
   subscribeControlAudioError,
   subscribeControlAudioFormat,
   subscribeControlCaps,
+  subscribeControlDeviceInfo,
   subscribeControlDisplays,
   subscribeControlFrame,
   subscribeControlInputStatus,
@@ -454,6 +455,13 @@ export default function ControlPage({
   const capsBlockVolume = peerCaps !== null && !peerCaps.includes("audio.volume");
   /** 已知被控端不支持 Ctrl+Alt+Del 请求（老版本）。 */
   const capsBlockSas = peerCaps !== null && !peerCaps.includes("input.sas");
+  /** 被控端实时设备信息（CPU/内存/显卡/IP），随 `welcome` 与 `status` 推送。 */
+  const [deviceInfo, setDeviceInfo] = useState<{
+    cpu: number;
+    mem: number;
+    gpu: string;
+    ip: string;
+  } | null>(null);
   const volumeTimerRef = useRef<number | null>(null);
   const audioIdRef = useRef(0);
   // 隧道 Ping/Pong 的真实往返时延，以及「自动适应网络」开关。
@@ -866,6 +874,7 @@ export default function ControlPage({
     setVolumeBusy(false);
     setVolumeUnsupported(false);
     setPeerCaps(null);
+    setDeviceInfo(null);
 
     const fail = (message: string) => {
       if (cancelled) return;
@@ -1160,6 +1169,18 @@ export default function ControlPage({
       if (cancelled || event.clientToken !== clientToken) return;
       if (event.deviceId !== deviceId) return;
       setDisplays(event.displays);
+    });
+
+    // 被控端设备信息：握手时带来显卡/IP，之后每 5 秒的 `status` 更新 CPU/内存。
+    const offDeviceInfo = subscribeControlDeviceInfo((event) => {
+      if (cancelled || event.clientToken !== clientToken) return;
+      if (event.deviceId !== deviceId) return;
+      setDeviceInfo({
+        cpu: event.cpu,
+        mem: event.mem,
+        gpu: event.gpu,
+        ip: event.ip,
+      });
     });
 
     const offAudio = subscribeControlAudio((audio) => {
@@ -1501,6 +1522,15 @@ export default function ControlPage({
               peerCapsRef.current = active.caps;
               setPeerCaps(active.caps);
             }
+            // 直连 welcome 事件可能早于订阅：从会话信息补一次设备信息。
+            if (active.gpu || active.ip) {
+              setDeviceInfo({
+                cpu: active.cpu ?? 0,
+                mem: active.mem ?? 0,
+                gpu: active.gpu ?? "",
+                ip: active.ip ?? "",
+              });
+            }
             onSessionReady();
             return;
           }
@@ -1523,6 +1553,7 @@ export default function ControlPage({
       offFrame();
       offState();
       offCaps();
+      offDeviceInfo();
       offDisplays();
       offAudio();
       offAudioFormat();
@@ -2959,7 +2990,9 @@ export default function ControlPage({
               )}
               <div>
                 <dt>IP 地址</dt>
-                <dd className="mono">{device.ip ?? "—"}</dd>
+                <dd className="mono">
+                  {deviceInfo?.ip || device.ip || "—"}
+                </dd>
               </div>
               <div>
                 <dt>分辨率</dt>
@@ -2967,7 +3000,9 @@ export default function ControlPage({
               </div>
               <div>
                 <dt>显卡</dt>
-                <dd title={device.gpu}>{device.gpu ?? "—"}</dd>
+                <dd title={deviceInfo?.gpu || device.gpu}>
+                  {deviceInfo?.gpu || device.gpu || "—"}
+                </dd>
               </div>
               <div>
                 <dt>最后在线</dt>
@@ -3029,6 +3064,14 @@ export default function ControlPage({
               <div>
                 <dt>编码</dt>
                 <dd>{live ? "MJPEG" : "—"}</dd>
+              </div>
+              <div>
+                <dt>CPU</dt>
+                <dd>{deviceInfo ? `${deviceInfo.cpu.toFixed(0)}%` : "—"}</dd>
+              </div>
+              <div>
+                <dt>内存</dt>
+                <dd>{deviceInfo ? `${deviceInfo.mem.toFixed(0)}%` : "—"}</dd>
               </div>
             </dl>
           </section>

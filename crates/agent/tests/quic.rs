@@ -82,6 +82,8 @@ async fn start_quic(tag: &str) -> Result<Harness> {
             x: 0,
             y: 0,
         }],
+        gpu: String::new(),
+        ip: String::new(),
         approval: Some(approval),
     });
 

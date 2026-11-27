@@ -31,6 +31,10 @@ pub type ApprovalFn = Arc<dyn Fn(ApprovalRequest) + Send + Sync>;
 pub struct AgentState {
     pub config: AgentConfig,
     pub displays: Vec<DisplayInfo>,
+    /// 显卡型号，随 `welcome` 上报；采集失败为空字符串。
+    pub gpu: String,
+    /// 本机局域网出口 IPv4，随 `welcome` 上报；拿不到为空字符串。
+    pub ip: String,
     /// 被控端授权回调；`None` 表示按 `config.allow_control` 直接放行。
     pub approval: Option<ApprovalFn>,
 }

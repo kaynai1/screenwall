@@ -226,6 +226,12 @@ struct DeviceView {
     online: bool,
     last_seen: i64,
     controllable: bool,
+    /// 显卡型号；服务器/被控端未上报时为空字符串。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    gpu: String,
+    /// 局域网出口 IPv4；服务器/被控端未上报时为空字符串。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    ip: String,
 }
 
 /// 服务器 `GET /api/v1/audits` 返回的一条会话审计记录。
@@ -428,6 +434,23 @@ struct ControlVolumeEvent {
     muted: bool,
 }
 
+/// 被控端设备信息（显卡/IP/CPU/内存），随 `welcome` 与每 5 秒的 `status` 推送。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlDeviceInfoEvent {
+    device_id: String,
+    session: u32,
+    client_token: u64,
+    /// 被控端整机 CPU 占用百分比（0–100）。
+    cpu: f32,
+    /// 被控端整机内存占用百分比（0–100）。
+    mem: f32,
+    /// 被控端显卡型号；未上报时为空字符串。
+    gpu: String,
+    /// 被控端局域网出口 IPv4；未上报时为空字符串。
+    ip: String,
+}
+
 enum ViewOut {
     Text(String),
     Binary(Vec<u8>),
@@ -480,6 +503,14 @@ struct ControlSession {
     /// 分不清「这条控制会话属于哪条 WebSocket」。重连时新旧两条链路可能同时
     /// 存在，收尾必须按这个代号认领，才不会误关掉新会话。
     direct_link: Option<u64>,
+    /// 被控端整机 CPU 占用百分比（0–100，`status.stats.cpu`）。
+    cpu: f32,
+    /// 被控端整机内存占用百分比（0–100，`status.stats.mem`）。
+    mem: f32,
+    /// 被控端显卡型号（`welcome.gpu`）；未上报时为空。
+    gpu: String,
+    /// 被控端局域网出口 IPv4（`welcome.ip`）；未上报时为空。
+    ip: String,
 }
 
 /// 断线自动重连的进度。只对可重连会话（中转与直连）生效。
@@ -1502,6 +1533,8 @@ async fn enter_quick_session(
         online: true,
         last_seen: chrono::Utc::now().timestamp_millis(),
         controllable: true,
+        gpu: String::new(),
+        ip: String::new(),
     }];
     spawn_tasks(app.clone(), shared.clone());
     emit_devices(app, shared).await;
@@ -2371,6 +2404,10 @@ async fn start_control_impl(
         started_ms: now_ms(),
         reconnectable: true,
         direct_link: None,
+        cpu: 0.0,
+        mem: 0.0,
+        gpu: String::new(),
+        ip: String::new(),
     };
     *shared.control.write().await = Some(control.clone());
     shared.control_wanted.store(true, Ordering::Relaxed);
@@ -2467,8 +2504,8 @@ fn video_sub_for(
         max_width: Some(control.max_width.max(320)),
         quality: Some(control.quality.clamp(30, 90)),
         codec,
-        // 远程操作必须看得到被控端光标；界面暂无开关，默认开启。
-        cursor: true,
+        // 只显示主控端光标：被控端本地光标不再合成进画面。
+        cursor: false,
         max_bitrate,
     }
 }
@@ -3343,8 +3380,8 @@ async fn set_stream_options_impl(
         max_width: Some(max_width),
         quality: Some(quality),
         codec: control.codec,
-        // 重新订阅时不能把光标弄丢。
-        cursor: true,
+        // 只显示主控端光标。
+        cursor: false,
         // 自适应调画质时也要带着码率上限，否则调一档就把上限丢了。
         max_bitrate: bitrate_cap(
             &shared.config.read().await.clone(),
@@ -3704,6 +3741,11 @@ async fn get_control_info(shared: State<'_, Arc<Shared>>) -> Result<Value, Strin
                 .peer_caps
                 .as_ref()
                 .map(|caps| caps.iter().collect::<Vec<_>>()),
+            // 被控端设备信息：CPU/内存随 `status` 刷新，显卡/IP 握手时确定。
+            "cpu": control.cpu,
+            "mem": control.mem,
+            "gpu": control.gpu,
+            "ip": control.ip,
         }),
         None => Value::Null,
     })
@@ -4829,6 +4871,10 @@ mod tests {
             started_ms: 0,
             reconnectable,
             direct_link: Some(3),
+            cpu: 0.0,
+            mem: 0.0,
+            gpu: String::new(),
+            ip: String::new(),
         }
     }
 
@@ -5165,6 +5211,8 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                                     && current.client_token == control.client_token =>
                             {
                                 current.peer_caps = Some(caps.clone());
+                                current.gpu = welcome.gpu.clone();
+                                current.ip = welcome.ip.clone();
                                 Some(current.clone())
                             }
                             _ => None,
@@ -5186,6 +5234,20 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                                 caps: caps.iter().map(str::to_string).collect(),
                             },
                         );
+                        // 握手同时把被控端显卡/IP 推给前端；CPU/内存等
+                        // `status` 推送再更新。
+                        let _ = app.emit(
+                            "control-device-info",
+                            ControlDeviceInfoEvent {
+                                device_id: current.device_id.clone(),
+                                session: current.session,
+                                client_token: current.client_token,
+                                cpu: current.cpu,
+                                mem: current.mem,
+                                gpu: current.gpu.clone(),
+                                ip: current.ip.clone(),
+                            },
+                        );
                         // 握手完成才知道该用哪种编码：双方都声明了 `video.h264`
                         // 才请求 H.264，否则保持 MJPEG（行为与以前完全一致）。
                         let codec = if caps.contains(screenwall_proto::caps::VIDEO_H264) {
@@ -5196,6 +5258,38 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                         if let Err(message) = subscribe_video(shared, &current, codec).await {
                             emit_control_state(app, "error", &current, Some(message));
                         }
+                    }
+                }
+                Message::Status(status) => {
+                    // 每 5 秒一次：更新 CPU/内存并推给前端。显卡/IP 握手时已定，
+                    // 这里一并回传，前端一条事件就能刷新整块设备信息。
+                    let updated = {
+                        let mut guard = shared.control.write().await;
+                        match guard.as_mut() {
+                            Some(current)
+                                if current.session == header.session
+                                    && current.client_token == control.client_token =>
+                            {
+                                current.cpu = status.stats.cpu;
+                                current.mem = status.stats.mem;
+                                Some(current.clone())
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some(current) = updated {
+                        let _ = app.emit(
+                            "control-device-info",
+                            ControlDeviceInfoEvent {
+                                device_id: current.device_id.clone(),
+                                session: current.session,
+                                client_token: current.client_token,
+                                cpu: current.cpu,
+                                mem: current.mem,
+                                gpu: current.gpu.clone(),
+                                ip: current.ip.clone(),
+                            },
+                        );
                     }
                 }
                 Message::DisplayList(list) => {
@@ -5486,6 +5580,8 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
         let state = Arc::new(AgentState {
             config: agent_config,
             displays: display::list_displays(),
+            gpu: screenwall_agent::sys::gpu_name(),
+            ip: screenwall_agent::sys::local_ipv4(),
             approval: Some(approval),
         });
         let Some(options) = CloudOptions::from_state(&state) else {
@@ -5681,6 +5777,8 @@ fn local_devices(config: &ClientConfig) -> Vec<DeviceView> {
             online: true,
             last_seen: chrono::Utc::now().timestamp_millis(),
             controllable: true,
+            gpu: String::new(),
+            ip: peer.address.clone(),
         })
         .collect()
 }

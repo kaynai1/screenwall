@@ -173,6 +173,8 @@ async fn agent_connects_and_serves_session() {
             x: 0,
             y: 0,
         }],
+        gpu: String::new(),
+        ip: String::new(),
         approval: None,
     });
     let options = CloudOptions::from_state(&state).expect("中转配置");
@@ -299,6 +301,8 @@ async fn control_requires_host_approval() {
             x: 0,
             y: 0,
         }],
+        gpu: String::new(),
+        ip: String::new(),
         approval: Some(approval),
     });
     let options = CloudOptions::from_state(&state).expect("中转配置");
@@ -424,6 +428,8 @@ async fn wol_request_is_relayed_and_rate_limited() {
             x: 0,
             y: 0,
         }],
+        gpu: String::new(),
+        ip: String::new(),
         approval: Some(approval),
     });
     let options = CloudOptions::from_state(&state).expect("中转配置");

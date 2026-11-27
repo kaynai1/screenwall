@@ -170,7 +170,7 @@ pub async fn run(state: Arc<AgentState>, options: CloudOptions) -> Result<()> {
 }
 
 async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<()> {
-    let url = device_url(options)?;
+    let url = device_url(options, &state.gpu, &state.ip)?;
     let mut request = url
         .clone()
         .into_client_request()
@@ -239,7 +239,7 @@ async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<
     Ok(())
 }
 
-fn device_url(options: &CloudOptions) -> Result<String> {
+fn device_url(options: &CloudOptions, gpu: &str, ip: &str) -> Result<String> {
     let base = options.server_url.trim().trim_end_matches('/');
     let base = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -252,10 +252,12 @@ fn device_url(options: &CloudOptions) -> Result<String> {
         bail!("server_url 需要 http(s):// 或 ws(s):// 前缀");
     }
     Ok(format!(
-        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}",
+        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}&gpu={}&ip={}",
         urlencoding::encode(&options.device_id),
         urlencoding::encode(&options.name),
-        urlencoding::encode(env!("CARGO_PKG_VERSION"))
+        urlencoding::encode(env!("CARGO_PKG_VERSION")),
+        urlencoding::encode(gpu),
+        urlencoding::encode(ip)
     ))
 }
 
@@ -587,6 +589,8 @@ async fn session_task(
             // 回交集而不是本机全量：主控端据此直接判断可选功能，不用再猜。
             // 老主控端没声明 caps 时交集就是 v1 基线（不含 audio.aec）。
             caps: agreed.clone(),
+            ip: state.ip.clone(),
+            gpu: state.gpu.clone(),
         }),
     ) {
         return;

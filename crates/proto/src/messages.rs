@@ -131,6 +131,12 @@ pub struct Welcome {
     /// 被控端支持的可选能力；缺省同 [`Hello::caps`]。
     #[serde(default)]
     pub caps: Capabilities,
+    /// 被控端局域网出口 IPv4；旧版本不带，按空字符串处理。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ip: String,
+    /// 被控端显卡型号；旧版本不带，按空字符串处理。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub gpu: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -834,6 +840,8 @@ mod tests {
             agent: peer("DESKTOP-A"),
             limits: Limits::defaults(),
             caps: Capabilities::current(),
+            ip: String::new(),
+            gpu: String::new(),
         });
         let text = msg.to_json();
         assert!(text.contains("\"maxStreams\":4"), "{text}");

@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS devices (
     access_hash  TEXT NOT NULL DEFAULT '',
     -- 是否允许用连接码 + 密码连接本机
     access_enabled INTEGER NOT NULL DEFAULT 0,
+    -- 显卡型号；被控端上线时上报，空字符串表示未知
+    gpu            TEXT NOT NULL DEFAULT '',
+    -- 局域网出口 IPv4；被控端上线时上报，空字符串表示未知
+    ip             TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, id)
 );
 
@@ -135,6 +139,18 @@ fn migrate(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        if !has_column(conn, "devices", "gpu")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN gpu TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !has_column(conn, "devices", "ip")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN ip TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_connect_code
                 ON devices(connect_code) WHERE connect_code <> ''",
@@ -188,6 +204,8 @@ pub struct DeviceRow {
     pub version: String,
     pub last_seen: i64,
     pub controllable: bool,
+    pub gpu: String,
+    pub ip: String,
 }
 
 /// 连接码查询结果：设备所属账号、设备本身，以及访问设置。
@@ -441,16 +459,29 @@ impl Db {
         name: &str,
         os: &str,
         version: &str,
+        gpu: &str,
+        ip: &str,
     ) -> Result<()> {
         self.lock()?.execute(
-            "INSERT INTO devices (id, user_id, name, os, version, last_seen, controllable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+            "INSERT INTO devices (id, user_id, name, os, version, last_seen, controllable, gpu, ip)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)
              ON CONFLICT(user_id, id) DO UPDATE SET
                 name = excluded.name,
                 os = excluded.os,
                 version = excluded.version,
+                gpu = excluded.gpu,
+                ip = excluded.ip,
                 last_seen = excluded.last_seen",
-            params![device_id, user_id, name, os, version, crate::auth::now_ms()],
+            params![
+                device_id,
+                user_id,
+                name,
+                os,
+                version,
+                crate::auth::now_ms(),
+                gpu,
+                ip
+            ],
         )?;
         Ok(())
     }
@@ -678,7 +709,7 @@ impl Db {
     pub fn list_devices(&self, user_id: i64) -> Result<Vec<DeviceRow>> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, os, version, last_seen, controllable
+            "SELECT id, name, os, version, last_seen, controllable, gpu, ip
              FROM devices WHERE user_id = ?1 ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt.query_map(params![user_id], |row| {
@@ -689,6 +720,8 @@ impl Db {
                 version: row.get(3)?,
                 last_seen: row.get(4)?,
                 controllable: row.get::<_, i64>(5)? != 0,
+                gpu: row.get(6)?,
+                ip: row.get(7)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -716,7 +749,7 @@ impl Db {
     pub fn device(&self, user_id: i64, device_id: &str) -> Result<Option<DeviceRow>> {
         let conn = self.lock()?;
         conn.query_row(
-            "SELECT id, name, os, version, last_seen, controllable
+            "SELECT id, name, os, version, last_seen, controllable, gpu, ip
              FROM devices WHERE user_id = ?1 AND id = ?2",
             params![user_id, device_id],
             |row| {
@@ -727,6 +760,8 @@ impl Db {
                     version: row.get(3)?,
                     last_seen: row.get(4)?,
                     controllable: row.get::<_, i64>(5)? != 0,
+                    gpu: row.get(6)?,
+                    ip: row.get(7)?,
                 })
             },
         )
@@ -919,7 +954,7 @@ mod tests {
     fn connect_code_and_quick_token_roundtrip() {
         let db = db();
         let user = db.create_user("kay", "hash").unwrap();
-        db.upsert_device(user, "dev-a", "书房", "Windows", "0.1.0")
+        db.upsert_device(user, "dev-a", "书房", "Windows", "0.1.0", "GPU", "1.2.3.4")
             .unwrap();
 
         let code = db.ensure_connect_code(user, "dev-a").unwrap();
@@ -1279,11 +1314,11 @@ mod tests {
     fn device_upsert_and_list() {
         let db = db();
         let id = db.create_user("kay", "hash").unwrap();
-        db.upsert_device(id, "d1", "客厅", "Windows 11", "0.1.0")
+        db.upsert_device(id, "d1", "客厅", "Windows 11", "0.1.0", "GPU-A", "10.0.0.1")
             .unwrap();
-        db.upsert_device(id, "d1", "客厅电脑", "Windows 11", "0.1.0")
+        db.upsert_device(id, "d1", "客厅电脑", "Windows 11", "0.1.0", "GPU-A", "10.0.0.2")
             .unwrap();
-        db.upsert_device(id, "d2", "书房", "Windows 11", "0.1.0")
+        db.upsert_device(id, "d2", "书房", "Windows 11", "0.1.0", "GPU-B", "10.0.0.3")
             .unwrap();
 
         let devices = db.list_devices(id).unwrap();

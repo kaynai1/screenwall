@@ -31,6 +31,10 @@ pub struct DeviceParams {
     pub os: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub gpu: Option<String>,
+    #[serde(default)]
+    pub ip: Option<String>,
 }
 
 pub async fn device_ws(
@@ -66,6 +70,8 @@ pub async fn device_ws(
         .collect::<String>();
     let os = params.os.unwrap_or_default();
     let version = params.version.unwrap_or_default();
+    let gpu = params.gpu.unwrap_or_default();
+    let ip = params.ip.unwrap_or_default();
 
     // 与登录路径共用设备配额：新设备超限时明确拒绝，重复上线不受影响。
     if !state.device_quota_ok(auth.user_id, &params.device_id) {
@@ -83,7 +89,7 @@ pub async fn device_ws(
     if let Err(error) =
         state
             .db
-            .upsert_device(auth.user_id, &params.device_id, &name, &os, &version)
+            .upsert_device(auth.user_id, &params.device_id, &name, &os, &version, &gpu, &ip)
     {
         tracing::error!("登记设备失败: {error:#}");
         state.metrics.handshake_failed();

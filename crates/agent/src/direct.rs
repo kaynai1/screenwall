@@ -453,6 +453,8 @@ where
     let state = Arc::new(AgentState {
         config: state.config.clone(),
         displays: state.displays.clone(),
+        gpu: state.gpu.clone(),
+        ip: state.ip.clone(),
         approval: Some(promoting_approval(
             inner_approval,
             auth.clone(),
@@ -481,6 +483,8 @@ where
             },
             limits: Limits::defaults(),
             caps: agreed,
+            ip: state.ip.clone(),
+            gpu: state.gpu.clone(),
         }),
     ) {
         writer.abort();

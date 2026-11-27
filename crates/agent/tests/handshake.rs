@@ -99,6 +99,8 @@ async fn start_agent(tag: &str) -> Result<u16> {
             virtual_display: false,
         },
         displays: Vec::new(),
+        gpu: String::new(),
+        ip: String::new(),
         approval: None,
     });
 

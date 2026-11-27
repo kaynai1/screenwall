@@ -303,6 +303,8 @@ pub async fn listen_loop(app: AppHandle, shared: Arc<Shared>) {
         let state = Arc::new(AgentState {
             config: agent_config(&config),
             displays: screenwall_agent::display::list_displays(),
+            gpu: screenwall_agent::sys::gpu_name(),
+            ip: screenwall_agent::sys::local_ipv4(),
             approval: Some(approval_fn(app.clone(), shared.clone())),
         });
 
@@ -468,6 +470,8 @@ async fn spawn_punch_listener(
             let state = Arc::new(AgentState {
                 config: agent_config(&shared.config.read().await.clone()),
                 displays: screenwall_agent::display::list_displays(),
+                gpu: screenwall_agent::sys::gpu_name(),
+                ip: screenwall_agent::sys::local_ipv4(),
                 approval: Some(approval_fn(app.clone(), shared.clone())),
             });
             let auth = shared.direct.lock().unwrap().auth.clone();
@@ -1152,6 +1156,10 @@ where
         // 直连会话同样支持断线自动重连（重连时整条 TLS + WS 重建）。
         reconnectable: true,
         direct_link: Some(link_id),
+        cpu: 0.0,
+        mem: 0.0,
+        gpu: welcome.gpu.clone(),
+        ip: welcome.ip.clone(),
     });
     shared.control_wanted.store(true, Ordering::Relaxed);
     // 直连会话沿用同一套质量统计：用户主动连的这条（还没有重连在跑）从零
@@ -1944,6 +1952,10 @@ mod tests {
             started_ms: 1_700_000_000_000,
             reconnectable,
             direct_link: Some(1),
+            cpu: 0.0,
+            mem: 0.0,
+            gpu: String::new(),
+            ip: String::new(),
         }
     }
 

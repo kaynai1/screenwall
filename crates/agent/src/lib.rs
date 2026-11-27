@@ -22,6 +22,7 @@ pub mod quic;
 pub mod server;
 pub mod session;
 pub mod stats;
+pub mod sys;
 pub mod tls;
 pub mod virtual_display;
 pub mod wol;

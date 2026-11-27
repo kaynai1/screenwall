@@ -127,6 +127,8 @@ async fn start_direct(tag: &str) -> Result<Harness> {
             x: 0,
             y: 0,
         }],
+        gpu: String::new(),
+        ip: String::new(),
         approval: Some(approval),
     });
 
@@ -427,6 +429,8 @@ async fn direct_without_approval_is_rejected() -> Result<()> {
             virtual_display: false,
         },
         displays: Vec::new(),
+        gpu: String::new(),
+        ip: String::new(),
         approval: None,
     });
     let auth = Arc::new(DirectAuth::new());

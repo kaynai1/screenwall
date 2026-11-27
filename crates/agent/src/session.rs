@@ -83,6 +83,8 @@ where
             limits: Limits::defaults(),
             // 与其它握手入口一致：只回双方交集。
             caps: agreed,
+            ip: state.ip.clone(),
+            gpu: state.gpu.clone(),
         }),
     )
     .await?;

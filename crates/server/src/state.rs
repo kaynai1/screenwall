@@ -109,6 +109,10 @@ pub struct DeviceView {
     pub online: bool,
     pub last_seen: i64,
     pub controllable: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub gpu: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ip: String,
 }
 
 pub struct AppState {
@@ -302,6 +306,8 @@ impl AppState {
                 version: row.version,
                 last_seen: row.last_seen,
                 controllable: row.controllable,
+                gpu: row.gpu,
+                ip: row.ip,
             })
             .collect()
     }

@@ -188,6 +188,21 @@ export type ControlVolumeEvent = {
   muted: boolean;
 };
 
+/** `welcome` / `status`：被控端设备信息（CPU/内存/显卡/IP）。 */
+export type ControlDeviceInfoEvent = {
+  deviceId: string;
+  session: number;
+  clientToken: number;
+  /** 整机 CPU 占用百分比（0–100）。 */
+  cpu: number;
+  /** 整机内存占用百分比（0–100）。 */
+  mem: number;
+  /** 显卡型号；未上报时为空字符串。 */
+  gpu: string;
+  /** 局域网出口 IPv4；未上报时为空字符串。 */
+  ip: string;
+};
+
 /**
  * StrictMode 会重复执行 effect。把 start/stop 串行化，
  * 保证「开始 → 停止 → 再开始」的顺序稳定，不会互相覆盖。
@@ -862,6 +877,27 @@ export function subscribeControlVolume(
   };
 }
 
+/** 被控端设备信息（CPU/内存/显卡/IP）：握手和每 5 秒的 `status` 各推一次。 */
+export function subscribeControlDeviceInfo(
+  handler: (event: ControlDeviceInfoEvent) => void,
+): () => void {
+  if (!isTauri) return () => {};
+  let unlisten: UnlistenFn | null = null;
+  let disposed = false;
+  listen<ControlDeviceInfoEvent>("control-device-info", (event) =>
+    handler(event.payload),
+  )
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {});
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}
+
 export function subscribeControlPowerOk(
   handler: (event: ControlPowerEvent) => void,
 ): () => void {
@@ -1409,6 +1445,14 @@ export type ActiveControl = {
   codec?: "mjpeg" | "h264";
   /** 这条会话实际走的链路；旧后端不带这个字段。 */
   link?: "relay" | "direct" | "p2p";
+  /** 被控端整机 CPU 占用百分比（0–100）。 */
+  cpu?: number;
+  /** 被控端整机内存占用百分比（0–100）。 */
+  mem?: number;
+  /** 被控端显卡型号；未上报时为空字符串。 */
+  gpu?: string;
+  /** 被控端局域网出口 IPv4；未上报时为空字符串。 */
+  ip?: string;
 };
 
 /**

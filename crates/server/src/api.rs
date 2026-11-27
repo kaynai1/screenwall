@@ -264,6 +264,10 @@ pub struct DeviceInfo {
     pub os: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub gpu: Option<String>,
+    #[serde(default)]
+    pub ip: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -328,6 +332,8 @@ pub async fn login(
         name: None,
         os: None,
         version: None,
+        gpu: None,
+        ip: None,
     });
     let device_id = match device.id {
         Some(id) if valid_device_id(&id) => id,
@@ -345,6 +351,8 @@ pub async fn login(
         .collect::<String>();
     let os = device.os.unwrap_or_default();
     let version = device.version.unwrap_or_default();
+    let gpu = device.gpu.unwrap_or_default();
+    let ip = device.ip.unwrap_or_default();
 
     // 单账号设备上限：重复登录已有设备不受影响，新设备超限直接拒绝。
     if !state.device_quota_ok(user.id, &device_id) {
@@ -359,7 +367,7 @@ pub async fn login(
 
     state
         .db
-        .upsert_device(user.id, &device_id, &name, &os, &version)
+        .upsert_device(user.id, &device_id, &name, &os, &version, &gpu, &ip)
         .map_err(internal)?;
 
     let token = new_token();

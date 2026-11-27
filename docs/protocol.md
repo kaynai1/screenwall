@@ -67,9 +67,20 @@
     "maxChunk": 1048576,
     "allowControl": true
   },
+  "ip": "192.168.1.23",
+  "gpu": "NVIDIA GeForce RTX 4070",
   "caps": ["audio.opus", "audio.pcm16", "audio.source.mic", "audio.volume", "audio.aec", "audio.stats", "display.multi", "display.all", "file.resume", "file.directory", "file.sha256", "clipboard.text", "power", "wol", "wall"]
 }
 ```
+
+`ip` 与 `gpu` 是可选的设备静态信息，缺省为空字符串（`skip_serializing_if`，不会出现在 JSON 里）：
+
+- `ip`：被控端局域网出口 IPv4（向公网地址 `connect` 一次读本地 socket 地址，
+  不真正发包；没有可用网卡时为空）。
+- `gpu`：被控端主显卡型号（DXGI 枚举第一个适配器，非硬件设备时为空）。
+
+主控端把它们显示在「设备信息」面板里，并与每 5 秒一次的 `status.stats`（CPU/内存）
+一起刷新。
 
 ### 2.3 握手失败
 

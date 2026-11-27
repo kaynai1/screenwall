@@ -239,6 +239,8 @@ async fn answer(
     let state = Arc::new(AgentState {
         config: crate::direct::agent_config(&host_config),
         displays: screenwall_agent::display::list_displays(),
+        gpu: screenwall_agent::sys::gpu_name(),
+        ip: screenwall_agent::sys::local_ipv4(),
         approval: Some(crate::host_approval(app, shared)),
     });
     // 限流器每条连接一份：P2P 的 token 是一次性的，不该和局域网直连
