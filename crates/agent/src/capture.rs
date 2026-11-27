@@ -943,16 +943,24 @@ impl H264Loop<'_> {
 
         let mut fresh = false;
         if self.encoder.as_ref().map(h264::Encoder::size) != Some(wanted) {
-            let bitrate = h264_bitrate(&self.options, job_w, job_h, self.fps);
+            // `h264_bitrate` 按 kbps 计算（和协议、配置同一个口径），
+            // 编码器要的是 bps。这里之前直接把 kbps 传了进去，被
+            // `Encoder::new` 的下限钳成 500 kbps —— 1080p 画面糊的主因。
+            let bitrate_kbps = h264_bitrate(&self.options, job_w, job_h, self.fps);
             tracing::info!(
                 stream_id = self.stream_id,
                 width = wanted.0,
                 height = wanted.1,
                 fps = self.fps,
-                bitrate,
+                bitrate_kbps,
                 "重建硬件 H.264 编码器"
             );
-            self.encoder = Some(h264::Encoder::new(job_w, job_h, self.fps, bitrate)?);
+            self.encoder = Some(h264::Encoder::new(
+                job_w,
+                job_h,
+                self.fps,
+                h264_bitrate_bps(&self.options, job_w, job_h, self.fps),
+            )?);
             fresh = true;
             // 旧编码器里的在途帧随它一起销毁，输出计数归零。
             self.inflight = 0;
@@ -1057,6 +1065,15 @@ fn h264_bitrate(options: &CaptureOptions, width: u32, _height: u32, fps: u32) ->
     let by_budget = budget.saturating_mul(fps).saturating_mul(8) / 1000 * 9 / 10;
     kbps = kbps.min(by_budget.max(1_500)).min(100_000);
     kbps as u32
+}
+
+/// 硬件编码器要的码率（bps）。
+///
+/// [`h264_bitrate`] 和协议、配置一样用 kbps；`h264::Encoder::new` 收的是 bps，
+/// 小于 500_000 会被它钳到 500_000。两个口径必须在这里换算，
+/// 直接传 kbps 会让 1080p 永远只有 500 kbps。
+fn h264_bitrate_bps(options: &CaptureOptions, width: u32, height: u32, fps: u32) -> u32 {
+    h264_bitrate(options, width, height, fps).saturating_mul(1000)
 }
 
 fn build_video_frame(
@@ -2156,6 +2173,31 @@ mod tests {
         }
         .normalized();
         assert_eq!(options.frame_budget(), 8333);
+    }
+
+    #[test]
+    fn h264_bitrate_converts_kbps_to_bps() {
+        // 1080p30 不限码率：基准 8000 kbps × 30/60 = 4000 kbps。
+        let options = CaptureOptions {
+            fps: 30,
+            max_width: 1920,
+            quality: 65,
+            region: None,
+            cursor: true,
+            max_bitrate: None,
+        }
+        .normalized();
+        assert_eq!(h264_bitrate(&options, 1920, 1080, 30), 4000);
+        // 编码器接口要 bps：换错单位会被 `Encoder::new` 钳成 500 kbps。
+        assert_eq!(h264_bitrate_bps(&options, 1920, 1080, 30), 4_000_000);
+        // 手动码率上限同样按 kbps 传入、按 bps 输出（单帧预算再打九折，
+        // 所以落在 1.5–2.0 Mbps 之间）。
+        let capped = CaptureOptions {
+            max_bitrate: Some(2000),
+            ..options
+        };
+        let capped_bps = h264_bitrate_bps(&capped, 1920, 1080, 30);
+        assert!((1_500_000..=2_000_000).contains(&capped_bps), "{capped_bps}");
     }
 
     #[test]

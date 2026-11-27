@@ -34,6 +34,7 @@ pub const STUN_SERVERS: &[&str] = &[
     "stun.l.google.com:19302",
     "stun1.l.google.com:19302",
     "stun.qq.com:3478",
+    "stun.miwifi.com:3478",
 ];
 
 /// STUN magic cookie（RFC 5389 固定值）。
@@ -51,6 +52,17 @@ const ATTR_MAPPED: u16 = 0x0001;
 const STUN_TIMEOUT: Duration = Duration::from_secs(2);
 /// 默认探测预算：依次试完 [`STUN_SERVERS`] 的上限。
 const STUN_BUDGET: Duration = Duration::from_secs(12);
+
+/// 打洞 socket 的接收缓冲。
+///
+/// 打洞成功后对端会在同一个 socket 上直接开始 QUIC 握手，Initial 约 1.2 KB；
+/// 缓冲小于它就收不到「来源地址」，Windows 还会报 WSAEMSGSIZE（10040）。
+const PUNCH_BUF: usize = 4096;
+
+/// 打洞循环里单次 `recv_from` 的等待时间。
+///
+/// 要短：每等一轮就补发一次探测包，双方都在持续发包，NAT 的洞才开得快。
+const PUNCH_POLL: Duration = Duration::from_millis(200);
 
 /// 本机在公网上的映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,27 +109,50 @@ pub fn discover_within(socket: &UdpSocket, budget: Duration) -> io::Result<Mappi
         if Instant::now() >= deadline {
             break;
         }
-        let Ok(addr) = resolve(server) else {
+        let Ok(addrs) = resolve(server) else {
             continue;
         };
-        match query(socket, addr, deadline) {
-            Ok(public) => return Ok(Mapping { public, local }),
-            Err(error) => {
-                tracing::debug!("STUN {server} 探测失败: {error}");
-                last_error = error;
+        for addr in addrs {
+            if Instant::now() >= deadline {
+                break;
+            }
+            match query(socket, addr, deadline) {
+                Ok(public) => {
+                    // 探测期间读超时被调到了最多 2 秒；打洞要勤发包，恢复短超时。
+                    let _ = socket.set_read_timeout(Some(PUNCH_POLL));
+                    return Ok(Mapping { public, local });
+                }
+                Err(error) => {
+                    tracing::debug!("STUN {server}（{addr}）探测失败: {error}");
+                    last_error = error;
+                }
             }
         }
     }
+    let _ = socket.set_read_timeout(Some(PUNCH_POLL));
     Err(last_error)
 }
 
-/// 解析 `host:port`；只支持字面量地址和域名解析。
-fn resolve(target: &str) -> io::Result<SocketAddr> {
+/// 解析 `host:port`，只返回 IPv4 地址。
+///
+/// 打洞 socket 绑的是 `0.0.0.0`（IPv4）。DNS 往往把 IPv6 排在前面
+/// （Cloudflare、Google 的 STUN 域名都是），拿 IPv6 地址去 `send_to`
+/// 会直接报「地址族不支持」，整轮探测就白跑了 —— 这正是之前日志里
+/// 「STUN 响应里没有映射地址」的根因。
+fn resolve(target: &str) -> io::Result<Vec<SocketAddr>> {
     use std::net::ToSocketAddrs;
-    target
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "解析不到地址"))
+    let addrs: Vec<SocketAddr> = target.to_socket_addrs()?.collect();
+    let v4: Vec<SocketAddr> = addrs
+        .into_iter()
+        .filter(|addr| addr.is_ipv4())
+        .collect();
+    if v4.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "解析不到 IPv4 地址",
+        ));
+    }
+    Ok(v4)
 }
 
 /// 发一次 Binding Request 并解析响应里的映射地址。
@@ -138,6 +173,9 @@ fn query(socket: &UdpSocket, server: SocketAddr, deadline: Instant) -> io::Resul
     socket.send_to(&request, server)?;
 
     let mut buf = [0u8; 512];
+    // 有没有收到过这个服务器的包：区分「完全没回」和「回了但解析不出地址」，
+    // 排查时这两种情况含义完全不同。
+    let mut saw_response = false;
     // 可能收到杂包（别的进程的探测回包、无关的 UDP 流量），重试几次。
     for _ in 0..4 {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -153,6 +191,7 @@ fn query(socket: &UdpSocket, server: SocketAddr, deadline: Instant) -> io::Resul
                 if from.ip() != server.ip() {
                     continue;
                 }
+                saw_response = true;
                 if let Some(mapped) = parse_response(&buf[..read], &txid) {
                     return Ok(mapped);
                 }
@@ -170,7 +209,11 @@ fn query(socket: &UdpSocket, server: SocketAddr, deadline: Instant) -> io::Resul
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        "STUN 响应里没有映射地址",
+        if saw_response {
+            "STUN 响应里没有映射地址"
+        } else {
+            "STUN 服务器无响应（UDP 出站可能被拦截）"
+        },
     ))
 }
 
@@ -296,8 +339,8 @@ impl PunchSocket {
     /// 绑定 `0.0.0.0` 是为了多网卡都能收；真正的可达性由 NAT 决定。
     pub fn bind(port: u16) -> io::Result<Self> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))?;
-        socket.set_read_timeout(Some(Duration::from_millis(200)))?;
-        socket.set_write_timeout(Some(Duration::from_millis(200)))?;
+        socket.set_read_timeout(Some(PUNCH_POLL))?;
+        socket.set_write_timeout(Some(PUNCH_POLL))?;
         Ok(Self {
             socket,
             mapping: None,
@@ -336,7 +379,7 @@ impl PunchSocket {
     /// 返回实际收到响应的那个地址 —— 后续 QUIC 就认这个地址。
     pub fn punch(&self, peers: &[SocketAddr], timeout: Duration) -> io::Result<SocketAddr> {
         let deadline = Instant::now() + timeout;
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; PUNCH_BUF];
         // 打洞包内容随意，只要不是空包（空包在部分 NAT 上会被丢）。
         let probe = b"screenwall-punch-v1";
         let mut peers: Vec<SocketAddr> = peers.to_vec();
@@ -355,9 +398,11 @@ impl PunchSocket {
                     if read == 0 {
                         continue;
                     }
-                    // 收到对方的打洞包就说明双向都通了。
+                    // 收到对方的任何包就说明双向都通了。对端打洞成功后会在
+                    // 同一个 socket 上立刻开始 QUIC 握手，先到的可能是它
+                    // 1.2 KB 的 Initial —— 这也算打通。
                     if peers.iter().any(|peer| same_host(peer, &from)) {
-                        tracing::info!(peer = %from, "UDP 打洞成功");
+                        tracing::info!(peer = %from, bytes = read, "UDP 打洞成功");
                         return Ok(from);
                     }
                     // 来自未知地址：可能是对方换了端口，加入候选继续试。
@@ -369,6 +414,16 @@ impl PunchSocket {
                 Err(error)
                     if error.kind() == io::ErrorKind::WouldBlock
                         || error.kind() == io::ErrorKind::TimedOut => {}
+                Err(error) if is_oversized(&error) => {
+                    // 缓冲区仍装不下的数据报（Windows 报 WSAEMSGSIZE 10040，
+                    // 而且拿不到来源地址）。能收到这么大的包说明洞已经通了：
+                    // 对端多半已经开始 QUIC 握手，其 Initial 会自己重传。
+                    // 按第一个候选继续，调用方拿它建 QUIC 端点/连接。
+                    if let Some(peer) = peers.first().copied() {
+                        tracing::warn!(%peer, "打洞收到超长数据报，按已打通处理");
+                        return Ok(peer);
+                    }
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -391,7 +446,8 @@ impl PunchSocket {
     /// 这个地址的连接）。
     pub fn await_peer(&self, timeout: Duration) -> io::Result<SocketAddr> {
         let deadline = Instant::now() + timeout;
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; PUNCH_BUF];
+        let probe = b"screenwall-punch-v1";
         while Instant::now() < deadline {
             match self.socket.recv_from(&mut buf) {
                 Ok((read, from)) => {
@@ -399,7 +455,14 @@ impl PunchSocket {
                         continue;
                     }
                     // 只认我们的打洞包，别把无关的 UDP 流量当成对端。
-                    if &buf[..read] != b"screenwall-punch-v1" {
+                    if &buf[..read] != probe {
+                        // 比探测包大的只可能是 QUIC：主控端已经打洞成功、
+                        // 直接开始握手了。这个 Initial 被我们读掉了，quinn
+                        // 会重传，返回地址让调用方起 QUIC 端点即可。
+                        if read > probe.len() {
+                            tracing::info!(%from, bytes = read, "收到 QUIC 握手包，跳过等待打洞包");
+                            return Ok(from);
+                        }
                         tracing::debug!(%from, "忽略非打洞包");
                         continue;
                     }
@@ -426,6 +489,14 @@ impl PunchSocket {
     pub fn into_socket(self) -> UdpSocket {
         self.socket
     }
+}
+
+/// 是否是「数据报比接收缓冲还大」的错误。
+///
+/// Windows 是 `WSAEMSGSIZE`（10040），Linux/macOS 是 `EMSGSIZE`（90）。
+/// 遇到它时 `recv_from` 拿不到来源地址，只能当作「对端已经通了」处理。
+fn is_oversized(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(10040) | Some(90))
 }
 
 /// 是否同一个 IP（端口可能因为 NAT 映射而不同）。
@@ -546,6 +617,25 @@ mod tests {
             local: SocketAddr::from((Ipv4Addr::new(192, 168, 1, 2), 47902)),
         };
         assert!(!mapped.port_preserved());
+    }
+
+    /// 真机联网验证：`cargo test -p screenwall-agent --release nat::stun_discovers -- --ignored --nocapture`
+    ///
+    /// 之前 DNS 返回的 IPv6 地址排在前面，`send_to` 直接报地址族不支持，
+    /// 公网映射永远探测不到，跨网段 P2P 就全落回中转。
+    #[test]
+    #[ignore = "需要网络；验证 STUN 能拿到公网映射"]
+    fn stun_discovers_public_mapping() {
+        let mut punch = PunchSocket::bind(0).unwrap();
+        match punch.discover_within(Duration::from_secs(8)) {
+            Ok(mapping) => println!(
+                "公网映射 {}（内网 {}，端口保持 {}）",
+                mapping.public,
+                mapping.local,
+                mapping.port_preserved()
+            ),
+            Err(error) => panic!("STUN 探测失败: {error}"),
+        }
     }
 
     #[test]

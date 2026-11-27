@@ -518,3 +518,12 @@ sidecar 模式下：
 | 同账号仍弹窗 | 根因在服务器：`sameAccount` 是 v0.2.9 起服务器才转发的字段。客户端把服务器版本显示在设置 → 关于与侧栏提示里，低于 0.2.11 时明确提示「升级服务器后才能 P2P 直连、同账号免确认」 |
 | 侧栏链路胶囊 | 账号模式下原来固定写「服务器中转」。现在订阅 `control-state` 的 `link`（`relay` / `direct` / `p2p`）：有会话时显示真实链路（P2P 直连为绿色、中转琥珀色），没有会话时按默认路径显示，提示里写清原因 |
 | 错误文案 | 4004 原来写「对方关闭了被控 / 已关闭允许被控开关」，但被控端拒绝或超时也用同一个码，文案与实际原因对不上。改成「被控端拒绝了请求」，同时覆盖开关关闭与人工拒绝 |
+
+## v0.2.14（2026-11-27）
+
+| 项目 | 内容 |
+| --- | --- |
+| 画面糊 | 硬件 H.264 的码率单位接错：`h264_bitrate` 返回 kbps（1080p30 = 4000），`Encoder::new` 收的是 bps 并钳到 ≥ 500_000，于是实际一直按 500 kbps 编码（日志里「重建…bitrate=4000」后面跟着「已初始化 bitrate=500000」）。现在按 ×1000 传入，1080p30 默认 4 Mbps，4K 按帧率折算到 12.5 Mbps |
+| STUN 永远失败 | `resolve` 只取 DNS 第一个地址，Cloudflare / Google 的 STUN 域名都先返回 IPv6，而打洞 socket 绑的是 IPv4，`send_to` 直接报地址族不支持；轮到 stun.qq.com 又超时，最后只剩「STUN 响应里没有映射地址」。改为只取 IPv4、逐个尝试解析结果，并补一台 stun.miwifi.com；错误文案区分「UDP 被拦截」和「解析不出映射」 |
+| 打洞秒失败（10040） | 被控端还在 64 字节缓冲里等探测包时，主控端已经打通并直接发来约 1.2 KB 的 QUIC Initial，Windows 返回 `WSAEMSGSIZE`（10040），被当成致命错误。接收缓冲扩到 4 KB，超长包按「已打通」处理；`await_peer` 收到 QUIC 包也直接放行（quinn 会重传 Initial） |
+| 测试 | `nat::stun_discovers_public_mapping`（联网，手动 `--ignored` 跑）；`cargo check --workspace --all-targets` 通过 |
