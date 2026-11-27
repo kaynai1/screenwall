@@ -1092,13 +1092,13 @@ button:not(:disabled),
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 34px;
-  padding: 0 14px;
+  height: 30px;
+  padding: 0 12px;
   border: 0;
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   background: var(--fill-1);
   color: var(--text);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -1164,17 +1164,17 @@ button:not(:disabled),
 }
 
 .btn-sm {
-  height: 28px;
+  height: 26px;
   padding: 0 10px;
   border-radius: var(--r-sm);
-  font-size: 14px;
+  font-size: 12.5px;
 }
 
 .btn-lg {
-  height: 44px;
-  padding: 0 20px;
+  height: 40px;
+  padding: 0 18px;
   border-radius: var(--r-lg);
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .field {
@@ -1454,8 +1454,8 @@ button:not(:disabled),
 .switch {
   position: relative;
   flex: none;
-  width: 51px;
-  height: 31px;
+  width: 36px;
+  height: 20px;
   padding: 2px;
   border: 0;
   border-radius: var(--r-pill);
@@ -1465,11 +1465,11 @@ button:not(:disabled),
 
 .switch-thumb {
   display: block;
-  width: 27px;
-  height: 27px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   transition:
     transform var(--dur) var(--ease),
     width var(--dur-fast) var(--ease);
@@ -1480,7 +1480,7 @@ button:not(:disabled),
 }
 
 .switch.is-on .switch-thumb {
-  transform: translateX(20px);
+  transform: translateX(16px);
 }
 
 .switch:disabled {
