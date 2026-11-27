@@ -217,7 +217,8 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
         <div className="fb-foot">
           <p className="fb-privacy">
             <ShieldCheck size={14} strokeWidth={1.75} />
-            以「{account.username || "当前账号"}」提交，附带设备名和当前版本，不含屏幕内容与密码。
+            反馈只保存在你自建的服务器上，仅该服务器管理员可见，不会发给开发者；
+            想给开发者提建议，请用下方的官方 QQ 群或邮箱。
           </p>
           <button
             type="button"
