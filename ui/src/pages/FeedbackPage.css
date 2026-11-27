@@ -212,3 +212,81 @@
   font-size: 13.5px;
   line-height: 1.6;
 }
+
+/* 官方联系方式：QQ 群 / 邮箱，一键复制 */
+.fb-contact {
+  gap: 6px;
+}
+
+.fb-contact-title {
+  margin: 0 0 2px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fb-contact-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.fb-contact-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 0;
+}
+
+.fb-contact-row + .fb-contact-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.fb-contact-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--fill-1);
+  color: var(--text-2);
+}
+
+.fb-contact-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  /* 窄屏下按钮会挤过来，给号码留出最小宽度，避免逐字换行。 */
+  min-width: 140px;
+}
+
+.fb-contact-copy small {
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fb-contact-copy strong {
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.fb-contact-btn {
+  flex: none;
+  height: 30px;
+  margin-left: auto;
+  font-size: 12.5px;
+}
+
+.fb-contact-hint {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}

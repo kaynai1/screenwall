@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   CheckCircle2,
+  Copy,
   Lightbulb,
   Loader2,
   Mail,
   Send,
   ShieldCheck,
+  UsersRound,
   WifiOff,
 } from "lucide-react";
 import { submitFeedback, type FeedbackCategory } from "../api";
@@ -17,6 +20,10 @@ import "./FeedbackPage.css";
 
 const MAX_LENGTH = 4000;
 const MIN_LENGTH = 5;
+
+/** 官方联系方式：提交到服务器之外，想直接找人时用。 */
+const QQ_GROUP = "128906393";
+const OFFICIAL_EMAIL = "xqtban@88.com";
 
 /** 按字符（而不是 UTF-16 码元）计数，和服务端的 `chars().count()` 一致。 */
 function charCount(value: string): number {
@@ -30,6 +37,53 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  /** 刚复制的是哪一项：`qq` / `email`，2 秒后恢复。 */
+  const [copied, setCopied] = useState<"qq" | "email" | null>(null);
+  const copyTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    },
+    [],
+  );
+
+  async function copyContact(what: "qq" | "email", value: string) {
+    // 内嵌 WebView 不一定给 clipboard 权限，而且被拒绝时 Promise 可能一直不落定；
+    // 用 800ms 超时兜底，再退回选中 + execCommand。
+    const ok = await Promise.race([
+      navigator.clipboard
+        .writeText(value)
+        .then(() => true)
+        .catch(() => false),
+      new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 800)),
+    ]).then((written) => {
+      if (written) return true;
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      document.body.removeChild(area);
+      return copied;
+    });
+    if (!ok) {
+      notify("复制失败，请手动选择", "error");
+      return;
+    }
+    setCopied(what);
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(null), 2000);
+    notify(what === "qq" ? "群号已复制" : "邮箱已复制", "success");
+  }
 
   const length = useMemo(() => charCount(content), [content]);
   const canSubmit =
@@ -185,6 +239,58 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
         </div>
       </section>
       )}
+
+      <section className="fb-card fb-contact" aria-label="官方联系方式">
+        <h3 className="fb-contact-title">官方联系方式</h3>
+        <div className="fb-contact-list">
+          <div className="fb-contact-row">
+            <span className="fb-contact-icon" aria-hidden="true">
+              <UsersRound size={16} strokeWidth={1.75} />
+            </span>
+            <span className="fb-contact-copy">
+              <small>官方 QQ 群</small>
+              <strong>{QQ_GROUP}</strong>
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost fb-contact-btn"
+              onClick={() => void copyContact("qq", QQ_GROUP)}
+            >
+              {copied === "qq" ? (
+                <Check size={14} strokeWidth={1.75} />
+              ) : (
+                <Copy size={14} strokeWidth={1.75} />
+              )}
+              {copied === "qq" ? "已复制" : "复制群号"}
+            </button>
+          </div>
+          <div className="fb-contact-row">
+            <span className="fb-contact-icon" aria-hidden="true">
+              <Mail size={16} strokeWidth={1.75} />
+            </span>
+            <span className="fb-contact-copy">
+              <small>官方邮箱</small>
+              <strong>{OFFICIAL_EMAIL}</strong>
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost fb-contact-btn"
+              onClick={() => void copyContact("email", OFFICIAL_EMAIL)}
+            >
+              {copied === "email" ? (
+                <Check size={14} strokeWidth={1.75} />
+              ) : (
+                <Copy size={14} strokeWidth={1.75} />
+              )}
+              {copied === "email" ? "已复制" : "复制邮箱"}
+            </button>
+          </div>
+        </div>
+        <p className="fb-contact-hint">
+          QQ 群里可以和其他用户、开发者直接交流；邮箱适合不方便加群的情况。
+          通过本页提交的内容只有当前服务器的管理员能看到。
+        </p>
+      </section>
     </div>
   );
 }
