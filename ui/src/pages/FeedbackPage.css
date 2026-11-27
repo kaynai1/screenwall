@@ -5,7 +5,8 @@
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: 760px;
+  /* 表单页面撑满内容区，右侧不留空白。 */
+  max-width: none;
 }
 
 .fb-intro {
@@ -42,6 +43,18 @@
   color: var(--text-3);
   font-size: 13.5px;
   line-height: 1.6;
+}
+
+/* 本页的按钮比全局默认小一号，窄窗口下不显得笨重。 */
+.fb-page .btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.fb-page .btn svg {
+  width: 13px;
+  height: 13px;
 }
 
 .fb-card {
@@ -277,11 +290,12 @@
   white-space: nowrap;
 }
 
-.fb-contact-btn {
+.fb-page .fb-contact-btn {
   flex: none;
-  height: 30px;
+  height: 27px;
+  padding: 0 9px;
   margin-left: auto;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .fb-contact-hint {

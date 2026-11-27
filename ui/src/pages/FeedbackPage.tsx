@@ -149,6 +149,7 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
           <Segmented
             value={category}
             onChange={setCategory}
+            size="sm"
             options={[
               {
                 value: "suggestion",
