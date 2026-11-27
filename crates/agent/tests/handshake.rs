@@ -95,6 +95,7 @@ async fn start_agent(tag: &str) -> Result<u16> {
             server_url: String::new(),
             account_token: String::new(),
             device_id: "test-device".into(),
+            local_id: String::new(),
             ca_path: String::new(),
             virtual_display: false,
         },

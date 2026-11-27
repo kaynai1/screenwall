@@ -1606,6 +1606,24 @@ export async function resolveDirectId(id: string): Promise<DiscoveredDevice> {
   return invoke<DiscoveredDevice>("resolve_direct_id", { id });
 }
 
+/** 识别码解析结果：同网段走直连，跨网段走服务器中转。 */
+export type PeerLookup =
+  | { kind: "direct"; address: string; name: string; port: number }
+  | { kind: "relay"; deviceId: string; name: string };
+
+/**
+ * 解析识别码：先局域网广播，找不到再问服务器（同账号设备）。
+ *
+ * 局域网命中就直接连地址；服务器命中说明是跨网段，改走中转会话。
+ */
+export async function resolvePeerId(id: string): Promise<PeerLookup> {
+  if (!isTauri) {
+    await delay(700);
+    return { kind: "direct", address: "192.168.1.31:47900", name: "DESKTOP-7Q2", port: 47900 };
+  }
+  return invoke<PeerLookup>("resolve_peer_id", { id });
+}
+
 /**
  * 扫描同网段开启了局域网直连的设备。
  * 走 UDP 广播，约 1.2 秒后返回；没有设备时返回空数组。

@@ -443,13 +443,22 @@ export default function App() {
     }
   }
 
-  function openDevice(id: string) {
+  function openDevice(id: string, fallback?: DeviceView) {
     // 直连设备用合成 ID（`direct:ip:port`），不在账号设备列表里，
     // 会话已经由 connectDirect 建好，控制页会复用它。
+    //
+    // `fallback`：设备刚被服务器按识别码解析出来。服务器已经确认它属于本账号
+    // 且在线，但设备列表是服务端异步推送的，此刻本地列表里可能还没有它 ——
+    // 先把它补进列表，否则控制页会把它当成「列表里查不到的设备」。
     const device = devices.find((item) => item.id === id);
     if (!device && !isDirectDeviceId(id)) {
-      notify("设备不存在或已被移除", "error");
-      return;
+      if (!fallback) {
+        notify("设备不存在或已被移除", "error");
+        return;
+      }
+      setDevices((current) =>
+        current.some((item) => item.id === id) ? current : [...current, fallback],
+      );
     }
     setActiveId(id);
     setPage("control");

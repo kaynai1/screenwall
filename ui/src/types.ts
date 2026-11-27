@@ -133,8 +133,12 @@ export type DevicesPageProps = PageProps & {
 };
 
 export type RemotePageProps = PageProps & {
-  /** 连上之后直接进控制页，不用用户再去设备列表里找一遍。 */
-  onOpenDevice: (id: string) => void;
+  /**
+   * 连上之后直接进控制页，不用用户再去设备列表里找一遍。
+   * `fallback`：识别码由服务器解析出来的设备，列表可能还没推送过来，
+   * 用这份最小信息先占位，控制页才认得出它是账号设备。
+   */
+  onOpenDevice: (id: string, fallback?: DeviceView) => void;
 };
 
 export type AuditPageProps = PageProps;

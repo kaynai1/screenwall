@@ -105,7 +105,7 @@ async fn connect_link_is_single_use_and_scoped() {
     let client = reqwest::Client::new();
     let (token, device_id) = login(&base, "link-owner").await;
 
-    // 未开启连接码连接时，不允许签发链接。
+    // 还没有连接密码时，链接这条路径同样不能开：被控端会把它当成已授权会话。
     let denied = client
         .post(format!("{base}/api/v1/connect-link"))
         .bearer_auth(&token)
@@ -114,14 +114,17 @@ async fn connect_link_is_single_use_and_scoped() {
         .await
         .expect("签发尝试");
     assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+    let body: Value = denied.json().await.expect("拒绝响应");
+    assert_eq!(body["error"], "quick_no_password");
 
+    // 只设密码、不开开关：签发链接时应当顺手把连接码连接打开。
     client
         .post(format!("{base}/api/v1/quick"))
         .bearer_auth(&token)
-        .json(&json!({ "enabled": true, "password": "connect123" }))
+        .json(&json!({ "enabled": false, "password": "connect123" }))
         .send()
         .await
-        .expect("开启连接码");
+        .expect("设置连接密码");
 
     let created: Value = client
         .post(format!("{base}/api/v1/connect-link"))
@@ -137,6 +140,19 @@ async fn connect_link_is_single_use_and_scoped() {
     let link_token = created["token"].as_str().expect("链接令牌").to_string();
     assert!(url.contains("/l/"));
     assert!(!link_token.is_empty());
+
+    // 签发链接顺手把开关打开了：界面刷新后应当显示「已开启」。
+    let state: Value = client
+        .get(format!("{base}/api/v1/quick"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("连接码状态")
+        .json()
+        .await
+        .expect("状态响应");
+    assert_eq!(state["enabled"], true);
+    assert_eq!(state["hasPassword"], true);
 
     // 设备离线时拒绝，且不消耗链接。
     let offline = client

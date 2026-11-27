@@ -97,6 +97,8 @@ pub struct CloudOptions {
     pub token: String,
     pub device_id: String,
     pub name: String,
+    /// 本机识别码（9 位数字）；空串表示还没生成，不上报。
+    pub local_id: String,
     /// 自定义 CA 根证书路径；`None` 表示用系统默认信任库。
     pub ca_path: Option<std::path::PathBuf>,
     /// P2P 打洞服务；`None` 表示只走中转。
@@ -121,6 +123,7 @@ impl Clone for CloudOptions {
             token: self.token.clone(),
             device_id: self.device_id.clone(),
             name: self.name.clone(),
+            local_id: self.local_id.clone(),
             ca_path: self.ca_path.clone(),
             p2p: self.p2p.clone(),
         }
@@ -141,6 +144,7 @@ impl CloudOptions {
             token: token.to_string(),
             device_id: state.config.device_id.clone(),
             name: state.config.name.clone(),
+            local_id: state.config.local_id.clone(),
             ca_path: if ca_path.is_empty() {
                 None
             } else {
@@ -252,12 +256,13 @@ fn device_url(options: &CloudOptions, gpu: &str, ip: &str) -> Result<String> {
         bail!("server_url 需要 http(s):// 或 ws(s):// 前缀");
     }
     Ok(format!(
-        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}&gpu={}&ip={}",
+        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}&gpu={}&ip={}&local_id={}",
         urlencoding::encode(&options.device_id),
         urlencoding::encode(&options.name),
         urlencoding::encode(env!("CARGO_PKG_VERSION")),
         urlencoding::encode(gpu),
-        urlencoding::encode(ip)
+        urlencoding::encode(ip),
+        urlencoding::encode(&options.local_id)
     ))
 }
 

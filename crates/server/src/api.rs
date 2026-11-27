@@ -268,6 +268,9 @@ pub struct DeviceInfo {
     pub gpu: Option<String>,
     #[serde(default)]
     pub ip: Option<String>,
+    /// 本机识别码（9 位数字）：登录时一并上报，别人才能跨网段用识别码找到本机。
+    #[serde(default)]
+    pub local_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,6 +337,7 @@ pub async fn login(
         version: None,
         gpu: None,
         ip: None,
+        local_id: None,
     });
     let device_id = match device.id {
         Some(id) if valid_device_id(&id) => id,
@@ -353,6 +357,11 @@ pub async fn login(
     let version = device.version.unwrap_or_default();
     let gpu = device.gpu.unwrap_or_default();
     let ip = device.ip.unwrap_or_default();
+    let local_id = device
+        .local_id
+        .as_deref()
+        .and_then(normalize_local_id)
+        .unwrap_or_default();
 
     // 单账号设备上限：重复登录已有设备不受影响，新设备超限直接拒绝。
     if !state.device_quota_ok(user.id, &device_id) {
@@ -367,7 +376,9 @@ pub async fn login(
 
     state
         .db
-        .upsert_device(user.id, &device_id, &name, &os, &version, &gpu, &ip)
+        .upsert_device(
+            user.id, &device_id, &name, &os, &version, &gpu, &ip, &local_id,
+        )
         .map_err(internal)?;
 
     let token = new_token();
@@ -698,6 +709,88 @@ fn normalize_connect_code(raw: &str) -> Option<String> {
     Some(digits)
 }
 
+/// 归一化本机识别码：和连接码同样的 9 位规则（客户端生成的码首位也不为 0）。
+fn normalize_local_id(raw: &str) -> Option<String> {
+    normalize_connect_code(raw)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveIdReq {
+    pub id: String,
+}
+
+/// 按识别码在本账号的设备里找在线的那台。
+///
+/// 识别码原本只靠 UDP 广播在同网段解析；登录了服务器的人自然期望
+/// 「输对方的识别码就能连」，哪怕两台机器不在一个网段。这里补上服务端查找：
+/// 命中后返回设备 ID，主控端接着走中转会话。
+///
+/// **只在本账号内查**：识别码是显示在界面上的公开数字，不是凭据；
+/// 用它跨账号找人等于让任何人凭一个公开数字连进别人电脑。同账号本来
+/// 就是已授权关系（服务器会话带 `sameAccount`），用它跨网段连自己的另一台机器
+/// 才是这条链路真正的用途。
+pub async fn resolve_local_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ResolveIdReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    let Some(id) = normalize_local_id(&req.id) else {
+        return Err(bad_request("识别码是 9 位数字"));
+    };
+    let rows = state.db.list_devices(auth.user_id).map_err(internal)?;
+    let matches: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.local_id == id)
+        .collect();
+    if matches.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "id_not_found",
+            "你的账号里没有这个识别码的设备",
+        ));
+    }
+    // 在线判断要走内存表：数据库里的 last_seen 可能是断线前的旧值。
+    // 识别码理论上可能撞（客户端各自随机生成），所以优先挑在线的那台，
+    // 而不是按列表顺序撞大运。
+    let online_id = {
+        let devices = state.devices.read().await;
+        matches
+            .iter()
+            .find(|row| {
+                devices
+                    .values()
+                    .any(|conn| conn.device_id == row.id && conn.user_id == auth.user_id)
+            })
+            .map(|row| row.id.clone())
+    };
+    // 重码时优先用在线那台的信息；都不在线就报第一台的「已关闭被控」。
+    let row = match online_id.as_ref() {
+        Some(id) => matches.iter().find(|row| &row.id == id),
+        None => matches.first(),
+    }
+    .expect("matches 非空");
+    if !row.controllable {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "control_disabled",
+            "这台设备已关闭被控",
+        ));
+    }
+    if online_id.is_none() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "device_offline",
+            "这台设备当前不在线",
+        ));
+    }
+    Ok(Json(json!({
+        "id": row.id,
+        "name": row.name,
+        "online": true,
+    })))
+}
+
 /// 读本机的连接码与开关状态（被控端设置页用）。
 pub async fn quick_state(
     State(state): State<Arc<AppState>>,
@@ -956,18 +1049,20 @@ pub async fn create_connect_link(
     else {
         return Err(not_found());
     };
-    let Some((_, access_enabled, _)) = state
+    let Some((_, access_enabled, access_hash)) = state
         .db
         .device_access(auth.user_id, &device_id)
         .map_err(internal)?
     else {
         return Err(not_found());
     };
-    if !access_enabled {
+    if access_hash.is_empty() {
+        // 没有密码就开不了连接码连接；链接本身虽然是凭据，但被控端会把它
+        // 当成「已授权的会话」，没有密码的设备不该有这条路径。
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
-            "quick_disabled",
-            "这台设备没有开启连接码连接",
+            "quick_no_password",
+            "这台设备还没有连接密码，请先在「远程协助」里设置",
         ));
     }
     if !device.controllable {
@@ -976,6 +1071,21 @@ pub async fn create_connect_link(
             "control_disabled",
             "这台设备已关闭被控",
         ));
+    }
+    if !access_enabled {
+        // 用户点「生成链接」就是在说「现在让人进来」，只是开关还关着。
+        // 这里顺手打开，免得为了发一条链接先跑去设置页点一遍开关。
+        // 放在「是否允许被控」之后：被控关掉的设备不该因为点了一次链接
+        // 就把连接码连接打开。
+        state
+            .db
+            .set_device_access(auth.user_id, &device_id, None, true)
+            .map_err(internal)?;
+        tracing::info!(
+            "生成连接链接时自动开启连接码连接: user_id={} device={}",
+            auth.user_id,
+            device_id
+        );
     }
 
     let token = new_token();

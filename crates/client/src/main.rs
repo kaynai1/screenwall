@@ -232,6 +232,9 @@ struct DeviceView {
     /// 局域网出口 IPv4；服务器/被控端未上报时为空字符串。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     ip: String,
+    /// 本机识别码（9 位数字）；服务器未上报时为空字符串。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    local_id: String,
 }
 
 /// 服务器 `GET /api/v1/audits` 返回的一条会话审计记录。
@@ -518,12 +521,24 @@ struct ControlSession {
 struct ReconnectState {
     /// 当前是第几次尝试（1 起）。
     attempt: u32,
-    /// 每次尝试的间隔（毫秒）。
+    /// 每次尝试的间隔（毫秒）；0 表示已经结束退避、正在建连。
     delay_ms: u64,
 }
 
-/// 重连退避表：1s → 2s → 4s → 8s → 8s，最多 5 次。
-const RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 2_000, 4_000, 8_000, 8_000];
+/// 重连退避表：0.5s → 1s → 2s → 4s → 4s，最多 5 次。
+///
+/// 起点从 1 秒压到 0.5 秒：断线大多是瞬时抖动（Wi-Fi 切换、NAT 映射刷新），
+/// 早半秒重连成功，用户几乎看不到横幅。总等待只有 11.5 秒，比原来的
+/// 23 秒短一半；每次尝试本身也不再先打洞（见 `start_control_impl` 的
+/// `resume` 参数），所以整轮下来从「一分钟以上」降到十秒上下。
+const RECONNECT_DELAYS_MS: [u64; 5] = [500, 1_000, 2_000, 4_000, 4_000];
+
+/// 重连时等待被控端确认的上限（秒）。
+///
+/// 首次建会话要等人点「允许」，可以等 40 秒；重连的会话本来就已经授权过
+/// （同账号直接放行），再等 40 秒只会让「等待被控端响应」显得像卡死。
+/// 12 秒足够覆盖服务器转发 + 被控端重连的抖动，失败就进下一轮。
+const RECONNECT_APPROVAL_TIMEOUT_SECS: u64 = 12;
 
 /// 正在进行的自动重连。用户主动停止/离开页面时整条任务被取消。
 struct ReconnectGuard {
@@ -864,10 +879,13 @@ async fn login(
     }
 
     let existing_device_id = shared.config.read().await.device_id.clone();
+    let local_id = shared.config.read().await.local_id.clone();
     let mut device = json!({
         "name": hostname(),
         "os": "Windows",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        // 识别码随登录一起上报：别人登录服务器后也能凭它跨网段找到本机。
+        "local_id": local_id
     });
     if !existing_device_id.is_empty() {
         device["id"] = json!(existing_device_id);
@@ -1110,7 +1128,26 @@ async fn get_api(client: &reqwest::Client, url: String, token: &str) -> Result<V
     }
 }
 
+/// 生成 6 位数字连接密码。
+///
+/// 和直连配对码一样用系统熵源：这个密码会被抄给别人、也可能长期不变，
+/// 时间戳可预测就等于把「猜密码」变成了「算密码」。
+fn generate_connect_password() -> String {
+    let mut bytes = [0u8; 4];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        let now = now_ms() as u32;
+        let pid = std::process::id();
+        bytes = (now ^ pid.wrapping_mul(2654435761)).to_le_bytes();
+    }
+    format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
+}
+
 /// 登录后把本机保存的连接码设置补同步给服务器，并缓存服务器分配的连接码。
+///
+/// 首次登录的机器本机既没有密码也没有开关，以前这里什么都不发，
+/// 服务器上就一直是「未开启、没密码」，界面和链接全都用不了。
+/// 现在这种情况下自动生成一个 6 位密码并开启 —— 用户登录后的默认预期
+/// 就是「别人能凭识别码 + 密码连我」，不想开放时关开关即可。
 async fn sync_connect_settings(shared: &Arc<Shared>) {
     let (base, token, enabled, password) = {
         let config = shared.config.read().await;
@@ -1143,8 +1180,32 @@ async fn sync_connect_settings(shared: &Arc<Shared>) {
     match get_api(&shared.http, format!("{base}/api/v1/quick"), &token).await {
         Ok(value) => {
             let code = value["code"].as_str().unwrap_or_default().to_string();
+            let has_password = value["hasPassword"].as_bool().unwrap_or(false);
+            let enabled_now = value["enabled"].as_bool().unwrap_or(false);
             let mut config = shared.config.write().await;
             config.connect_code = code;
+            // 服务器上还没有密码：本机生成一个并开启。密码写回本地，
+            // 下次登录或换服务器时都还能拿它同步，用户也能在界面上看到。
+            if !has_password && !enabled_now && config.connect_password.is_empty() {
+                let generated = generate_connect_password();
+                config.connect_password = generated.clone();
+                config.connect_enabled = true;
+                let _ = config.save();
+                drop(config);
+                if let Err(error) = post_api(
+                    &shared.http,
+                    format!("{base}/api/v1/quick"),
+                    &json!({ "enabled": true, "password": generated }),
+                    Some(&token),
+                )
+                .await
+                {
+                    tracing::warn!("自动开启连接码连接失败: {error}");
+                } else {
+                    tracing::info!("已为首次登录自动开启连接码连接");
+                }
+                return;
+            }
             let _ = config.save();
         }
         Err(error) => tracing::warn!("读取连接码失败: {error}"),
@@ -1260,13 +1321,58 @@ async fn create_connect_link(
     if let Some(device_id) = device_id.filter(|value| !value.trim().is_empty()) {
         body["deviceId"] = json!(device_id);
     }
-    let value = post_api(
+    let value = match post_api(
         &shared.http,
         format!("{base}/api/v1/connect-link"),
         &body,
         Some(&token),
     )
-    .await?;
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            // 服务器上还没有连接密码时链接签发不了。这里补一次：本机生成
+            // 一个密码、开启连接码连接，再重签一次 —— 用户点的是「生成链接」，
+            // 不该被一个他从没设置过的密码挡住。
+            let needs_password = error.contains("没有连接密码")
+                || error.contains("连接密码")
+                || error.contains("quick_no_password")
+                || error.contains("quick_disabled");
+            if !needs_password {
+                return Err(error);
+            }
+            let password = {
+                let config = shared.config.read().await;
+                config.connect_password.clone()
+            };
+            let password = if password.is_empty() {
+                generate_connect_password()
+            } else {
+                password
+            };
+            post_api(
+                &shared.http,
+                format!("{base}/api/v1/quick"),
+                &json!({ "enabled": true, "password": password }),
+                Some(&token),
+            )
+            .await
+            .map_err(|error| format!("开启连接码连接失败: {error}"))?;
+            {
+                let mut config = shared.config.write().await;
+                config.connect_enabled = true;
+                config.connect_password = password;
+                let _ = config.save();
+            }
+            post_api(
+                &shared.http,
+                format!("{base}/api/v1/connect-link"),
+                &body,
+                Some(&token),
+            )
+            .await?
+        }
+    };
     Ok(ConnectLinkView {
         url: value["url"].as_str().unwrap_or_default().to_string(),
         expires_at: value["expiresAt"].as_i64().unwrap_or(0),
@@ -1535,6 +1641,7 @@ async fn enter_quick_session(
         controllable: true,
         gpu: String::new(),
         ip: String::new(),
+        local_id: String::new(),
     }];
     spawn_tasks(app.clone(), shared.clone());
     emit_devices(app, shared).await;
@@ -1590,7 +1697,7 @@ async fn start_control(
     device_id: String,
     client_token: u64,
 ) -> Result<ControlInfo, String> {
-    start_control_impl(&app, shared.inner(), &device_id, client_token, true).await
+    start_control_impl(&app, shared.inner(), &device_id, client_token, true, false).await
 }
 
 #[tauri::command]
@@ -2293,12 +2400,18 @@ async fn try_p2p(
     }
 }
 
+/// 建立一条中转控制会话。
+///
+/// `resume` 表示这是断线后的自动重连：跳过打洞、把等待被控端确认的上限
+/// 压到 12 秒。重连的会话本来就已经授权过，没必要再花最多 11 秒去探测
+/// NAT、也没必要为一次抖动等 40 秒 —— 那是「第一次连、还要人点允许」的预算。
 async fn start_control_impl(
     app: &AppHandle,
     shared: &Arc<Shared>,
     device_id: &str,
     client_token: u64,
     cancel_pending: bool,
+    resume: bool,
 ) -> Result<ControlInfo, String> {
     let config = shared.config.read().await.clone();
     if config.token.is_empty() {
@@ -2335,8 +2448,14 @@ async fn start_control_impl(
     // 先试同账号 P2P 直连：两端打洞通了就不经过中转，带宽和延迟都由
     // 实际链路决定。失败（被控端旧版本、NAT 打不通、对端关闭打洞）就
     // 安静地走下面的中转流程，用户无感。
-    if let Some(info) = try_p2p(app, shared, device_id, client_token).await {
-        return Ok(info);
+    //
+    // 重连跳过这一步：打洞要 STUN 3 秒 + 等应答最多 8 秒，而重连的诉求
+    // 是「尽快回到原链路」。原链路是 P2P 的，`spawn_reconnect` 会按
+    // `direct_link` 直接重建，根本走不到这里；走到这里说明原来就是中转。
+    if !resume {
+        if let Some(info) = try_p2p(app, shared, device_id, client_token).await {
+            return Ok(info);
+        }
     }
 
     let request = shared
@@ -2360,14 +2479,24 @@ async fn start_control_impl(
     }
 
     // 被控端需要人来点「允许」，所以要等得比原来（8 秒）久。
+    // 重连走更短的预算：这条会话之前已经授权过，卡住多半是链路还没恢复。
+    let wait_secs = if resume {
+        RECONNECT_APPROVAL_TIMEOUT_SECS
+    } else {
+        APPROVAL_TIMEOUT_SECS + 10
+    };
     let session =
-        match tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS + 10), rx).await {
+        match tokio::time::timeout(Duration::from_secs(wait_secs), rx).await {
             Ok(Ok(Ok(session))) => session,
             Ok(Ok(Err(message))) => return Err(message),
             Ok(Err(_)) => return Err("会话请求已取消".into()),
             Err(_) => {
                 shared.pending_opens.lock().unwrap().remove(&request);
-                return Err("被控端未确认（等待超时）".into());
+                return Err(if resume {
+                    "被控端暂未响应".into()
+                } else {
+                    "被控端未确认（等待超时）".into()
+                });
             }
         };
 
@@ -2803,7 +2932,7 @@ fn emit_reconnecting(app: &AppHandle, client_token: u64, device_id: &str, state:
     );
 }
 
-/// 会话非用户主动结束时调用：按 1s → 2s → 4s → 8s → 8s 重试，最多 5 次。
+/// 会话非用户主动结束时调用：按 0.5s → 1s → 2s → 4s → 4s 重试，最多 5 次。
 ///
 /// 调用前会话已经从 `shared.control` 里取走（旧会话的隧道关闭消息也已发出），
 /// 因此重连过程中不会同时存在两条会话。每一轮都先 `close_control_session`
@@ -2871,14 +3000,31 @@ fn spawn_reconnect(
                 return;
             }
 
+            // 退避结束、正式开始建连：把 delay_ms 归零，界面据此从
+            // 「下次尝试还有 N 秒」切到「正在重新连接」。
+            let connecting = ReconnectState {
+                attempt,
+                delay_ms: 0,
+            };
+            if let Some(item) = shared.reconnect.lock().unwrap().as_mut() {
+                if item.client_token == client_token {
+                    item.state = Some(connecting);
+                } else {
+                    return;
+                }
+            }
+            emit_reconnecting(&app, client_token, &device_id, connecting);
+
             let attempt_result = match direct_address(&device_id) {
                 // 直连：整条 TLS + WS 重建，凭据用 `known_peers` 里的长期 token
                 // （`pairing_code = None`），证书指纹仍由 `direct::connect` 校验。
                 Some((host, port)) => {
-                    direct::connect(&app, &shared, host, Some(port), None, client_token).await
+                    direct::connect(&app, &shared, host, Some(port), None, client_token, true).await
                 }
                 // 中转：向服务器重新发 open。
-                None => start_control_impl(&app, &shared, &device_id, client_token, false).await,
+                None => {
+                    start_control_impl(&app, &shared, &device_id, client_token, false, true).await
+                }
             };
             match attempt_result {
                 Ok(info) => {
@@ -5573,6 +5719,7 @@ async fn host_loop(app: AppHandle, shared: Arc<Shared>) {
             server_url: config.server_url.clone(),
             account_token: config.token.clone(),
             device_id: config.device_id.clone(),
+            local_id: config.local_id.clone(),
             ca_path: config.ca_path.clone().unwrap_or_default(),
             virtual_display: config.virtual_display,
         };
@@ -5779,6 +5926,7 @@ fn local_devices(config: &ClientConfig) -> Vec<DeviceView> {
             controllable: true,
             gpu: String::new(),
             ip: peer.address.clone(),
+            local_id: String::new(),
         })
         .collect()
 }
@@ -6096,6 +6244,20 @@ fn main() {
             }
             if start_now {
                 spawn_tasks(app.handle().clone(), initial.clone());
+                // 从旧版本升级上来、本机一直没设置过连接密码的账号，服务器上
+                // 会一直停在「未开启」。启动时补一次和登录后同样的同步。
+                let sync_shared = initial.clone();
+                tauri::async_runtime::spawn(async move {
+                    let needs = {
+                        let config = sync_shared.config.read().await;
+                        !config.local_mode
+                            && !config.token.is_empty()
+                            && !config.server_url.is_empty()
+                    };
+                    if needs {
+                        sync_connect_settings(&sync_shared).await;
+                    }
+                });
             }
             // 缩略图看护：断流重开、失败退避，跟随登录状态由 wall::clear 清空。
             let wall_shared = initial.clone();
@@ -6192,6 +6354,7 @@ fn main() {
             direct::connect_direct,
             direct::scan_direct_devices,
             direct::resolve_direct_id,
+            direct::resolve_peer_id,
             set_ca_path,
             firewall::get_direct_firewall_state,
             firewall::allow_direct_firewall,

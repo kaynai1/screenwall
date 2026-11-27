@@ -250,3 +250,76 @@ async fn quick_connect_rejects_disabled_device() {
     let body: Value = response.json().await.expect("响应体");
     assert_eq!(body["error"], "quick_disabled");
 }
+
+/// 识别码查询：只在同一账号里找，且必须在线。
+#[tokio::test]
+async fn resolve_id_only_within_account() {
+    let addr = start_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let (owner, device_id) = login(&base, "resolve-owner").await;
+
+    // 设备还没上报识别码时查不到。
+    let missing = client
+        .post(format!("{base}/api/v1/resolve-id"))
+        .bearer_auth(&owner)
+        .json(&json!({ "id": "123456789" }))
+        .send()
+        .await
+        .expect("查询识别码");
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // 上线时带上识别码，之后就能按识别码查到这台设备。
+    let path = format!(
+        "/ws/device?device_id={device_id}&name=ResolveOwner&os=Windows&version=0.1.0&local_id=876543210"
+    );
+    let mut device = connect_ws(&addr, &path, &owner).await;
+    assert_eq!(next_json(&mut device).await["t"], "ready");
+
+    let found: Value = client
+        .post(format!("{base}/api/v1/resolve-id"))
+        .bearer_auth(&owner)
+        .json(&json!({ "id": "876543210" }))
+        .send()
+        .await
+        .expect("查询识别码")
+        .json()
+        .await
+        .expect("查询响应");
+    assert_eq!(found["id"], device_id.as_str());
+    assert_eq!(found["online"], true);
+
+    // 别的账号看不到这台设备：识别码是公开数字，不能当凭据用。
+    let (other, _) = login(&base, "resolve-other").await;
+    let denied = client
+        .post(format!("{base}/api/v1/resolve-id"))
+        .bearer_auth(&other)
+        .json(&json!({ "id": "876543210" }))
+        .send()
+        .await
+        .expect("跨账号查询");
+    assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // 格式不对直接 400。
+    let bad = client
+        .post(format!("{base}/api/v1/resolve-id"))
+        .bearer_auth(&owner)
+        .json(&json!({ "id": "12ab" }))
+        .send()
+        .await
+        .expect("非法识别码");
+    assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // 设备下线后应报离线。
+    drop(device);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let offline = client
+        .post(format!("{base}/api/v1/resolve-id"))
+        .bearer_auth(&owner)
+        .json(&json!({ "id": "876543210" }))
+        .send()
+        .await
+        .expect("离线查询");
+    assert_eq!(offline.status(), reqwest::StatusCode::CONFLICT);
+}

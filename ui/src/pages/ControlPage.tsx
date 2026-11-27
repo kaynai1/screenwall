@@ -2665,8 +2665,8 @@ export default function ControlPage({
           </span>
           <span className="ctrl-banner-hint">
             {reconnecting.delayMs > 0
-              ? `下次尝试还有约 ${Math.max(1, Math.round(reconnecting.delayMs / 1000))} 秒`
-              : "等待被控端响应"}
+              ? `约 ${Math.max(1, Math.round(reconnecting.delayMs / 1000))} 秒后重试`
+              : "正在重新连接…"}
           </span>
         </div>
       )}

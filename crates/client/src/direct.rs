@@ -575,6 +575,7 @@ pub(crate) fn agent_config(config: &crate::ClientConfig) -> screenwall_agent::co
         server_url: String::new(),
         account_token: String::new(),
         device_id: config.device_id.clone(),
+        local_id: config.local_id.clone(),
         ca_path: config.ca_path.clone().unwrap_or_default(),
         virtual_display: config.virtual_display,
     }
@@ -717,6 +718,9 @@ pub async fn connect(
     port: Option<u16>,
     pairing_code: Option<&str>,
     client_token: u64,
+    // 断线后的自动重连：这条会话之前已经授权过，被控端会直接放行，
+    // 等待预算从 40 秒压到 12 秒，别让一次抖动卡住界面。
+    resume: bool,
 ) -> Result<crate::ControlInfo, String> {
     let config = shared.config.read().await.clone();
     let port = port.unwrap_or(if config.direct_port == 0 {
@@ -780,6 +784,7 @@ pub async fn connect(
         device_id,
         true,
         "direct",
+        resume,
     )
     .await
 }
@@ -894,6 +899,8 @@ pub async fn connect_punch(
         device_id,
         true,
         "direct",
+        // 用户手动发起的直连/打洞：首次授权预算照旧。
+        false,
     )
     .await
 }
@@ -986,6 +993,8 @@ pub(crate) async fn connect_offer(
         // 服务器自己会记这条账号会话的审计，这里不重复上报。
         false,
         "p2p",
+        // P2P 只在首次连接时尝试，重连不走这条路。
+        false,
     )
     .await
 }
@@ -1013,6 +1022,8 @@ async fn finish_connect<S>(
     report_audit: bool,
     // 这条链路的类型，随 `ControlInfo` 回给界面显示（`direct` / `p2p`）。
     link: &'static str,
+    // 自动重连：被控端已授权过，等 `open.ok` 的预算压短。
+    resume: bool,
 ) -> Result<crate::ControlInfo, String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1072,14 +1083,23 @@ where
     // 这里**必须自己读** `stream`：`read_loop` 还没启动，没人消费帧的话
     // `open.ok` 永远到不了，等 oneshot 会死锁。读到 `open.ok` 后把剩下的
     // 帧交给 `read_loop`（会话建立后它才开始跑）。
+    //
+    // 重连的会话之前已经授权过，被控端不再弹窗；等不到只可能是链路还没恢复，
+    // 用 12 秒的短预算尽快进下一轮，而不是让用户盯着 40 秒的「等待响应」。
+    let wait_secs = if resume {
+        crate::RECONNECT_APPROVAL_TIMEOUT_SECS
+    } else {
+        crate::APPROVAL_TIMEOUT_SECS + 10
+    };
     let (session, buffered) = match tokio::time::timeout(
-        Duration::from_secs(crate::APPROVAL_TIMEOUT_SECS + 10),
+        Duration::from_secs(wait_secs),
         wait_open_ok(shared, &mut stream, &mut sink, request_id),
     )
     .await
     {
         Ok(Ok(pair)) => pair,
         Ok(Err(message)) => return Err(message),
+        Err(_) if resume => return Err("对方暂未响应".into()),
         Err(_) => return Err("对方未确认（等待超时）".into()),
     };
 
@@ -1779,7 +1799,7 @@ async fn connect_tcp_or_punch(
     client_token: u64,
     punch_enabled: bool,
 ) -> Result<crate::ControlInfo, String> {
-    let tcp = connect(app, shared, host, port, code, client_token);
+    let tcp = connect(app, shared, host, port, code, client_token, false);
     if !punch_enabled {
         return tcp.await;
     }
@@ -1871,6 +1891,74 @@ pub async fn resolve_direct_id(
     resolve_local_id(&wanted).await
 }
 
+/// 解析结果：同网段就用地址直连，跨网段就让服务器中转。
+#[derive(Debug, Clone, Serialize)]
+// `rename_all` 只管变体名（`Direct` → `direct`）；字段名要单独指定，
+// 否则前端拿到的会是 `device_id` 而不是 `deviceId`。
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+pub enum PeerLookup {
+    /// 局域网里找到了：按地址走直连（或打洞）。
+    Direct {
+        address: String,
+        name: String,
+        port: u16,
+    },
+    /// 服务器上找到了：这是自己账号下的设备，按设备 ID 走中转。
+    Relay { device_id: String, name: String },
+}
+
+/// 解析识别码：先局域网广播，失败再问服务器。
+///
+/// 以前 9 位识别码只靠 UDP 广播，所以只有同一网段能用。登录了服务器的人
+/// 自然期望「输识别码就能连」——这里补上服务端回退：同账号的设备在服务器上
+/// 登记了识别码，跨网段也能凭它找到并走中转。
+///
+/// 顺序不能反：同网段直连不走服务器、画质与延迟都更好，所以先扫广播；
+/// 扫不到（或没登录）才回退。两边都失败时把两个原因都报出来。
+#[tauri::command]
+pub async fn resolve_peer_id(
+    shared: tauri::State<'_, Arc<Shared>>,
+    id: String,
+) -> Result<PeerLookup, String> {
+    let wanted = parse_local_id(&id).ok_or("识别码是 9 位数字")?;
+    let shared = shared.inner();
+
+    let lan_error = match resolve_local_id(&wanted).await {
+        Ok(found) => {
+            return Ok(PeerLookup::Direct {
+                address: found.address,
+                name: found.name,
+                port: found.port,
+            });
+        }
+        Err(error) => error,
+    };
+
+    let (base, token) = {
+        let config = shared.config.read().await;
+        (config.server_url.clone(), config.token.clone())
+    };
+    if token.is_empty() || base.is_empty() {
+        return Err(format!("{lan_error}；未登录服务器，无法跨网段查找"));
+    }
+    let value = crate::post_api(
+        &shared.http,
+        format!("{}/api/v1/resolve-id", base.trim_end_matches('/')),
+        &json!({ "id": wanted }),
+        Some(&token),
+    )
+    .await
+    .map_err(|error| format!("{lan_error}；服务器查找也失败：{error}"))?;
+    let device_id = value["id"].as_str().unwrap_or_default().to_string();
+    if device_id.is_empty() {
+        return Err(format!("{lan_error}；服务器没有返回设备"));
+    }
+    Ok(PeerLookup::Relay {
+        device_id,
+        name: value["name"].as_str().unwrap_or("远程设备").to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1925,6 +2013,29 @@ mod tests {
         assert_eq!(parse_local_id("192.168.1.20:47900"), None);
         assert_eq!(parse_local_id("12345678"), None);
         assert_eq!(parse_local_id(""), None);
+    }
+
+    /// 前端按 `{ kind: "relay", deviceId }` 取字段；变体名和字段名都得是驼峰。
+    #[test]
+    fn peer_lookup_serializes_camel_case() {
+        let relay = serde_json::to_value(PeerLookup::Relay {
+            device_id: "dev-1".into(),
+            name: "书房".into(),
+        })
+        .unwrap();
+        assert_eq!(relay["kind"], "relay");
+        assert_eq!(relay["deviceId"], "dev-1");
+        assert_eq!(relay["name"], "书房");
+
+        let direct = serde_json::to_value(PeerLookup::Direct {
+            address: "192.168.1.20".into(),
+            name: "客厅".into(),
+            port: 47900,
+        })
+        .unwrap();
+        assert_eq!(direct["kind"], "direct");
+        assert_eq!(direct["address"], "192.168.1.20");
+        assert_eq!(direct["port"], 47900);
     }
 
     fn session(reconnectable: bool) -> ControlSession {

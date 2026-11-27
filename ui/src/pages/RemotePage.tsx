@@ -19,7 +19,7 @@ import {
   getConnectCode,
   getDirectState,
   regeneratePairingCode,
-  resolveDirectId,
+  resolvePeerId,
   rotateConnectCode,
   setConnectCode,
   setDirectEnabled,
@@ -46,6 +46,7 @@ const TTL_OPTIONS: { value: PasswordTtl; label: string }[] = [
  * 埋在设置里每次都要点三层才能拿到码，不合适。
  */
 export default function RemotePage({
+  account,
   notify,
   onOpenDevice,
   active,
@@ -150,12 +151,16 @@ export default function RemotePage({
   }
 
   async function savePassword() {
-    if (!connect) return;
+    if (!serverAccount) return;
     setBusy(true);
     try {
-      setConnect(
-        await setConnectCode(connect.enabled, fixedPassword || undefined),
+      // 还没有读到服务器状态（connect 为空）时也要能用：开启状态以本地
+      // 推断为准，设置成功后 getConnectCode 会把真实值带回来。
+      const next = await setConnectCode(
+        connect?.enabled ?? true,
+        fixedPassword || undefined,
       );
+      setConnect(next);
       notify(fixedPassword ? "已设置固定密码" : "已换新的临时密码", "success");
       setFixedPassword("");
     } catch (cause) {
@@ -171,6 +176,8 @@ export default function RemotePage({
       const link = await createConnectLink();
       await copy(link.url, "code");
       notify("链接已复制，10 分钟内有效且只能用一次", "success");
+      // 签发链接会顺手把连接码连接打开（服务端行为），刷新一下让开关状态跟上。
+      void load();
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
@@ -186,12 +193,31 @@ export default function RemotePage({
     setPeerBusy(true);
     try {
       const raw = peerCode.trim();
-      // 9 位数字是本机识别码，局域网里广播一次换成地址；其余按 IP 处理。
+      // 9 位数字是本机识别码：先在同一网段广播找，找不到再问服务器
+      // （同账号的跨网段设备）。其余按 IP / 主机名处理。
       const digits = raw.replace(/[\s-]/g, "");
       let host = raw.replace(/\s/g, "");
       if (/^\d{9}$/.test(digits)) {
         setPeerStatus("正在局域网里查找这个识别码…");
-        const found = await resolveDirectId(digits);
+        const found = await resolvePeerId(digits);
+        if (found.kind === "relay") {
+          // 跨网段：走账号中转会话。服务器已确认设备属于本账号且在线，
+          // 但设备列表是服务端推送的，可能还没到 —— 补一条最小信息让
+          // 控制页认得它（`online: true` 是服务器刚确认过的）。
+          setPeerStatus(`找到 ${found.name}（跨网段），正在中转连接…`);
+          notify("已找到设备，正在打开控制页", "success");
+          setPeerStatus(null);
+          onOpenDevice(found.deviceId, {
+            id: found.deviceId,
+            name: found.name,
+            os: "Windows",
+            version: "",
+            online: true,
+            lastSeen: Date.now(),
+            controllable: true,
+          });
+          return;
+        }
         host = found.address;
         setPeerStatus(`找到 ${found.name}（${found.address}），正在连接…`);
       } else {
@@ -230,6 +256,13 @@ export default function RemotePage({
   const password = serverPassword || (direct?.pairingCode ?? "");
   const passwordIsPairing = !serverPassword && Boolean(direct?.pairingCode);
   const directOn = direct?.enabled ?? false;
+  // 固定密码和一次性链接都由服务器签发：账号登录（非连接码会话、非本机模式）
+  // 才有。以前判断的是 `connect` 有没有读到 —— 首次登录时服务器还没配密码，
+  // 整块会直接消失，用户看到的就是「登录了却什么都没法设置」。
+  const serverAccount = account.loggedIn && !account.quick && !account.local;
+  // 服务器上是否已开启连接码连接；还没读到状态时按「登录后自动开启」的
+  // 实际行为推断成已开启，避免闪一下「未开启」。
+  const connectEnabled = connect?.enabled ?? serverAccount;
   const address = direct?.addresses[0]
     ? `${direct.addresses[0]}:${direct.port}`
     : "";
@@ -279,10 +312,14 @@ export default function RemotePage({
             <div className="remote-field">
               <div className="remote-field-head">
                 <span>本机识别码</span>
-                {/* 关掉开关时这个码扫不到 —— 明说一句，别让人对着一个
-                    连不上的码反复试。 */}
+                {/* 直连关着时局域网扫不到，但登录了服务器的人仍能凭它
+                    跨网段找到本机 —— 两种情况下提示要说清楚。 */}
                 {!directOn ? (
-                  <em className="remote-field-note is-off">未开启，别人连不上</em>
+                  <em className="remote-field-note is-off">
+                    {serverAccount
+                      ? "局域网直连未开启，仅同账号可跨网段找到"
+                      : "未开启，别人连不上"}
+                  </em>
                 ) : (
                   serverCode && (
                     <em className="remote-field-note">联网码 {serverCode}</em>
@@ -389,9 +426,9 @@ export default function RemotePage({
             </div>
           )}
 
-          {/* 固定密码是服务器上的设置（要登录才写得了）。纯局域网没登录时
-              藏起来，不留一个点了必然报「尚未登录」的入口。 */}
-          {connect && (
+          {/* 固定密码是服务器上的设置（要登录才写得了）。纯局域网/连接码会话
+              没有账号可写，藏起来，不留一个点了必然报「尚未登录」的入口。 */}
+          {serverAccount && (
             <div className="remote-fixed">
               <div className="remote-fixed-head">
                 <span>
@@ -405,7 +442,7 @@ export default function RemotePage({
                   disabled={busy}
                 >
                   {busy ? <Loader2 size={13} className="spin" /> : null}
-                  {connect.hasPassword ? "修改" : "设置"}
+                  {connect?.hasPassword ? "修改" : "设置"}
                 </button>
               </div>
               <input
@@ -413,11 +450,16 @@ export default function RemotePage({
                 className="remote-input"
                 value={fixedPassword}
                 onChange={(event) => setFixedPassword(event.target.value)}
-                placeholder={connect.hasPassword ? "已设置，输入新密码可修改" : "未设置"}
+                placeholder={connect?.hasPassword ? "已设置，输入新密码可修改" : "未设置"}
                 spellCheck={false}
                 autoComplete="off"
                 aria-label="固定密码"
               />
+              {!connectEnabled && (
+                <p className="remote-tip">
+                  连接码连接当前是关闭的，生成一次性链接时会自动打开。
+                </p>
+              )}
             </div>
           )}
 
@@ -437,7 +479,7 @@ export default function RemotePage({
           )}
 
           {/* 一次性链接由服务器签发，没登录时没有可用的东西可生成。 */}
-          {connect && (
+          {serverAccount && (
             <button
               type="button"
               className="remote-link remote-link-wide"
@@ -522,8 +564,8 @@ export default function RemotePage({
 
             <p className="remote-tip">
               <ShieldCheck size={13} />
-              同一网段会自动走直连，画面不经过任何服务器；跨网段时尝试
-              UDP 打洞，打不通才回退到中转。
+              同一网段会自动走直连，画面不经过任何服务器；登录同一账号时，
+              跨网段也能用识别码找到设备并走中转。
             </p>
           </div>
 

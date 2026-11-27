@@ -160,6 +160,7 @@ async fn agent_connects_and_serves_session() {
         server_url: format!("http://{addr}"),
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
+        local_id: String::new(),
         ca_path: String::new(),
         virtual_display: false,
     };
@@ -288,6 +289,7 @@ async fn control_requires_host_approval() {
         server_url: format!("http://{addr}"),
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
+        local_id: String::new(),
         ca_path: String::new(),
         virtual_display: false,
     };
@@ -415,6 +417,7 @@ async fn wol_request_is_relayed_and_rate_limited() {
         server_url: format!("http://{addr}"),
         account_token: token.clone(),
         device_id: "dev-a".to_string(),
+        local_id: String::new(),
         ca_path: String::new(),
         virtual_display: false,
     };

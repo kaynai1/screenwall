@@ -29,6 +29,9 @@ pub struct AgentConfig {
     /// 稳定设备 ID；首次启动生成。
     #[serde(default)]
     pub device_id: String,
+    /// 本机识别码（9 位数字）：随设备上线报给服务器，别人登录后也能凭它找人。
+    #[serde(default)]
+    pub local_id: String,
     /// 自定义 CA 根证书路径（文件或目录）；为空表示用系统默认信任库。
     #[serde(default)]
     pub ca_path: String,
@@ -48,6 +51,7 @@ impl AgentConfig {
             server_url: String::new(),
             account_token: String::new(),
             device_id: generate_device_id(),
+            local_id: String::new(),
             ca_path: String::new(),
             virtual_display: false,
         }

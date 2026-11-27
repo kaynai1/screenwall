@@ -35,6 +35,9 @@ pub struct DeviceParams {
     pub gpu: Option<String>,
     #[serde(default)]
     pub ip: Option<String>,
+    /// 本机识别码（9 位数字）：别人登录后也能凭它跨网段找到本机。
+    #[serde(default)]
+    pub local_id: Option<String>,
 }
 
 pub async fn device_ws(
@@ -72,6 +75,7 @@ pub async fn device_ws(
     let version = params.version.unwrap_or_default();
     let gpu = params.gpu.unwrap_or_default();
     let ip = params.ip.unwrap_or_default();
+    let local_id = params.local_id.unwrap_or_default();
 
     // 与登录路径共用设备配额：新设备超限时明确拒绝，重复上线不受影响。
     if !state.device_quota_ok(auth.user_id, &params.device_id) {
@@ -86,11 +90,16 @@ pub async fn device_ws(
         return quota_exceeded(max);
     }
 
-    if let Err(error) =
-        state
-            .db
-            .upsert_device(auth.user_id, &params.device_id, &name, &os, &version, &gpu, &ip)
-    {
+    if let Err(error) = state.db.upsert_device(
+        auth.user_id,
+        &params.device_id,
+        &name,
+        &os,
+        &version,
+        &gpu,
+        &ip,
+        &local_id,
+    ) {
         tracing::error!("登记设备失败: {error:#}");
         state.metrics.handshake_failed();
         state.metrics.add_error();

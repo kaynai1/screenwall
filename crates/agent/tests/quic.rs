@@ -71,6 +71,7 @@ async fn start_quic(tag: &str) -> Result<Harness> {
             server_url: String::new(),
             account_token: String::new(),
             device_id: "quic-device".into(),
+            local_id: String::new(),
             ca_path: String::new(),
             virtual_display: false,
         },

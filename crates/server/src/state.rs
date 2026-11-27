@@ -113,6 +113,9 @@ pub struct DeviceView {
     pub gpu: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ip: String,
+    /// 本机识别码（9 位数字）：别人在同一网段或已登录服务器时都能用它找人。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub local_id: String,
 }
 
 pub struct AppState {
@@ -308,6 +311,7 @@ impl AppState {
                 controllable: row.controllable,
                 gpu: row.gpu,
                 ip: row.ip,
+                local_id: row.local_id,
             })
             .collect()
     }

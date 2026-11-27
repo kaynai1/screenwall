@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS devices (
     gpu            TEXT NOT NULL DEFAULT '',
     -- 局域网出口 IPv4；被控端上线时上报，空字符串表示未知
     ip             TEXT NOT NULL DEFAULT '',
+    -- 本机识别码（9 位数字，客户端自己生成、固定不变）；被控端上报
+    local_id       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, id)
 );
 
@@ -151,9 +153,23 @@ fn migrate(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        if !has_column(conn, "devices", "local_id")? {
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN local_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_connect_code
                 ON devices(connect_code) WHERE connect_code <> ''",
+            [],
+        )?;
+        // 识别码索引只用来查，不设唯一约束：识别码由各客户端自己随机生成，
+        // 万一两台撞上（约 9 亿分之一），唯一索引会让后上线的那台直接登记
+        // 失败 —— 那比「查的时候发现重了、拒绝」更糟。查询侧会显式处理重码。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_devices_local_id
+                ON devices(local_id) WHERE local_id <> ''",
             [],
         )?;
     }
@@ -206,6 +222,8 @@ pub struct DeviceRow {
     pub controllable: bool,
     pub gpu: String,
     pub ip: String,
+    /// 本机识别码（9 位数字）；被控端上报，空串表示还没上报。
+    pub local_id: String,
 }
 
 /// 连接码查询结果：设备所属账号、设备本身，以及访问设置。
@@ -461,16 +479,22 @@ impl Db {
         version: &str,
         gpu: &str,
         ip: &str,
+        local_id: &str,
     ) -> Result<()> {
         self.lock()?.execute(
-            "INSERT INTO devices (id, user_id, name, os, version, last_seen, controllable, gpu, ip)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)
+            "INSERT INTO devices
+                (id, user_id, name, os, version, last_seen, controllable, gpu, ip, local_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9)
              ON CONFLICT(user_id, id) DO UPDATE SET
                 name = excluded.name,
                 os = excluded.os,
                 version = excluded.version,
                 gpu = excluded.gpu,
                 ip = excluded.ip,
+                -- 识别码是长期固定的：上报空串时保留旧值，不要抹掉。
+                local_id = CASE WHEN excluded.local_id = ''
+                                THEN devices.local_id
+                                ELSE excluded.local_id END,
                 last_seen = excluded.last_seen",
             params![
                 device_id,
@@ -480,7 +504,8 @@ impl Db {
                 version,
                 crate::auth::now_ms(),
                 gpu,
-                ip
+                ip,
+                local_id
             ],
         )?;
         Ok(())
@@ -709,7 +734,7 @@ impl Db {
     pub fn list_devices(&self, user_id: i64) -> Result<Vec<DeviceRow>> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, os, version, last_seen, controllable, gpu, ip
+            "SELECT id, name, os, version, last_seen, controllable, gpu, ip, local_id
              FROM devices WHERE user_id = ?1 ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt.query_map(params![user_id], |row| {
@@ -722,6 +747,7 @@ impl Db {
                 controllable: row.get::<_, i64>(5)? != 0,
                 gpu: row.get(6)?,
                 ip: row.get(7)?,
+                local_id: row.get(8)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -749,7 +775,7 @@ impl Db {
     pub fn device(&self, user_id: i64, device_id: &str) -> Result<Option<DeviceRow>> {
         let conn = self.lock()?;
         conn.query_row(
-            "SELECT id, name, os, version, last_seen, controllable, gpu, ip
+            "SELECT id, name, os, version, last_seen, controllable, gpu, ip, local_id
              FROM devices WHERE user_id = ?1 AND id = ?2",
             params![user_id, device_id],
             |row| {
@@ -762,6 +788,7 @@ impl Db {
                     controllable: row.get::<_, i64>(5)? != 0,
                     gpu: row.get(6)?,
                     ip: row.get(7)?,
+                    local_id: row.get(8)?,
                 })
             },
         )
@@ -954,7 +981,7 @@ mod tests {
     fn connect_code_and_quick_token_roundtrip() {
         let db = db();
         let user = db.create_user("kay", "hash").unwrap();
-        db.upsert_device(user, "dev-a", "书房", "Windows", "0.1.0", "GPU", "1.2.3.4")
+        db.upsert_device(user, "dev-a", "书房", "Windows", "0.1.0", "GPU", "1.2.3.4", "")
             .unwrap();
 
         let code = db.ensure_connect_code(user, "dev-a").unwrap();
@@ -1314,11 +1341,11 @@ mod tests {
     fn device_upsert_and_list() {
         let db = db();
         let id = db.create_user("kay", "hash").unwrap();
-        db.upsert_device(id, "d1", "客厅", "Windows 11", "0.1.0", "GPU-A", "10.0.0.1")
+        db.upsert_device(id, "d1", "客厅", "Windows 11", "0.1.0", "GPU-A", "10.0.0.1", "")
             .unwrap();
-        db.upsert_device(id, "d1", "客厅电脑", "Windows 11", "0.1.0", "GPU-A", "10.0.0.2")
+        db.upsert_device(id, "d1", "客厅电脑", "Windows 11", "0.1.0", "GPU-A", "10.0.0.2", "")
             .unwrap();
-        db.upsert_device(id, "d2", "书房", "Windows 11", "0.1.0", "GPU-B", "10.0.0.3")
+        db.upsert_device(id, "d2", "书房", "Windows 11", "0.1.0", "GPU-B", "10.0.0.3", "")
             .unwrap();
 
         let devices = db.list_devices(id).unwrap();
