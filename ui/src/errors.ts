@@ -348,6 +348,25 @@ export function describeError(codeOrMessage: unknown): ErrorCopy {
   const httpKey = text.toLowerCase().replace(/[^a-z_]/g, "");
   if (HTTP_ERRORS[httpKey]) return HTTP_ERRORS[httpKey];
 
+  // 3.5) 检查更新：后端把原因写得很具体（超时 / 连不上服务器 / GitHub 返回
+  // 403），要原样透出来，不能落到下面笼统的「网络异常」或把 403 说成
+  // 「登录已失效」。去掉重复的标题前缀和 reqwest 的技术尾巴，只留人话。
+  if (/检查更新|无法访问 GitHub/.test(text)) {
+    const human = text
+      .replace(/^检查更新(失败|超时)?\s*[:：]\s*/, "")
+      .replace(
+        /[:：]\s*(error sending request|error trying to connect|reqwest|hyper)[\s\S]*$/i,
+        "",
+      )
+      .replace(/[:：]\s*$/, "")
+      .trim();
+    return {
+      title: "检查更新失败",
+      detail: human || "无法访问 GitHub 获取版本信息，稍后重试或手动下载安装包。",
+      action: "重试",
+    };
+  }
+
   // 4) 已知中文/英文片段。
   const byHint = fromHint(text);
   if (byHint) return byHint;

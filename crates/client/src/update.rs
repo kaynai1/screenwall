@@ -103,11 +103,15 @@ pub enum SourceCheck {
 pub async fn check_update(client: &reqwest::Client, base_url: &str) -> Result<SourceCheck, String> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/api/v1/version");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| format!("检查更新失败: {error}"))?;
+    let response = client.get(&url).send().await.map_err(|error| {
+        // 界面只显示这句中文，技术细节留给日志，免得设置页冒出一长串英文。
+        tracing::warn!(%error, "检查更新：请求服务器失败");
+        if error.is_timeout() {
+            "检查更新失败：连接服务器超时".to_string()
+        } else {
+            "检查更新失败：连不上服务器".to_string()
+        }
+    })?;
     let status = response.status();
     if matches!(
         status,
@@ -130,7 +134,9 @@ pub async fn check_update(client: &reqwest::Client, base_url: &str) -> Result<So
             .get("msg")
             .and_then(Value::as_str)
             .unwrap_or("服务器未提供更新");
-        return Err(format!("{message}（HTTP {status}）"));
+        // 同样加「检查更新失败」前缀：否则 5xx 会被界面说成「服务器内部错误」，
+        // 看着像登录/账号出了问题。
+        return Err(format!("检查更新失败：服务器返回 {status}：{message}"));
     }
 
     let version = body
@@ -138,20 +144,20 @@ pub async fn check_update(client: &reqwest::Client, base_url: &str) -> Result<So
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "服务器返回的版本号无效".to_string())?
+        .ok_or_else(|| "检查更新失败：服务器返回的版本号无效".to_string())?
         .to_string();
     let raw_url = body
         .get("url")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "服务器返回的下载地址无效".to_string())?;
+        .ok_or_else(|| "检查更新失败：服务器返回的下载地址无效".to_string())?;
     let sha256 = body
         .get("sha256")
         .and_then(Value::as_str)
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
-        .ok_or_else(|| "服务器返回的校验值无效".to_string())?;
+        .ok_or_else(|| "检查更新失败：服务器返回的校验值无效".to_string())?;
     let notes = body
         .get("notes")
         .and_then(Value::as_str)
@@ -182,21 +188,47 @@ pub async fn check_update(client: &reqwest::Client, base_url: &str) -> Result<So
 /// 网络不可达时返回 Err，由界面显示原因 —— 不静默当成「已是最新」。
 pub async fn check_update_github(client: &reqwest::Client) -> Result<SourceCheck, String> {
     // 全局 HTTP 超时只有 10s，国内访问 api.github.com 常常不够；这里单独
-    // 给 30s，而且把失败原因说成「网络问题」而不是让上层静默当成「已是最新」。
-    let response = client
-        .get(GITHUB_RELEASES)
-        .timeout(std::time::Duration::from_secs(30))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                "检查更新超时：无法访问 GitHub（国内网络可能需要代理），请稍后重试或手动下载"
-                    .to_string()
-            } else {
-                format!("检查更新失败：无法访问 GitHub（国内网络可能需要代理）: {error}")
+    // 放宽。失败原因如实返回，不静默当成「已是最新」。
+    //
+    // 每次 15 秒、最多两次：国内到 api.github.com 偶发卡住（DNS 抖动、TLS
+    // 首连慢），紧接着的第二次通常就通了。最坏总耗时约 30 秒，与以前单次
+    // 30 秒的上限持平，不会让用户等更久。只重试「请求没发出去/超时」，
+    // 4xx/5xx 是服务器的明确回答，重试没有意义。
+    let mut response = None;
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+        match client
+            .get(GITHUB_RELEASES)
+            .timeout(std::time::Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+        {
+            Ok(value) => {
+                if attempt > 0 {
+                    tracing::info!("检查更新：重试后访问 GitHub 成功");
+                }
+                response = Some(value);
+                break;
             }
-        })?;
+            Err(error) => {
+                tracing::warn!(attempt = attempt + 1, %error, "检查更新：访问 GitHub 失败");
+                last_error = if error.is_timeout() {
+                    "检查更新超时：无法访问 GitHub（国内网络可能需要代理），请稍后重试或手动下载"
+                        .to_string()
+                } else {
+                    format!("检查更新失败：无法访问 GitHub（国内网络可能需要代理）: {error}")
+                };
+            }
+        }
+    }
+    let response = match response {
+        Some(value) => value,
+        None => return Err(last_error),
+    };
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         // 仓库还没有发布任何 Release：这一源没有结论，不当作错误。
@@ -211,7 +243,10 @@ pub async fn check_update_github(client: &reqwest::Client) -> Result<SourceCheck
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("GitHub 未返回可用的更新信息");
-        return Err(format!("{message}（HTTP {status}）"));
+        tracing::warn!(%status, %message, "检查更新：GitHub 返回错误状态");
+        // 前缀「检查更新失败」让界面按更新错误展示，而不是被 HTTP 403 的
+        // 通用映射说成「登录已失效」（GitHub 限流就是 403）。
+        return Err(format!("检查更新失败：GitHub 返回 {status}：{message}"));
     }
 
     let version = body
@@ -524,6 +559,29 @@ mod tests {
         assert_eq!(
             absolute_url("http://127.0.0.1:8787", "https://cdn/a.exe"),
             "https://cdn/a.exe"
+        );
+    }
+
+    /// 检查更新的失败原因必须带「检查更新」前缀：界面靠它把这类错误和
+    /// 账号/会话问题区分开，否则 GitHub 限流的 403 会被说成「登录已失效」。
+    #[test]
+    fn update_errors_are_labelled() {
+        // 服务器这一路：连不上 / 超时 / 非 2xx。
+        let client = reqwest::Client::new();
+        let offline = check_update(&client, "http://127.0.0.1:1");
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(offline);
+        let error = result.expect_err("127.0.0.1:1 连不上");
+        assert!(
+            error.starts_with("检查更新失败"),
+            "服务器侧错误应带前缀：{error}"
+        );
+        assert!(
+            !error.contains("error sending request"),
+            "不应把 reqwest 的英文尾巴甩给用户：{error}"
         );
     }
 }
