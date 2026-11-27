@@ -206,6 +206,25 @@ impl Encoder {
         }
     }
 
+    /// 运行时调整 CBR 目标码率（bps），不重建编码器。
+    ///
+    /// 只改 `MeanBitRate` / `MaxBitRate` 两个参数，下一帧开始生效。
+    /// 必须在创建编码器的同一线程调用（MFT 有线程亲和性），
+    /// 所以上层用 `AtomicU32` 把目标传进采集线程，在编码循环里调用这里。
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        let bitrate = bitrate_bps.clamp(500_000, 100_000_000);
+        if let Some(inner) = self.inner.as_ref() {
+            if let Some(codec) = inner.codec.as_ref() {
+                set_u32(codec, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
+                set_u32(
+                    codec,
+                    &CODECAPI_AVEncCommonMaxBitRate,
+                    bitrate.saturating_mul(3) / 2,
+                );
+            }
+        }
+    }
+
     /// 编码器实际输出的尺寸（宽高已补齐到偶数）。
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)

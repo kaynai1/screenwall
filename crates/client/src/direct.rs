@@ -576,18 +576,34 @@ pub(crate) fn agent_config(config: &crate::ClientConfig) -> screenwall_agent::co
     }
 }
 
-/// 直连的授权弹窗：**总是**要人点「允许」。
+/// 直连的授权弹窗。
+///
+/// 默认每次都要人点「允许」：直连绕过了账号体系，如果无条件免授权，
+/// 同网段任何人都能直接接管本机。设置里开启「首次授权后免确认」后，
+/// 只有**之前已经人工放行过**的长期 token（`authorized_before`）才免弹窗；
+/// 新设备第一次连进来仍然要确认。
 ///
 /// 不受「允许被控」总开关影响 —— 那个开关只管账号中转会话。
-/// 直连绕过了账号体系，如果还能免授权，同网段任何人都能直接接管本机。
 fn approval_fn(app: AppHandle, shared: Arc<Shared>) -> ApprovalFn {
     Arc::new(move |request: ApprovalRequest| {
         let ApprovalRequest {
             session,
             viewer,
             same_account: _,
+            authorized_before,
             reply,
         } = request;
+        // 记住已授权设备：同一台主控端（长期 token 已由上次「允许」签发）
+        // 再次连接时不再弹窗，输入地址/配对码后直接连上。
+        // 「允许被控」总开关关掉时不免确认（仍然走人工弹窗，保持直连原有行为）。
+        if authorized_before
+            && shared.remember_authorized.load(Ordering::Relaxed)
+            && shared.allow_control.load(Ordering::Relaxed)
+        {
+            tracing::info!("已授权设备 {viewer} 再次连接，免确认放行（会话 {session}）");
+            let _ = reply.send(true);
+            return;
+        }
         let app = app.clone();
         let shared = shared.clone();
         shared.pending_control_requests.lock().unwrap().insert(
@@ -1111,8 +1127,9 @@ where
         video_id: None,
         width: 0,
         height: 0,
-        // 与默认订阅一致；`welcome` 到达后按协商结果订阅。
-        fps: 30,
+        // 与中转会话的默认订阅一致（1080p / 60 / Q65）。
+        // 30fps 拖动窗口会发顿；P2P/局域网直连的带宽比中转更宽裕，没有理由降帧。
+        fps: 60,
         max_width: 1920,
         quality: 65,
         codec: screenwall_proto::VideoCodec::Mjpeg,
@@ -1144,6 +1161,12 @@ where
     }
 
     let _ = app.emit("direct-state", direct_state(shared).await);
+    // 侧栏胶囊靠 `control-state` 判断链路。中转会话在 open 阶段就会发一条，
+    // 直连/P2P 是一条新链路、没有那一步；这里补一条，否则界面要等到
+    // 首个 `video.sub.ok` 才知道这次走的是 P2P，侧栏会一直显示「服务器中转」。
+    if let Some(current) = shared.control.read().await.as_ref() {
+        crate::emit_control_state(app, "opening", current, None);
+    }
 
     let info = crate::ControlInfo {
         session,

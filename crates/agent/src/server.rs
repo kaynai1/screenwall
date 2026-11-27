@@ -19,6 +19,9 @@ pub struct ApprovalRequest {
     /// `sameAccount: true`）。意思是「主控端就是账号主人」，宿主可以跳过
     /// 确认直接放行；直连和连接码会话不带这个标记，仍然逐次弹窗。
     pub same_account: bool,
+    /// 这台主控端的长期凭据之前已经通过一次本机授权（直连白名单里的长期
+    /// token）。宿主可以选择「记住已授权设备」，之后不再弹窗。
+    pub authorized_before: bool,
     /// 宿主界面的答复；`false` 或通道被丢弃都按拒绝处理。
     pub reply: tokio::sync::oneshot::Sender<bool>,
 }

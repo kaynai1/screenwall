@@ -17,9 +17,9 @@ use screenwall_proto::{
     AudioVolumeOk, Capabilities, ClipboardSync, DisplayList, ErrorMsg, FileAccept, FileCancel,
     FileChunk, FileComplete, FileDone, FileGet, FileItem, FileListOk, FileOffer, FileProgress,
     FrameCodec, FrameHeader, FrameType, InputStatus, Limits, Message, PeerInfo, Pong, PowerOk,
-    SasMethod, ScreenInfo, SecureAttentionOk, Stats, Status, SubInfo, VideoCodec, VideoSub,
-    VideoSubOk, Welcome, WolOk, CLIPBOARD_IMAGE, DISPLAY_ALL, FILE_WINDOW_BYTES, INPUT_UIPI,
-    PROTO_VERSION,
+    SasMethod, ScreenInfo, SecureAttentionOk, Stats, Status, SubInfo, VideoBitrate, VideoCodec,
+    VideoSub, VideoSubOk, Welcome, WolOk, CLIPBOARD_IMAGE, DISPLAY_ALL, FILE_WINDOW_BYTES,
+    INPUT_UIPI, PROTO_VERSION,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -66,6 +66,8 @@ enum VideoCommand {
     Unsubscribe(u16),
     /// 主控端解码器丢了参考帧，要求下一帧强制关键帧（H.264）。
     Keyframe(u16),
+    /// 主控端按拥塞情况实时调整目标码率（`video.bitrate`）。
+    Bitrate(VideoBitrate),
 }
 
 /// 同账号会话的 P2P 打洞服务（被控端侧）。
@@ -412,6 +414,9 @@ pub(crate) async fn open_session(
                 session,
                 viewer: viewer.clone(),
                 same_account,
+                // 中转会话没有长期凭据的概念：连接码已经由服务器验证过
+                // （`trusted` 直接放行），其余情况都该由人来确认。
+                authorized_before: false,
                 reply: tx,
             });
             let allowed = match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
@@ -1211,6 +1216,20 @@ async fn session_task(
                                     }
                                 }
                             }
+                            Some(VideoCommand::Bitrate(bitrate)) => {
+                                // 只认当前流的 id；旧流的迟到消息忽略。
+                                if let Some((current, handle)) = video.as_ref() {
+                                    if *current == bitrate.id {
+                                        handle.set_bitrate(bitrate.kbps);
+                                        tracing::debug!(
+                                            session,
+                                            stream = bitrate.id,
+                                            kbps = bitrate.kbps,
+                                            "主控端实时调整码率"
+                                        );
+                                    }
+                                }
+                            }
                             None => {}
                         }
                     }
@@ -1252,6 +1271,7 @@ fn is_control_message(message: &Message) -> bool {
             | Message::AudioVolume(_)
             | Message::AudioVolumeGet(_)
             | Message::WolRequest(_)
+            | Message::VideoBitrate(_)
     )
 }
 
@@ -1329,6 +1349,7 @@ fn handle_message(
         Message::VideoUnsub(unsub) => Some(VideoCommand::Unsubscribe(unsub.id)),
         // MJPEG 每帧都是完整图像；H.264 下由视频订阅分支处理这个请求。
         Message::VideoKeyframe(keyframe) => Some(VideoCommand::Keyframe(keyframe.id)),
+        Message::VideoBitrate(bitrate) => Some(VideoCommand::Bitrate(bitrate)),
         Message::WolRequest(request) => {
             let mac = &request.mac;
             if wol::normalize_mac(mac).is_none() {

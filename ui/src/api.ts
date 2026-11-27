@@ -1162,6 +1162,8 @@ export async function answerControlRequest(
 /** 本机偏好（保存在 client.json）。 */
 export type LocalSettings = {
   allowControl: boolean;
+  /** 已授权过的直连设备再次连接时是否免确认。 */
+  rememberAuthorized?: boolean;
   uiZoom: number;
   closeToTray?: boolean;
   /** 自定义 CA 根证书路径；null 表示使用系统默认信任库。 */
@@ -1181,6 +1183,12 @@ export async function getLocalSettings(): Promise<LocalSettings> {
 
 export async function setAllowControl(enabled: boolean): Promise<boolean> {
   if (isTauri) return invoke<boolean>("set_allow_control", { enabled });
+  return enabled;
+}
+
+/** 已授权过的直连设备再次连接时是否免去「允许控制」确认。 */
+export async function setRememberAuthorized(enabled: boolean): Promise<boolean> {
+  if (isTauri) return invoke<boolean>("set_remember_authorized", { enabled });
   return enabled;
 }
 

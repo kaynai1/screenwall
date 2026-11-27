@@ -173,6 +173,9 @@ export default function App() {
         .catch(() => {});
     };
     sync();
+    // 事件之外再定时对一次账：P2P/直连建立时的状态事件、页面保活导致的事件
+    // 丢失，都可能让胶囊停在旧值上；胶囊显示的是「现在怎么连」，不能猜。
+    const poll = window.setInterval(sync, 2500);
     const off = subscribeControlState((state) => {
       if (!alive) return;
       if (state.phase === "closed" || state.phase === "error") {
@@ -183,6 +186,7 @@ export default function App() {
     });
     return () => {
       alive = false;
+      window.clearInterval(poll);
       off();
     };
   }, [account?.loggedIn]);

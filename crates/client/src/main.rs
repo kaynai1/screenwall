@@ -32,8 +32,8 @@ use screenwall_proto::{
     decode_frame, AudioCodec, AudioSource, AudioStats, AudioSub, AudioUnsub, AudioVolume,
     AudioVolumeGet, Capabilities, ClipboardSync, DisplayInfo, FrameCodec, FrameType, Hello,
     InputBatch, InputEvent, Message, PeerInfo, Ping, PowerAction, PowerRequest, SasMethod,
-    SecureAttention, StreamKind, VideoCodec, VideoKeyframe, VideoSub, VideoUnsub, DISPLAY_ALL,
-    INPUT_SAS, PROTO_VERSION,
+    SecureAttention, StreamKind, VideoBitrate, VideoCodec, VideoKeyframe, VideoSub, VideoUnsub,
+    DISPLAY_ALL, INPUT_SAS, PROTO_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -58,6 +58,12 @@ struct ClientConfig {
     /// 是否允许别的设备控制本机；关闭后所有请求直接拒绝。
     #[serde(default = "default_true")]
     allow_control: bool,
+    /// 已授权过的直连设备再次连接时不再弹「允许控制」。
+    ///
+    /// 只认长期 token：那是在用户第一次点「允许」时签发的。
+    /// 默认开启，关闭后恢复每次确认。
+    #[serde(default = "default_true")]
+    remember_authorized: bool,
     /// 界面缩放（0.8–1.5），由 WebView 缩放实现。
     #[serde(default = "default_zoom")]
     ui_zoom: f64,
@@ -157,6 +163,7 @@ impl Default for ClientConfig {
             username: String::new(),
             device_id: String::new(),
             allow_control: true,
+            remember_authorized: true,
             ui_zoom: 1.0,
             clipboard_sync: true,
             close_to_tray: true,
@@ -537,6 +544,28 @@ const RTT_CONGESTED_SLACK_MS: f64 = 25.0;
 const RTT_CLEAR_RATIO: f64 = 1.3;
 const RTT_CLEAR_SLACK_MS: f64 = 10.0;
 
+/// 实时码率的下限（kbps）。再往下画面只剩色块，这时改为降分辨率。
+const VIDEO_KBPS_FLOOR: u32 = 1_500;
+
+/// 会话默认视频码率（kbps），口径与采集端的 `h264_bitrate` 一致。
+///
+/// 自适应以它为上限，只临时往下调；用户配置了码率上限时一起取小。
+fn default_video_kbps(width: u32, fps: u16, cap: Option<u32>) -> u32 {
+    let base = match width {
+        w if w >= 3000 => 25_000u64,
+        w if w >= 2400 => 14_000,
+        w if w >= 1600 => 8_000,
+        w if w >= 1200 => 5_000,
+        _ => 3_000,
+    };
+    let fps = if fps == 0 { 60 } else { fps.min(240) } as u64;
+    let mut kbps = (base * fps / 60).max(2_000);
+    if let Some(cap) = cap {
+        kbps = kbps.min(u64::from(cap));
+    }
+    kbps.clamp(u64::from(VIDEO_KBPS_FLOOR), 100_000) as u32
+}
+
 /// 画质阶梯上降一档；已经是最后一档返回 `None`。
 fn quality_down(current: u8) -> Option<u8> {
     QUALITY_LADDER
@@ -675,6 +704,11 @@ struct Shared {
     auto_quality: AtomicBool,
     /// 当前处于自适应阶梯的第几级。
     quality_step: AtomicUsize,
+    /// 自适应实时调下来的目标码率（kbps）；0 表示按分辨率/帧率算默认值。
+    ///
+    /// H.264 会话里优先动这个值：被控端直接改编码器参数，不重新订阅，
+    /// 不会像改分辨率那样造成一次可见卡顿。
+    video_kbps: AtomicU32,
     /// 用户手动选的分辨率上限（自适应降分辨率后仍按它回升，不会越过用户的选择）。
     /// 0 表示未知，按当前请求宽度当作上限。
     user_max_width: AtomicU32,
@@ -686,6 +720,8 @@ struct Shared {
     pending_control_requests: StdMutex<HashMap<u32, PendingControlRequest>>,
     /// 「允许被控」开关，运行中改立即生效（不用重连）。
     allow_control: AtomicBool,
+    /// 已授权过的直连设备免重复确认（运行中立即生效）。
+    remember_authorized: AtomicBool,
     /// 文件上传/下载状态。
     files: StdMutex<files::Hub>,
     /// 剪贴板同步开关（运行中立即生效）。
@@ -2472,7 +2508,7 @@ async fn subscribe_video(
     }
     let max_bitrate = {
         let config = shared.config.read().await;
-        bitrate_cap(&config)
+        bitrate_cap(&config, shared.video_kbps.load(Ordering::Relaxed))
     };
     let subscribe = Message::VideoSub(video_sub_for(&control, codec, max_bitrate));
     if !send_tunnel_json(&out, control.session, &subscribe) {
@@ -2497,8 +2533,15 @@ async fn subscribe_video(
 }
 
 /// 把配置里的码率上限规整成协议字段：`None` / 0 / 越界一律当作不限制。
-fn bitrate_cap(config: &ClientConfig) -> Option<u32> {
-    config.max_bitrate.filter(|kbps| *kbps > 0)
+///
+/// `live_kbps` 是自适应实时调下来的目标；两者都有时取更小的那个。
+fn bitrate_cap(config: &ClientConfig, live_kbps: u32) -> Option<u32> {
+    let cap = config.max_bitrate.filter(|kbps| *kbps > 0);
+    let live = (live_kbps > 0).then_some(live_kbps);
+    match (cap, live) {
+        (Some(cap), Some(live)) => Some(cap.min(live)),
+        (cap, live) => cap.or(live),
+    }
 }
 
 /// 把新的视频订阅参数记进会话状态（握手订阅与重订阅共用）。
@@ -3303,8 +3346,17 @@ async fn set_stream_options_impl(
         // 重新订阅时不能把光标弄丢。
         cursor: true,
         // 自适应调画质时也要带着码率上限，否则调一档就把上限丢了。
-        max_bitrate: bitrate_cap(&shared.config.read().await.clone()),
+        max_bitrate: bitrate_cap(
+            &shared.config.read().await.clone(),
+            shared.video_kbps.load(Ordering::Relaxed),
+        ),
     });
+    // 用户手选了新分辨率：默认码率跟着变了，把自适应临时下调的码率清回默认
+    // （新流建立后会补发一次 `video.bitrate kbps=0`）。自适应自己降分辨率时
+    // 必须保留当前码率，否则会在拥塞时一下跳回高码率。
+    if manual && max_width != control.max_width {
+        shared.video_kbps.store(0, Ordering::Relaxed);
+    }
     if !send_tunnel_json(&out, control.session, &subscribe) {
         return Err("主控连接已断开".into());
     }
@@ -3393,6 +3445,8 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
             shared
                 .user_max_width
                 .store(control.max_width, Ordering::Relaxed);
+            // 码率自适应从新会话的默认值重新开始。
+            shared.video_kbps.store(0, Ordering::Relaxed);
         }
 
         let (fps, kbps, frames) = {
@@ -3489,20 +3543,78 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
         // 用户手动选的那一档是天花板；自适应临时降下来的宽度不算。
         let ceiling = shared.user_max_width.load(Ordering::Relaxed);
         let ceiling = if ceiling == 0 { width } else { ceiling };
-        let action = adapt_for_codec(
-            adapt_decision(
+
+        // 实时码率优先：H.264 会话里先动码率（只改编码器参数、不重新订阅，
+        // 不会造成可见卡顿）；降到下限仍然拥塞才降分辨率，恢复时先升码率，
+        // 回到默认值再升分辨率。
+        let configured_cap = {
+            let config = shared.config.read().await;
+            bitrate_cap(&config, 0)
+        };
+        let default_kbps = default_video_kbps(width, control.fps, configured_cap);
+        let live_kbps = shared.video_kbps.load(Ordering::Relaxed);
+        let bitrate_live = control.codec == VideoCodec::H264
+            && control.video_id.is_some()
+            && control
+                .peer_caps
+                .as_ref()
+                .is_some_and(|caps| caps.contains(screenwall_proto::caps::VIDEO_BITRATE));
+        let mut bitrate_adjusted = false;
+        if bitrate_live {
+            let current = if live_kbps == 0 {
+                default_kbps
+            } else {
+                live_kbps.min(default_kbps)
+            };
+            let at_floor = current <= VIDEO_KBPS_FLOOR;
+            let at_default = live_kbps == 0 || current >= default_kbps;
+            let next = if congested && !at_floor {
+                Some((current * 3 / 4).max(VIDEO_KBPS_FLOOR))
+            } else if healthy && good_windows >= UPGRADE_STREAK && !at_default {
+                Some((current + current / 8 + 100).min(default_kbps))
+            } else {
+                None
+            };
+            if let Some(next) = next {
+                shared.video_kbps.store(next, Ordering::Relaxed);
+                if let Some(out) = control_out(&shared, control.session).await {
+                    let message = Message::VideoBitrate(VideoBitrate {
+                        id: control.video_id.unwrap_or_default(),
+                        kbps: next,
+                    });
+                    let _ = send_tunnel_json(&out, control.session, &message);
+                }
+                tracing::info!(
+                    from_kbps = current,
+                    to_kbps = next,
+                    fps,
+                    rtt,
+                    congested,
+                    "自适应调整视频码率"
+                );
+                bitrate_adjusted = true;
+            }
+        }
+
+        let action = if bitrate_adjusted {
+            // 这一轮只动了码率，分辨率先不动；码率降到下限后才轮到降分辨率。
+            AdaptAction::Hold
+        } else {
+            adapt_for_codec(
+                adapt_decision(
+                    congested,
+                    healthy,
+                    good_windows,
+                    control.quality,
+                    width,
+                    ceiling,
+                ),
+                control.codec == VideoCodec::H264,
                 congested,
-                healthy,
-                good_windows,
-                control.quality,
                 width,
                 ceiling,
-            ),
-            control.codec == VideoCodec::H264,
-            congested,
-            width,
-            ceiling,
-        );
+            )
+        };
         let (next_quality, next_width) = match action {
             AdaptAction::Hold => (control.quality, width),
             AdaptAction::Quality(quality) => (quality, width),
@@ -3760,6 +3872,7 @@ async fn get_local_settings(shared: State<'_, Arc<Shared>>) -> Result<Value, Str
     let config = shared.config.read().await;
     Ok(json!({
         "allowControl": config.allow_control,
+        "rememberAuthorized": config.remember_authorized,
         "uiZoom": config.ui_zoom,
         "closeToTray": config.close_to_tray,
         "caPath": config.ca_path,
@@ -3846,6 +3959,24 @@ async fn set_allow_control(shared: State<'_, Arc<Shared>>, enabled: bool) -> Res
         }
     }
     tracing::info!("允许被控: {enabled}");
+    Ok(enabled)
+}
+
+/// 已授权过的设备再次连接时是否免确认。
+#[tauri::command]
+async fn set_remember_authorized(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    shared.remember_authorized.store(enabled, Ordering::Relaxed);
+    let mut config = shared.config.write().await;
+    if config.remember_authorized != enabled {
+        config.remember_authorized = enabled;
+        config
+            .save()
+            .map_err(|error| format!("保存设置失败: {error}"))?;
+    }
+    tracing::info!("已授权设备免确认: {enabled}");
     Ok(enabled)
 }
 
@@ -3991,7 +4122,7 @@ fn apply_round_corners(hwnd: isize) {
 #[cfg(not(windows))]
 fn apply_round_corners(_hwnd: isize) {}
 
-fn emit_control_state(
+pub(crate) fn emit_control_state(
     app: &AppHandle,
     phase: &str,
     control: &ControlSession,
@@ -4556,6 +4687,28 @@ mod tests {
     }
 
     #[test]
+    fn live_bitrate_defaults_match_the_encoder() {
+        // 与采集端 `h264_bitrate` 同一口径：1080p60 8 Mbps、1080p30 4 Mbps。
+        assert_eq!(default_video_kbps(1920, 60, None), 8_000);
+        assert_eq!(default_video_kbps(1920, 30, None), 4_000);
+        assert_eq!(default_video_kbps(1280, 60, None), 5_000);
+        assert_eq!(default_video_kbps(3840, 60, None), 25_000);
+        // 自动帧率（0）按 60 算；用户设了上限就以更小的为准。
+        assert_eq!(default_video_kbps(1920, 0, None), 8_000);
+        assert_eq!(default_video_kbps(1920, 60, Some(3_000)), 3_000);
+        // 实时下调的码率与配置上限取更小，不会互相覆盖。
+        let config = ClientConfig::default();
+        assert_eq!(bitrate_cap(&config, 0), None);
+        assert_eq!(bitrate_cap(&config, 4_500), Some(4_500));
+        let capped = ClientConfig {
+            max_bitrate: Some(3_000),
+            ..config
+        };
+        assert_eq!(bitrate_cap(&capped, 4_500), Some(3_000));
+        assert_eq!(bitrate_cap(&capped, 0), Some(3_000));
+    }
+
+    #[test]
     fn adaptive_ladders_are_monotonic() {
         assert_eq!(quality_up(42), Some(48));
         assert_eq!(quality_up(75), None);
@@ -4802,6 +4955,24 @@ async fn handle_view_binary(app: &AppHandle, shared: &Arc<Shared>, data: &[u8]) 
                             "收到画面订阅确认"
                         );
                         emit_control_state(app, "streaming", &current, None);
+                        // 换了分辨率后默认码率也变了：让被控端把实时码率清回
+                        // 默认值。不带上这一步的话，上一次自适应留下的低码率
+                        // 会被继续套用到新分辨率的编码器上。
+                        let supports_bitrate = current.codec == VideoCodec::H264
+                            && current.peer_caps.as_ref().is_some_and(|caps| {
+                                caps.contains(screenwall_proto::caps::VIDEO_BITRATE)
+                            });
+                        if supports_bitrate
+                            && shared.video_kbps.load(Ordering::Relaxed) == 0
+                        {
+                            if let Some(out) = control_out(shared, current.session).await {
+                                let reset = Message::VideoBitrate(VideoBitrate {
+                                    id: ok.id,
+                                    kbps: 0,
+                                });
+                                let _ = send_tunnel_json(&out, current.session, &reset);
+                            }
+                        }
                     }
                 }
                 Message::AudioSubOk(ok) => {
@@ -5239,6 +5410,8 @@ pub(crate) fn host_approval(app: AppHandle, shared: Arc<Shared>) -> ApprovalFn {
             session,
             viewer,
             same_account,
+            // 中转 / 同账号 P2P 不走长期 token，没有「已授权过」这回事。
+            authorized_before: _,
             reply,
         } = request;
         let app = app.clone();
@@ -5724,6 +5897,7 @@ fn main() {
         .cloned();
 
     let allow_control = config.allow_control;
+    let remember_authorized = config.remember_authorized;
     let ui_zoom = config.ui_zoom;
     let clipboard_on = config.clipboard_sync;
     // 本机模式重启后直接进工作台，不需要再点一次「不用服务器」。
@@ -5757,11 +5931,13 @@ fn main() {
         stats: StdMutex::new(NetStats::default()),
         auto_quality: AtomicBool::new(true),
         quality_step: AtomicUsize::new(0),
+        video_kbps: AtomicU32::new(0),
         user_max_width: AtomicU32::new(0),
         rtt_ms: AtomicU32::new(0),
         ping_sent: StdMutex::new(None),
         pending_control_requests: StdMutex::new(HashMap::new()),
         allow_control: AtomicBool::new(allow_control),
+        remember_authorized: AtomicBool::new(remember_authorized),
         files: StdMutex::new(files::Hub::default()),
         clipboard_on: AtomicBool::new(clipboard_on),
         wall: StdMutex::new(wall::Hub::default()),
@@ -5898,6 +6074,7 @@ fn main() {
             group::group_input,
             get_local_settings,
             set_allow_control,
+            set_remember_authorized,
             set_close_to_tray,
             set_virtual_display,
             open_log_dir,

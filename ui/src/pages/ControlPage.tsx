@@ -1425,7 +1425,7 @@ export default function ControlPage({
         void getRemoteVolume(clientToken).catch(() => {});
       }
       setPhase((current) => (current === "connecting" ? "waiting" : current));
-      // 新会话在后端按默认档（1080p / 30 / 均衡）起订阅，这里补推用户上次
+      // 新会话在后端按默认档（1080p / 60 / 均衡）起订阅，这里补推用户上次
       // 选的档位；否则界面显示「4K」而实际画面还是 1080p。
       // 显示器一律回到主屏：记住的索引属于上次那台机器，换设备后可能不存在。
       const wanted: StreamQuality = { ...streamOptionsRef.current, display: 0 };

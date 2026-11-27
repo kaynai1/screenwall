@@ -28,6 +28,7 @@ import {
   setCaPath,
   setConnectCode,
   setDirectEnabled,
+  setRememberAuthorized,
   setUiZoom,
   setVirtualDisplay,
   testServer,
@@ -78,6 +79,7 @@ const SECTIONS = [
 /** 主题与动画偏好都只影响本机界面，存在 localStorage 里就够了。 */
 type SavedSettings = {
   allowControl: boolean;
+  rememberAuthorized: boolean;
   autoStart: boolean;
   zoom: number;
   animations: boolean;
@@ -147,6 +149,8 @@ export default function SettingsPage({
 
   // 本机设置：改动先留在界面，点「保存更改」才落地。
   const [allowControl, setAllowControlState] = useState(true);
+  // 已授权过的直连设备再次连接时免确认（默认开）。
+  const [rememberAuthorized, setRememberAuthorizedState] = useState(true);
   // 无头虚拟显示器：切换即时生效（像直连开关一样，不参与保存按钮）。
   const [virtualDisplay, setVirtualDisplayState] = useState(false);
   const [virtualDisplayBusy, setVirtualDisplayBusy] = useState(false);
@@ -156,6 +160,7 @@ export default function SettingsPage({
   const [theme, setThemeState] = useState<Theme>(storedTheme);
   const [saved, setSaved] = useState<SavedSettings>({
     allowControl: true,
+    rememberAuthorized: true,
     autoStart: false,
     zoom: 100,
     animations: true,
@@ -243,6 +248,7 @@ export default function SettingsPage({
       const motion = storedMotion();
       const currentTheme = storedTheme();
       setAllowControlState(local.allowControl);
+      setRememberAuthorizedState(local.rememberAuthorized ?? true);
       setVirtualDisplayState(local.virtualDisplay ?? false);
       setCaPathState(local.caPath ?? "");
       setAutoStartState(autostart);
@@ -253,6 +259,7 @@ export default function SettingsPage({
       applyTheme(currentTheme);
       setSaved({
         allowControl: local.allowControl,
+        rememberAuthorized: local.rememberAuthorized ?? true,
         autoStart: autostart,
         zoom: Number(nextZoom),
         animations: motion,
@@ -349,6 +356,7 @@ export default function SettingsPage({
 
   const dirty =
     allowControl !== saved.allowControl ||
+    rememberAuthorized !== saved.rememberAuthorized ||
     autoStart !== saved.autoStart ||
     Number(zoom) !== saved.zoom ||
     animations !== saved.animations ||
@@ -358,8 +366,9 @@ export default function SettingsPage({
     if (saving) return;
     setSaving(true);
     try {
-      const [nextAllow, nextZoom] = await Promise.all([
+      const [nextAllow, nextRemember, nextZoom] = await Promise.all([
         setAllowControl(allowControl),
+        setRememberAuthorized(rememberAuthorized),
         setUiZoom(Number(zoom) / 100),
       ]);
       await setAutostart(autoStart);
@@ -367,6 +376,7 @@ export default function SettingsPage({
       applyTheme(theme);
       setSaved({
         allowControl: nextAllow,
+        rememberAuthorized: nextRemember,
         autoStart,
         zoom: Math.round(nextZoom * 100),
         animations,
@@ -1131,15 +1141,12 @@ export default function SettingsPage({
                     disabled={virtualDisplayBusy}
                     onChange={(next) => void toggleVirtualDisplay(next)}
                   />
-                  <div className="set-row">
-                    <div className="set-row-copy">
-                      <span className="set-row-label">授权方式</span>
-                      <span className="set-row-hint">
-                        每次请求都会在本机弹窗，30 秒未确认自动拒绝
-                      </span>
-                    </div>
-                    <span className="set-row-value">每次确认</span>
-                  </div>
+                  <Switch
+                    label="已授权设备免确认"
+                    hint="开启后，第一次点「允许」的设备会记住：以后用配对码/地址再次连接本机时直接连上，不再弹窗。新设备第一次连接仍然需要确认"
+                    checked={rememberAuthorized}
+                    onChange={setRememberAuthorizedState}
+                  />
                   <div className="set-row">
                     <div className="set-row-copy">
                       <span className="set-row-label">允许来源</span>

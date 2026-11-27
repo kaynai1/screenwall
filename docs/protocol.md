@@ -222,7 +222,7 @@ Agent 回复 `error` 后以对应关闭码断开：
 | `maxWidth` | 输出最大宽度，高度按比例 |
 | `quality` | 仅 mjpeg，1–100 |
 | `maxBitrate` | 目标码率上限，单位 kbps。**现状（2026-11-25）**：已实现。Agent 按 `kbps * 1000 / 8 / fps` 折算单帧字节预算，编码时选第一个不超预算的质量档（MJPEG 没有 CBR，这是能做到的最接近的形式）；三档都超预算时保留最低质量帧而不是丢帧。低于 50 kbps 或高于 200 Mbps 的值按「不限制」处理。屏幕墙缩略流忽略此字段。客户端从 `client.json` 的 `maxBitrate` 读，默认不限制。|
-| `codec` | `mjpeg` / `h264`。**现状（2026-11-24 核对）**：Agent 只实现了 `mjpeg`，订阅 `h264` 会直接回 `4104`「当前只支持 MJPEG 编码」（`crates/agent/src/cloud.rs`）；主控端也只发 `mjpeg` |
+| `codec` | `mjpeg` / `h264`。`h264` 需要双方握手能力交集里都有 `video.h264`（Agent 检测到硬件编码 MFT、主控端检测到 WebCodecs `VideoDecoder`）；没有硬件编码器时 Agent 回 `4104`，主控端据此回退 MJPEG |
 | `cursor` | 协议字段：是否把系统光标画进画面。Agent 按 `sub.cursor && !view_only` 决定（`crates/agent/src/cloud.rs`）：DXGI 路径用 `GetFramePointerShape` 取形状、`PointerPosition` 取位置，再由 `crates/agent/src/cursor.rs` 合成；GDI 回退路径用 `GetCursorInfo` + `DrawIconEx`。墙上流客户端固定发 `false`，聚焦流固定发 `true`（见 [design.md](design.md) 5.2 的现状说明） |
 
 屏幕墙缩略图会话（服务器转发的 `open` 带 `"mode": "wall"`）免逐次授权，
@@ -235,8 +235,11 @@ Agent 会把 `fps` 夹到 ≤2、`maxWidth` 夹到 ≤480，并忽略输入、�
 
 普通账号会话的 `open` 带 `"sameAccount": true`：主控端登录的就是被控端所属的账号，
 被控端不再弹「允许控制」，直接放行（`crates/client/src/main.rs` 的授权回调里判断）。
-被控端「允许被控」总开关优先级更高，关掉后任何会话都直接拒绝。直连和连接码会话不带
-这个字段，仍然每次确认。
+被控端「允许被控」总开关优先级更高，关掉后任何会话都直接拒绝。
+
+局域网直连 / 配对码会话没有 `sameAccount`，默认每次确认。被控端开启
+「已授权设备免确认」（`rememberAuthorized`，默认开）后，只有**之前人工点过「允许」**
+留下的长期 token 才免弹窗；新设备、新 token 第一次连接仍然确认。
 
 ### 5.2 确认、取消、关键帧
 
@@ -245,9 +248,14 @@ Agent 会把 `fps` 夹到 ≤2、`maxWidth` 夹到 ≤480，并忽略输入、�
   "actual": { "codec": "mjpeg", "w": 480, "h": 270, "fps": 2 } }
 { "t": "video.unsub", "id": 7 }
 { "t": "video.keyframe", "id": 8 }
+{ "t": "video.bitrate", "id": 8, "kbps": 4500 }
 ```
 
 `id` 由 Agent 分配（u16），用作二进制帧的 `streamId`。
+
+`video.bitrate` 只在 H.264 会话里使用，且要求双方能力交集包含 `video.bitrate`：
+主控端按实测拥塞实时下调/恢复目标码率，Agent 直接改编码器的 CBR 参数，
+**不重建编码器、不重新订阅**。`id` 必须匹配当前订阅；MJPEG 与旧版 Agent 忽略它。
 
 ### 5.3 二进制帧头（24 字节）
 

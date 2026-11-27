@@ -67,6 +67,11 @@ pub const WALL: &str = "wall";
 ///
 /// 所以不要把它加进 [`BASELINE`] 或 [`CURRENT`] —— 那样等于无条件谎报支持。
 pub const VIDEO_H264: &str = "video.h264";
+/// 视频码率可在会话中实时调整（`video.bitrate`），不需要重新订阅。
+///
+/// 只对 H.264 有意义：`video.bitrate` 直接改编码器当前码率，
+/// 不换分辨率、不重启 MFT，所以不会造成可见卡顿。
+pub const VIDEO_BITRATE: &str = "video.bitrate";
 
 /// 协议 v1 首发就具备的能力。
 ///
@@ -110,6 +115,7 @@ pub const CURRENT: &[&str] = &[
     POWER,
     WOL,
     WALL,
+    VIDEO_BITRATE,
 ];
 
 // ---------------------------------------------------------------- 能力集合

@@ -14,7 +14,7 @@
 //! 控制，屏幕墙缩略图始终关闭。
 
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -331,6 +331,11 @@ pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
     /// 请求下一帧编码成关键帧（H.264 专用；MJPEG 每帧都是完整的）。
     keyframe: Arc<AtomicBool>,
+    /// 主控端实时要求的目标码率（kbps，0 = 按配置）。
+    ///
+    /// 只写这个原子量，由编码线程在下一帧生效：MFT 有线程亲和性，
+    /// 不能从会话线程直接改编码器参数。
+    bitrate: Arc<AtomicU32>,
     _thread: Option<JoinHandle<()>>,
 }
 
@@ -339,6 +344,18 @@ impl CaptureHandle {
     /// MJPEG 路径忽略这个请求。
     pub fn request_keyframe(&self) {
         self.keyframe.store(true, Ordering::Relaxed);
+    }
+
+    /// 实时调整目标码率（kbps）。0 表示回到按配置计算的默认值。
+    ///
+    /// 与重新订阅不同，这不会重建编码器，也不会产生可见卡顿。
+    pub fn set_bitrate(&self, kbps: u32) {
+        let kbps = if kbps == 0 {
+            0
+        } else {
+            kbps.clamp(500, 100_000)
+        };
+        self.bitrate.store(kbps, Ordering::Relaxed);
     }
 }
 
@@ -369,6 +386,8 @@ pub fn spawn(
     // 未消费的请求保留到下一次编码，所以起始为 true：第一帧必须是关键帧。
     let keyframe = Arc::new(AtomicBool::new(true));
     let thread_keyframe = Arc::clone(&keyframe);
+    let bitrate = Arc::new(AtomicU32::new(0));
+    let thread_bitrate = Arc::clone(&bitrate);
     let (ready_tx, ready_rx) = oneshot::channel();
 
     let thread = std::thread::Builder::new()
@@ -399,6 +418,7 @@ pub fn spawn(
                 codec,
                 &thread_stop,
                 &thread_keyframe,
+                &thread_bitrate,
                 sink,
             );
 
@@ -414,6 +434,7 @@ pub fn spawn(
         CaptureHandle {
             stop,
             keyframe,
+            bitrate,
             _thread: thread.ok(),
         },
         ready_rx,
@@ -427,6 +448,7 @@ fn run_capture(
     codec: VideoCodec,
     stop: &AtomicBool,
     keyframe: &Arc<AtomicBool>,
+    bitrate: &Arc<AtomicU32>,
     sink: impl Fn(Vec<u8>) + Send + 'static,
 ) {
     let latest = Arc::new(Latest::<FrameJob>::new());
@@ -439,6 +461,7 @@ fn run_capture(
         let blit_us = Arc::clone(&blit_us);
         let convert_us = Arc::clone(&convert_us);
         let keyframe = Arc::clone(keyframe);
+        let bitrate = Arc::clone(bitrate);
         let name = if codec == VideoCodec::H264 {
             "h264-encode"
         } else {
@@ -457,6 +480,7 @@ fn run_capture(
                         &convert_us,
                         &sink,
                         &keyframe,
+                        &bitrate,
                     ) {
                         Ok(()) => return,
                         Err(error) => {
@@ -794,6 +818,7 @@ fn h264_encode_loop(
     convert_us: &AtomicU64,
     sink: &dyn Fn(Vec<u8>),
     keyframe: &AtomicBool,
+    bitrate: &AtomicU32,
 ) -> anyhow::Result<()> {
     H264Loop {
         stream_id,
@@ -805,6 +830,8 @@ fn h264_encode_loop(
         convert_us,
         sink,
         keyframe,
+        bitrate,
+        applied_bitrate: 0,
         started: Instant::now(),
         seq: 0,
         stats: EncodeStats::default(),
@@ -833,6 +860,10 @@ struct H264Loop<'a> {
     convert_us: &'a AtomicU64,
     sink: &'a dyn Fn(Vec<u8>),
     keyframe: &'a AtomicBool,
+    /// 主控端要求的实时目标码率（kbps，0 = 按配置）。
+    bitrate: &'a AtomicU32,
+    /// 已经写进编码器的实时码率（kbps）；重建编码器时归零。
+    applied_bitrate: u32,
     started: Instant,
     seq: u32,
     stats: EncodeStats,
@@ -965,6 +996,29 @@ impl H264Loop<'_> {
             // 旧编码器里的在途帧随它一起销毁，输出计数归零。
             self.inflight = 0;
             self.inflight_since = None;
+            self.applied_bitrate = 0;
+        }
+
+        // 实时码率：主控端按拥塞情况调整，只改编码器参数，不重建 MFT。
+        // 0 表示「回到按分辨率/帧率算的默认值」—— 主控端换了分辨率后会发一次。
+        let requested = self.bitrate.load(Ordering::Relaxed);
+        if requested != self.applied_bitrate {
+            let bps = if requested == 0 {
+                h264_bitrate_bps(&self.options, job_w, job_h, self.fps)
+            } else {
+                requested.saturating_mul(1000)
+            };
+            self.encoder
+                .as_mut()
+                .expect("编码器已创建")
+                .set_bitrate(bps);
+            self.applied_bitrate = requested;
+            tracing::info!(
+                stream_id = self.stream_id,
+                bitrate_kbps = requested,
+                bitrate_bps = bps,
+                "实时调整视频码率"
+            );
         }
 
         let force = fresh
@@ -2440,6 +2494,7 @@ mod tests {
                 body.len(),
             ));
         };
+        let bitrate = AtomicU32::new(0);
         h264_encode_loop(
             0,
             options,
@@ -2449,6 +2504,7 @@ mod tests {
             &convert_us,
             &sink,
             &keyframe,
+            &bitrate,
         )
         .expect("H.264 编码循环失败");
         feeder.join().expect("喂帧线程异常");

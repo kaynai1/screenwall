@@ -38,6 +38,8 @@ pub enum Message {
     VideoUnsub(VideoUnsub),
     #[serde(rename = "video.keyframe")]
     VideoKeyframe(VideoKeyframe),
+    #[serde(rename = "video.bitrate")]
+    VideoBitrate(VideoBitrate),
     #[serde(rename = "audio.sub")]
     AudioSub(AudioSub),
     #[serde(rename = "audio.sub.ok")]
@@ -281,6 +283,17 @@ pub struct VideoUnsub {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoKeyframe {
     pub id: u16,
+}
+
+/// 会话中实时调整 H.264 目标码率（单位 kbps）。
+///
+/// 只对已建立的 `video.sub` 生效，`id` 必须匹配当前订阅；被控端直接改
+/// 编码器的 CBR 目标值，不重建编码器、不重新订阅。`kbps = 0` 表示回到
+/// 按分辨率/帧率计算的默认码率（换分辨率后清掉之前的临时下调）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VideoBitrate {
+    pub id: u16,
+    pub kbps: u32,
 }
 
 // ---------------------------------------------------------------- 音频

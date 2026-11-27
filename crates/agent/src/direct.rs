@@ -162,6 +162,9 @@ impl DirectAuth {
     }
 
     /// 长期 token 是否还有效（重启后从配置恢复用）。
+    ///
+    /// `promote` 只在用户点了「允许」之后调用，所以长期集合里的 token
+    /// 都至少被人工放行过一次；宿主据此实现「已授权设备免确认」。
     pub async fn is_promoted(&self, token: &str) -> bool {
         self.promoted.read().await.contains(token)
     }
@@ -424,6 +427,8 @@ where
     // 和中转会话的 `sameAccount` 等价，建会话时免掉「允许控制」弹窗。
     // 局域网直连 / 配对码的 token 不在这个集合里，仍然逐次确认。
     let same_account = auth.is_auto(&hello.token).await;
+    // 长期 token 只会在上次人工点过「允许」之后发放；宿主可以据此免掉重复确认。
+    let authorized_before = auth.is_promoted(&hello.token).await;
     // 直连绕过了账号服务器，安全边界要求每次会话都必须有人在本机点「允许」，
     // 所以没有授权回调就整条连接拒绝，而不是退化成「直接放行」。
     let Some(inner_approval) = state.approval.clone() else {
@@ -452,6 +457,7 @@ where
             inner_approval,
             auth.clone(),
             hello.token.clone(),
+            authorized_before,
             out_tx.clone(),
         )),
     });
@@ -563,7 +569,8 @@ where
                                 // 一律走授权回调：「允许被控」总开关由宿主在
                                 // 回调里判，同账号 P2P 也由它直接放行。
                                 false,
-                                // 局域网直连没有账号概念，仍然逐次确认；
+                                // 局域网直连没有账号概念，首次必须确认；长期 token
+                                // 是否免确认由宿主按「已授权设备免确认」设置决定。
                                 // 同账号 P2P 靠 token 标记免弹窗。
                                 same_account,
                                 &task_out,
@@ -670,6 +677,7 @@ fn promoting_approval(
     inner: crate::server::ApprovalFn,
     auth: Arc<DirectAuth>,
     token: String,
+    authorized_before: bool,
     out: mpsc::UnboundedSender<WsMessage>,
 ) -> crate::server::ApprovalFn {
     Arc::new(move |request: crate::server::ApprovalRequest| {
@@ -679,6 +687,7 @@ fn promoting_approval(
             session,
             viewer: request.viewer,
             same_account: request.same_account,
+            authorized_before,
             reply: reply_tx,
         });
         let auth = auth.clone();
