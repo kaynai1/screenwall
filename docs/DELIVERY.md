@@ -527,3 +527,13 @@ sidecar 模式下：
 | STUN 永远失败 | `resolve` 只取 DNS 第一个地址，Cloudflare / Google 的 STUN 域名都先返回 IPv6，而打洞 socket 绑的是 IPv4，`send_to` 直接报地址族不支持；轮到 stun.qq.com 又超时，最后只剩「STUN 响应里没有映射地址」。改为只取 IPv4、逐个尝试解析结果，并补一台 stun.miwifi.com；错误文案区分「UDP 被拦截」和「解析不出映射」 |
 | 打洞秒失败（10040） | 被控端还在 64 字节缓冲里等探测包时，主控端已经打通并直接发来约 1.2 KB 的 QUIC Initial，Windows 返回 `WSAEMSGSIZE`（10040），被当成致命错误。接收缓冲扩到 4 KB，超长包按「已打通」处理；`await_peer` 收到 QUIC 包也直接放行（quinn 会重传 Initial） |
 | 测试 | `nat::stun_discovers_public_mapping`（联网，手动 `--ignored` 跑）；`cargo check --workspace --all-targets` 通过 |
+
+## v0.2.15（2026-11-27）
+
+| 项目 | 内容 |
+| --- | --- |
+| 默认 30fps 发顿 | 控制页与初始订阅默认帧率从 30 提到 60：拖动窗口、滚动页面时 30fps 只有半帧率，看起来一顿一顿。1080p 硬件编码跑 60fps 没有压力（8 Mbps）。旧的画面偏好里存下的 30 会按新默认迁移到 60 一次，用户之后手动改回 30 不再被覆盖 |
+| H.264 丢帧花屏 | 解码排队超过 8 帧时原来直接丢掉 P 帧，但 H.264 的 P 帧依赖前面的参考帧，丢一帧会让后续画面花到下一个 IDR（周期关键帧 10 秒才一个）。改成重建解码器、清空排队、丢到下一个关键帧，并立刻向被控端要一个关键帧；阈值从 8 收到 4 帧 |
+| 自适应制造卡顿 | `quality` 只影响 MJPEG 的 JPEG 质量档，对 H.264 完全无效；但自适应每降一档都会重新订阅、重启编码器，白送一次可见的卡顿。H.264 会话改为跳过画质阶梯：拥塞直接降分辨率，恢复后先升分辨率 |
+| 解码时间戳 | `EncodedVideoChunk` 的时间戳原来按每帧 +1000 微秒伪造（相当于 1000fps），改用采集端真实 `timestampUs`，只保证本机单调递增 |
+| 硬解优先 | WebCodecs 配置加 `hardwareAcceleration: "prefer-hardware"`，1080p60 不再占用主线程软解 |

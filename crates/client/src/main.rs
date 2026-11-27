@@ -608,6 +608,33 @@ fn adapt_decision(
     AdaptAction::Hold
 }
 
+/// 按编码格式修正自适应动作。
+///
+/// `quality` 只影响 MJPEG 的 JPEG 质量档；H.264 的码率由分辨率/帧率决定，
+/// 改 `quality` 不会改变画面，却会让被控端重新订阅、重建编码器 ——
+/// 每降一档就是一次可见的卡顿。所以 H.264 会话里把画质档直接换成宽度档：
+/// 拥塞时降分辨率，恢复后先升回分辨率。
+fn adapt_for_codec(
+    action: AdaptAction,
+    h264: bool,
+    congested: bool,
+    width: u32,
+    ceiling: u32,
+) -> AdaptAction {
+    if !h264 {
+        return action;
+    }
+    match action {
+        AdaptAction::Quality(_) if congested => width_down(width)
+            .map(AdaptAction::Width)
+            .unwrap_or(AdaptAction::Hold),
+        AdaptAction::Quality(_) => width_up(width, ceiling)
+            .map(AdaptAction::Width)
+            .unwrap_or(AdaptAction::Hold),
+        other => other,
+    }
+}
+
 #[derive(Default)]
 struct Tasks {
     view: Option<tauri::async_runtime::JoinHandle<()>>,
@@ -2288,9 +2315,10 @@ async fn start_control_impl(
         video_id: None,
         width: 0,
         height: 0,
-        // 初始订阅参数：1080p / 30 / Q65。
-        // `welcome` 到达后会按协商出的编码立即订阅一次。
-        fps: 30,
+        // 初始订阅参数：1080p / 60 / Q65。
+        // `welcome` 到达后会按协商出的编码立即订阅一次。默认 60 而不是 30：
+        // 30fps 下拖动窗口会明显发顿，1080p 硬件编码带 60fps 没有压力。
+        fps: 60,
         max_width: 1920,
         quality: 65,
         codec: VideoCodec::Mjpeg,
@@ -3461,11 +3489,17 @@ async fn adapt_loop(app: AppHandle, shared: Arc<Shared>) {
         // 用户手动选的那一档是天花板；自适应临时降下来的宽度不算。
         let ceiling = shared.user_max_width.load(Ordering::Relaxed);
         let ceiling = if ceiling == 0 { width } else { ceiling };
-        let action = adapt_decision(
+        let action = adapt_for_codec(
+            adapt_decision(
+                congested,
+                healthy,
+                good_windows,
+                control.quality,
+                width,
+                ceiling,
+            ),
+            control.codec == VideoCodec::H264,
             congested,
-            healthy,
-            good_windows,
-            control.quality,
             width,
             ceiling,
         );
@@ -4490,6 +4524,34 @@ mod tests {
         assert_eq!(
             adapt_decision(false, true, UPGRADE_STREAK, 75, 1920, 1920),
             AdaptAction::Hold
+        );
+    }
+
+    #[test]
+    fn h264_adaptation_skips_the_jpeg_quality_ladder() {
+        // H.264：拥塞时直接降分辨率，不再发「改 quality」的重订阅。
+        assert_eq!(
+            adapt_for_codec(AdaptAction::Quality(55), true, true, 1920, 1920),
+            AdaptAction::Width(1280)
+        );
+        // 恢复时直接升分辨率（画质档对 H.264 没有意义）。
+        assert_eq!(
+            adapt_for_codec(AdaptAction::Quality(75), true, false, 1280, 1920),
+            AdaptAction::Width(1920)
+        );
+        // 已经到边界就什么都不做。
+        assert_eq!(
+            adapt_for_codec(AdaptAction::Quality(42), true, true, 1280, 1920),
+            AdaptAction::Hold
+        );
+        assert_eq!(
+            adapt_for_codec(AdaptAction::Quality(75), true, false, 1920, 1920),
+            AdaptAction::Hold
+        );
+        // MJPEG 保持原来的阶梯行为。
+        assert_eq!(
+            adapt_for_codec(AdaptAction::Quality(55), false, true, 1920, 1920),
+            AdaptAction::Quality(55)
         );
     }
 

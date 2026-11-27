@@ -116,9 +116,14 @@ type StreamPhase =
 
 let controlTokenSeq = Date.now();
 
-/** 与 client 端 start_control 的默认订阅保持一致。 */
+/**
+ * 与 client 端 start_control 的默认订阅保持一致。
+ *
+ * 默认 60：30fps 下拖动窗口、滚动页面会明显发顿，1080p 的硬件编码器
+ * 完全带得动 60fps（8 Mbps），没必要把默认档压在半帧率。
+ */
 const DEFAULT_STREAM_OPTIONS: StreamQuality = {
-  fps: 30,
+  fps: 60,
   maxWidth: 1920,
   quality: 65,
   display: 0,
@@ -143,12 +148,14 @@ const FPS_OPTIONS = [0, 10, 15, 30, 60, 90, 120, 144];
  * 那个索引可能根本不存在，所以每次新会话都从主屏开始。
  */
 const STREAM_OPTIONS_KEY = "screenwall.stream-options";
+/// 偏好结构版本：v2 起默认帧率从 30 提到 60。
+const STREAM_OPTIONS_VERSION = 2;
 
 function readStreamOptions(): StreamQuality {
   try {
     const saved = JSON.parse(
       localStorage.getItem(STREAM_OPTIONS_KEY) ?? "null",
-    ) as Partial<StreamQuality> | null;
+    ) as (Partial<StreamQuality> & { v?: number }) | null;
     // 只接受菜单里真实存在的档位：旧版本存下的、被手改过的值一律回默认，
     // 免得界面显示一个后端会钳到别的值的档位。
     if (
@@ -157,8 +164,16 @@ function readStreamOptions(): StreamQuality {
       FPS_OPTIONS.includes(saved.fps as number) &&
       QUALITY_OPTIONS.some((item) => item.quality === saved.quality)
     ) {
+      // 旧版本存的 30 多半就是当年的默认值，跟着新默认升到 60；
+      // 用户之后手动选 30 会带 v2 存下来，不会再被改。
+      const fps =
+        saved.v === STREAM_OPTIONS_VERSION
+          ? (saved.fps as number)
+          : saved.fps === 30
+            ? 60
+            : (saved.fps as number);
       return {
-        fps: saved.fps as number,
+        fps,
         maxWidth: saved.maxWidth as number,
         quality: saved.quality as number,
         display: 0,
@@ -175,6 +190,7 @@ function saveStreamOptions(options: StreamQuality): void {
     localStorage.setItem(
       STREAM_OPTIONS_KEY,
       JSON.stringify({
+        v: STREAM_OPTIONS_VERSION,
         fps: options.fps,
         maxWidth: options.maxWidth,
         quality: options.quality,
@@ -963,7 +979,12 @@ export default function ControlPage({
           error: onDecoderError,
         });
         // Annex-B 输入：不传 description，让解码器自己从码流里取 SPS/PPS。
-        decoder.configure({ codec, optimizeForLatency: true });
+        // 1080p60 的软解会吃掉大量主线程时间，优先交给显卡硬解。
+        decoder.configure({
+          codec,
+          optimizeForLatency: true,
+          hardwareAcceleration: "prefer-hardware",
+        });
         state.decoder = decoder;
         state.codec = codec;
         state.waitingKey = true;
@@ -978,6 +999,10 @@ export default function ControlPage({
       const state = h264Ref.current;
       if (state.disabled) return;
       const bytes = base64ToBytes(frame.data);
+      // 用采集端的真实时间戳（微秒），只保证本机单调递增。之前每帧加 1ms
+      // 的假时间戳会让解码器把 60fps 的帧当成 1000fps，调度/统计都不对。
+      const timestamp = Math.max(frame.timestampUs, state.timestamp + 1);
+      state.timestamp = timestamp;
       if (frame.keyframe) {
         const codec = spsCodecString(bytes);
         const decoder = codec ? ensureDecoder(codec) : null;
@@ -986,12 +1011,11 @@ export default function ControlPage({
           return;
         }
         state.waitingKey = false;
-        state.timestamp += 1000;
         try {
           decoder.decode(
             new EncodedVideoChunk({
               type: "key",
-              timestamp: state.timestamp,
+              timestamp,
               data: bytes,
             }),
           );
@@ -1011,14 +1035,26 @@ export default function ControlPage({
         }
         return;
       }
-      // 解码跟不上就丢帧（P 帧互不依赖），别让排队延迟越积越大。
-      if (state.decoder.decodeQueueSize > 8) return;
-      state.timestamp += 1000;
+      // 解码跟不上时不能随手丢 P 帧：H.264 的 P 帧依赖前面的参考帧，
+      // 单独丢一帧会让后续画面花到下一个 IDR（周期关键帧 10 秒才一个）。
+      // 这里直接重建解码器、清空排队，丢到下一个关键帧，并让被控端马上补一个：
+      // 短暂停一下，比花屏拖十秒好，也不会让排队延迟越积越高。
+      if (state.decoder.decodeQueueSize > 4) {
+        const codec = state.codec;
+        closeDecoder();
+        if (codec) ensureDecoder(codec);
+        const now = performance.now();
+        if (now - state.lastKeyRequestAt > 500) {
+          state.lastKeyRequestAt = now;
+          void requestVideoKeyframe(clientToken).catch(() => {});
+        }
+        return;
+      }
       try {
         state.decoder.decode(
           new EncodedVideoChunk({
             type: "delta",
-            timestamp: state.timestamp,
+            timestamp,
             data: bytes,
           }),
         );
