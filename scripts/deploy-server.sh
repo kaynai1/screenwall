@@ -359,6 +359,19 @@ open_firewall() {
   fi
 }
 
+# 用「先写临时文件再 rename」替换二进制。
+#
+# 直接 `cp` 到正在运行的路径会报 `Text file busy`（ETXTBSY）；rename 是原子
+# 替换，正在跑的进程继续用旧 inode，重启服务后自然换到新文件。重新执行「安装」
+# 或「更新」时都能用。
+replace_binary() {
+  local src="$1"
+  local tmp="$BIN.new.$$"
+  $SUDO cp "$src" "$tmp"
+  $SUDO chmod 755 "$tmp"
+  $SUDO mv -f "$tmp" "$BIN"
+}
+
 # 实际部署：账号/密码/端口已就绪。
 do_install() {
   local account="$1" password="$2" port="$3" register="$4"
@@ -373,8 +386,7 @@ do_install() {
 
   info "安装到 $APP_DIR 并写配置…"
   $SUDO mkdir -p "$APP_DIR"
-  $SUDO cp "$SRC_DIR/target/release/screenwall-server" "$BIN"
-  $SUDO chmod 755 "$BIN"
+  replace_binary "$SRC_DIR/target/release/screenwall-server"
   local reg_bool
   reg_bool=$([ "$register" = "y" ] && echo true || echo false)
   $SUDO tee "$CONFIG" >/dev/null <<EOF
@@ -456,8 +468,7 @@ update_server() {
   build_server
   info "替换二进制（旧版备份为 screenwall-server.bak）…"
   $SUDO cp "$BIN" "$BIN.bak" 2>/dev/null || true
-  $SUDO cp "$SRC_DIR/target/release/screenwall-server" "$BIN"
-  $SUDO chmod 755 "$BIN"
+  replace_binary "$SRC_DIR/target/release/screenwall-server"
   $SUDO systemctl restart "$SERVICE"
   ok "已更新并重启。"
   health_check
