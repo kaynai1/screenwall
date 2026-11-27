@@ -32,6 +32,7 @@ import Topbar from "./components/Topbar";
 import AuditPage from "./pages/AuditPage";
 import ControlPage from "./pages/ControlPage";
 import DevicesPage from "./pages/DevicesPage";
+import FeedbackPage from "./pages/FeedbackPage";
 import FilesPage from "./pages/FilesPage";
 import GroupPage from "./pages/GroupPage";
 import LoginPage from "./pages/LoginPage";
@@ -40,6 +41,7 @@ import SettingsPage from "./pages/SettingsPage";
 import WallPage from "./pages/WallPage";
 import RemotePage from "./pages/RemotePage";
 import { isDirectDeviceId, stopActiveSession } from "./session";
+import { checkUpdate, currentVersion } from "./update";
 import type {
   AccountView,
   DeviceView,
@@ -74,6 +76,9 @@ export default function App() {
   /** 局域网直连开关状态（侧栏底部那个开关）。 */
   const [directOn, setDirectOn] = useState(false);
   const [directBusy, setDirectBusy] = useState(false);
+  /** 当前客户端版本与启动时检查到的新版；左下角更新提示用。 */
+  const [appVersion, setAppVersion] = useState("");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   /** 当前远程会话真实走的链路；没有会话时为 null（侧栏胶囊按它显示）。 */
   const [controlLink, setControlLink] = useState<
     "relay" | "direct" | "p2p" | null
@@ -136,6 +141,33 @@ export default function App() {
       offDevices();
     };
   }, []);
+
+  // 左下角更新提示：启动时取一次当前版本；登录（含局域网模式）后检查一次新版。
+  // 检查失败就静默——设置页里还有手动「检查更新」，不该为网络问题弹提示。
+  useEffect(() => {
+    let alive = true;
+    currentVersion()
+      .then((value) => {
+        if (alive) setAppVersion(value);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!account?.loggedIn) return;
+    let alive = true;
+    checkUpdate()
+      .then((info) => {
+        if (alive && info) setUpdateVersion(info.version);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [account?.loggedIn, account?.local]);
 
   // 直连开关状态：只在局域网模式下有意义，但登录状态下也读一次，
   // 这样侧栏底部能反映真实状态而不是猜。
@@ -611,6 +643,8 @@ export default function App() {
         return <AuditPage {...common} active={active} />;
       case "server":
         return <ServerPage active={active} />;
+      case "feedback":
+        return <FeedbackPage {...common} active={active} />;
       case "settings":
         return (
           <SettingsPage
@@ -658,6 +692,8 @@ export default function App() {
         directBusy={directBusy}
         onToggleDirect={() => void toggleDirect()}
         link={controlLink}
+        appVersion={appVersion}
+        updateVersion={updateVersion}
       />
 
       <div className="app-main">

@@ -44,6 +44,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/quick/rotate", post(api::quick_rotate))
         .route("/api/v1/quick/connect", post(api::quick_connect))
         .route("/api/v1/resolve-id", post(api::resolve_local_id))
+        .route("/api/v1/feedback", post(api::submit_feedback))
         .route("/api/v1/connect-link", post(api::create_connect_link))
         .route("/api/v1/connect-link/use", post(api::use_connect_link))
         .route("/l/{token}", get(api::link_page))

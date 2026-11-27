@@ -1,5 +1,6 @@
-import { LogOut, Monitor, Settings2, Wifi } from "lucide-react";
+import { CircleArrowUp, LogOut, Monitor, Settings2 } from "lucide-react";
 import { NAV_SECTIONS } from "../nav";
+import { LinkCodeIcon, P2pIcon, RelayIcon, RouterIcon } from "./QingIcons";
 import type { AccountView, DeviceView, PageKey } from "../types";
 import { versionBelow } from "../version";
 
@@ -15,11 +16,17 @@ export default function Sidebar({
   directBusy,
   onToggleDirect,
   link,
+  appVersion,
+  updateVersion,
 }: {
   page: PageKey;
   onNavigate: (page: PageKey) => void;
   account: AccountView;
   devices: DeviceView[];
+  /** 当前客户端版本；空字符串表示还没取到。 */
+  appVersion: string;
+  /** 启动时检查到的新版客户端版本；`null` 表示没有或检查失败。 */
+  updateVersion: string | null;
   selectedCount: number;
   /** 当前远程会话实际走的链路；没有会话时为 null。 */
   link: "relay" | "direct" | "p2p" | null;
@@ -47,6 +54,16 @@ export default function Sidebar({
         : link === "direct"
           ? "局域网直连"
           : "服务器中转";
+  // 胶囊图标跟着链路走：P2P 用节点连线、直连用路由器、中转用云服务器。
+  const LinkIcon = account.quick
+    ? LinkCodeIcon
+    : account.local
+      ? RouterIcon
+      : link === "p2p"
+        ? P2pIcon
+        : link === "direct"
+          ? RouterIcon
+          : RelayIcon;
   // 低于 0.2.11 的服务器不认识 `p2p` 信令，也不发 `sameAccount`：
   // 把这件事写在提示里，用户才知道「弹确认框」是服务器旧，不是客户端的问题。
   const serverOutdated =
@@ -66,13 +83,32 @@ export default function Sidebar({
           : serverOutdated
             ? `服务器 ${account.serverVersion} 版本较旧：升级服务器后可用 P2P 直连与同账号免确认`
             : `画面与控制经服务器中转：${serverHost}`;
-  // 连接码会话只有一台设备，只保留设置入口。
-  const sections = account.quick
-    ? NAV_SECTIONS.map((section) => ({
-        ...section,
-        items: section.items.filter((item) => item.key === "settings"),
-      })).filter((section) => section.items.length > 0)
-    : NAV_SECTIONS;
+  // 客户端有新版，或服务器版本落后于当前客户端时，在左下角挂一条提示。
+  // 网络失败/没配置更新源时后端返回 null，这里就什么都不显示。
+  const serverBehind =
+    !account.local &&
+    !account.quick &&
+    appVersion !== "" &&
+    versionBelow(account.serverVersion, appVersion);
+  const updateNote = updateVersion
+    ? { title: `发现新版本 ${updateVersion}`, sub: "点击前往设置更新客户端" }
+    : serverBehind
+      ? {
+          title: "服务器版本需要更新",
+          sub: `${account.serverVersion} → ${appVersion}`,
+        }
+      : null;
+  // 连接码会话只有一台设备，只保留设置入口；局域网模式连不上服务器，反馈提交不了。
+  const sections = NAV_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) =>
+      account.quick
+        ? item.key === "settings"
+        : account.local
+          ? item.key !== "feedback"
+          : true,
+    ),
+  })).filter((section) => section.items.length > 0);
 
   return (
     <aside className="sidebar">
@@ -100,7 +136,7 @@ export default function Sidebar({
             }`}
             title={linkHint}
           >
-            <Wifi size={12} strokeWidth={2} aria-hidden="true" />
+            <LinkIcon size={12} strokeWidth={2} />
             {linkLabel}
           </span>
         </div>
@@ -138,6 +174,23 @@ export default function Sidebar({
           </div>
         ))}
       </nav>
+
+      {updateNote && (
+        <button
+          type="button"
+          className="update-note"
+          onClick={onOpenSettings}
+          title={`${updateNote.title}：${updateNote.sub}`}
+        >
+          <span className="update-note-icon" aria-hidden="true">
+            <CircleArrowUp size={15} strokeWidth={1.75} />
+          </span>
+          <span className="update-note-copy">
+            <strong>{updateNote.title}</strong>
+            <small>{updateNote.sub}</small>
+          </span>
+        </button>
+      )}
 
       <div className="sidebar-foot">
         {/* 本机状态 + 直连开关。原来「开启直连」是顶栏上一个不可点的胶囊，
@@ -187,7 +240,7 @@ export default function Sidebar({
         <div className="account-mini">
           <div className="avatar">
             {account.local ? (
-              <Wifi size={14} strokeWidth={1.75} />
+              <RouterIcon size={14} />
             ) : (
               account.username.slice(0, 1).toUpperCase()
             )}

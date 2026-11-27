@@ -2121,6 +2121,58 @@ async fn refresh_devices(
     Ok(devices)
 }
 
+/// 提交一条建议或 BUG 到服务器。
+///
+/// 管理员在服务器上用 `screenwall-server feedback list` 查看；连接码会话
+/// 没有账号归属，服务端也只认账号令牌，所以这里直接拦掉。
+#[tauri::command]
+async fn submit_feedback(
+    shared: State<'_, Arc<Shared>>,
+    category: String,
+    content: String,
+    contact: Option<String>,
+) -> Result<(), String> {
+    let config = shared.config.read().await.clone();
+    if shared.quick_mode.load(Ordering::Relaxed) || config.token.is_empty() {
+        return Err("连接码会话不能提交反馈，请登录账号后再试".into());
+    }
+    let category = category.trim();
+    if category != "bug" && category != "suggestion" {
+        return Err("分类只能是 suggestion 或 bug".into());
+    }
+    // 先在本地按服务端同样的规则校验，用户不用等一次往返才知道写错了。
+    let content = content.trim();
+    let length = content.chars().count();
+    if length < 5 {
+        return Err("内容太短，至少写 5 个字".into());
+    }
+    if length > 4000 {
+        return Err("内容太长，最多 4000 字".into());
+    }
+    let contact: String = contact
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(120)
+        .collect();
+    let base = normalize_server_url(&config.server_url)?;
+    let body = json!({
+        "category": category,
+        "content": content,
+        "contact": contact,
+        "appVersion": env!("CARGO_PKG_VERSION"),
+    });
+    post_api(
+        &shared.http,
+        format!("{base}/api/v1/feedback"),
+        &body,
+        Some(&config.token),
+    )
+    .await?;
+    tracing::info!("已提交用户反馈: category={category} length={length}");
+    Ok(())
+}
+
 /// 拉取会话审计记录（仅当前账号），支持分页和按设备过滤。
 #[tauri::command]
 async fn list_audits(
@@ -6309,6 +6361,7 @@ fn main() {
             save_screenshot,
             rename_device,
             refresh_devices,
+            submit_feedback,
             list_audits,
             set_device_controllable,
             delete_device,

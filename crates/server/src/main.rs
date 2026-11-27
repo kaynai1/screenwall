@@ -45,6 +45,11 @@ enum Command {
         #[command(subcommand)]
         action: TokenAction,
     },
+    /// 查看客户端提交的建议与 BUG。
+    Feedback {
+        #[command(subcommand)]
+        action: FeedbackAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -72,6 +77,16 @@ enum TokenAction {
     Revoke { token: String },
 }
 
+#[derive(Debug, Subcommand)]
+enum FeedbackAction {
+    /// 查看用户提交的建议与 BUG（最新的在前）。
+    List {
+        /// 最多显示多少条。
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -93,7 +108,69 @@ async fn main() -> Result<()> {
             let db = Db::open(&config.db_path)?;
             token_action(&db, action)
         }
+        Command::Feedback { action } => {
+            let db = Db::open(&config.db_path)?;
+            feedback_action(&db, action)
+        }
     }
+}
+
+fn feedback_action(db: &Db, action: FeedbackAction) -> Result<()> {
+    match action {
+        FeedbackAction::List { limit } => {
+            let rows = db.list_feedback(limit)?;
+            if rows.is_empty() {
+                println!("还没有用户反馈");
+                return Ok(());
+            }
+            for row in rows {
+                let category = if row.category == "bug" { "BUG" } else { "建议" };
+                let device = if row.device_name.is_empty() {
+                    row.device_id.as_str()
+                } else {
+                    row.device_name.as_str()
+                };
+                let contact = if row.contact.is_empty() {
+                    "-"
+                } else {
+                    row.contact.as_str()
+                };
+                println!(
+                    "#{} {} [{}] {}（{}）v{}\n  联系方式：{}\n  {}",
+                    row.id,
+                    format_time_ms(row.created_at),
+                    category,
+                    row.username,
+                    device,
+                    row.app_version,
+                    contact,
+                    row.content.replace('\n', "\n  ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 把毫秒时间戳格式化为北京时间 `YYYY-MM-DD HH:MM`。
+///
+/// 只做「固定 +8 小时」的日历换算（Howard Hinnant 的 civil_from_days），
+/// 避免为一个 CLI 输出引入整个时间库。
+fn format_time_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000) + 8 * 3600;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute) = (rem / 3600, rem % 3600 / 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 async fn run(
@@ -243,4 +320,19 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_time_ms;
+
+    #[test]
+    fn formats_epoch_and_known_dates_in_beijing_time() {
+        // 1970-01-01 00:00 UTC = 北京时间 08:00。
+        assert_eq!(format_time_ms(0), "1970-01-01 08:00");
+        // 2024-02-29 03:04 UTC（闰日）= 北京时间 11:04。
+        assert_eq!(format_time_ms(1_709_175_840_000), "2024-02-29 11:04");
+        // 2026-01-01 00:00 UTC 之前一秒，跨年边界。
+        assert_eq!(format_time_ms(1_767_225_599_000), "2026-01-01 07:59");
+    }
 }

@@ -585,6 +585,26 @@ export function setDeviceControllable(
   return invoke<void>("set_device_controllable", { deviceId, controllable });
 }
 
+/** 反馈分类：`suggestion` 建议、`bug` 问题。 */
+export type FeedbackCategory = "suggestion" | "bug";
+
+/**
+ * 提交一条建议或 BUG 到服务器（管理员用 `screenwall-server feedback list` 查看）。
+ * 内容按字符数计，5–4000 字；`contact` 可留空。
+ */
+export function submitFeedback(input: {
+  category: FeedbackCategory;
+  content: string;
+  contact?: string;
+}): Promise<void> {
+  if (!isTauri) return delay(420);
+  return invoke<void>("submit_feedback", {
+    category: input.category,
+    content: input.content,
+    contact: input.contact ?? "",
+  });
+}
+
 /** 主动向服务器拉一次设备列表。 */
 export function refreshDevices(): Promise<DeviceView[]> {
   if (!isTauri) return delay(240).then(() => mockDevices);

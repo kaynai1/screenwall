@@ -316,6 +316,18 @@
   background: var(--accent);
 }
 
+/* 上面把开关缩到 36×20，滑块还是全局的 27px，会顶出轨道。
+   这里同步缩到 14px，位移按 36 - 2*(2+1) - 14 算。 */
+.ctrl-quality-panel .ctrl-quality-auto .switch-thumb {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.ctrl-quality-panel .ctrl-quality-auto .switch.is-on .switch-thumb {
+  transform: translateX(16px);
+}
+
 .ctrl-quality-grid {
   display: grid;
   gap: 4px;
@@ -866,12 +878,15 @@
   align-items: center;
   gap: 6px;
   height: 34px;
+  min-width: 0;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-sm);
   background: var(--fill-2);
   color: var(--text-2);
   font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
   text-align: left;
   transition:
     background-color var(--dur) var(--ease),
@@ -940,29 +955,30 @@
   margin-top: 10px;
 }
 
+/* 静音按钮跟滑块轨道（4px 细线）居中对齐：做成无边框小图标按钮，
+   不再是一个比轨道高出一截的方框。 */
 .ctrl-volume-mute {
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-soft);
-  color: var(--text-2);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
   cursor: pointer;
 }
 
 .ctrl-volume-mute:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--line-strong);
+  background: var(--fill-2);
 }
 
 .ctrl-volume-mute.is-on {
   color: var(--accent);
-  border-color: var(--accent);
 }
 
 .ctrl-volume-mute:disabled {

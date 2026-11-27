@@ -1232,11 +1232,16 @@ export default function SettingsPage({
                     <div className="set-row">
                       <div className="set-row-copy">
                         <span className="set-row-label">服务器版本</span>
-                        {versionBelow(account.serverVersion, "0.2.11") && (
+                        {versionBelow(account.serverVersion, "0.2.11") ? (
                           <span className="set-row-hint set-field-error">
                             版本较旧：升级服务器后才能 P2P 直连、同账号免确认
                           </span>
-                        )}
+                        ) : versionBelow(account.serverVersion, version) ? (
+                          <span className="set-row-hint set-field-error">
+                            需要更新：客户端已是 {version}，服务器仍是{" "}
+                            {account.serverVersion}，建议同步升级服务端
+                          </span>
+                        ) : null}
                       </div>
                       <span className="set-row-value">
                         {account.serverVersion ?? "未探测到"}

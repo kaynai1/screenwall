@@ -74,6 +74,7 @@ export type PageKey =
   | "audit"
   | "settings"
   | "server"
+  | "feedback"
   | "control";
 
 export type ToastTone = "info" | "success" | "error";
@@ -142,6 +143,8 @@ export type RemotePageProps = PageProps & {
 };
 
 export type AuditPageProps = PageProps;
+
+export type FeedbackPageProps = PageProps;
 
 export type SettingsPageProps = PageProps & {
   onLogout: () => void;

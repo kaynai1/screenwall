@@ -791,6 +791,85 @@ pub async fn resolve_local_id(
     })))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackReq {
+    /// `suggestion`（建议）或 `bug`（问题）。
+    pub category: String,
+    pub content: String,
+    /// 联系方式；用户愿意留才留。
+    #[serde(default)]
+    pub contact: String,
+    /// 客户端版本，便于定位问题。
+    #[serde(default)]
+    pub app_version: String,
+}
+
+/// 提交一条建议或 BUG。
+///
+/// 反馈存在服务器本地库里，管理员用 `screenwall-server feedback list` 查看。
+/// 只允许账号令牌提交（连接码会话没有账号归属，不参与反馈）。
+pub async fn submit_feedback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<FeedbackReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    // 按账号限流：正常用户不会一小时发五条以上。
+    if let Some(seconds) = state.feedback_rate.check(&auth.user_id.to_string()) {
+        state.metrics.add_error();
+        return Err(too_many_requests("提交反馈", seconds));
+    }
+    let category = match req.category.trim() {
+        "bug" => "bug",
+        "suggestion" => "suggestion",
+        _ => return Err(bad_request("分类只能是 suggestion 或 bug")),
+    };
+    let content = req.content.trim();
+    let length = content.chars().count();
+    if length < 5 {
+        return Err(bad_request("内容太短，至少写 5 个字"));
+    }
+    if length > 4000 {
+        return Err(bad_request("内容太长，最多 4000 字"));
+    }
+    let contact: String = req.contact.trim().chars().take(120).collect();
+    let app_version: String = req.app_version.trim().chars().take(32).collect();
+    let username = state
+        .db
+        .user_by_id(auth.user_id)
+        .map_err(internal)?
+        .map(|user| user.username)
+        .unwrap_or_default();
+    let device_name = state
+        .db
+        .device(auth.user_id, &auth.device_id)
+        .map_err(internal)?
+        .map(|device| device.name)
+        .unwrap_or_default();
+    let id = state
+        .db
+        .add_feedback(
+            auth.user_id,
+            &username,
+            &auth.device_id,
+            &device_name,
+            category,
+            content,
+            &contact,
+            &app_version,
+        )
+        .map_err(internal)?;
+    tracing::info!(
+        "收到用户反馈: id={} user={} device={} category={}",
+        id,
+        username,
+        auth.device_id,
+        category
+    );
+    Ok(Json(json!({ "id": id })))
+}
+
 /// 读本机的连接码与开关状态（被控端设置页用）。
 pub async fn quick_state(
     State(state): State<Arc<AppState>>,

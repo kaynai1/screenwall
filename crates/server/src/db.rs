@@ -95,6 +95,24 @@ CREATE TABLE IF NOT EXISTS connect_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connect_links_user ON connect_links(user_id);
+
+-- 用户提交的建议与 BUG 反馈。
+-- 不设外键：账号被删后反馈仍应保留，管理员还能看到已经报过的问题。
+-- 用户名与设备名在提交时存一份快照，列表里不用再连表。
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    device_id   TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT 'suggestion',
+    content     TEXT NOT NULL,
+    contact     TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
 "#;
 
 /// 旧库补列。`CREATE TABLE IF NOT EXISTS` 不会给已存在的表加字段，
@@ -263,6 +281,21 @@ pub struct AuditRow {
     pub bytes_down: u64,
     /// `relay`（账号中转）或 `direct`（局域网直连）。
     pub mode: String,
+}
+
+/// 一条用户反馈（建议或 BUG）。
+pub struct FeedbackRow {
+    pub id: i64,
+    /// 提交时快照的用户名与设备名：账号/设备改名后历史记录仍能对上。
+    pub username: String,
+    pub device_id: String,
+    pub device_name: String,
+    /// `suggestion` 或 `bug`。
+    pub category: String,
+    pub content: String,
+    pub contact: String,
+    pub app_version: String,
+    pub created_at: i64,
 }
 
 pub struct Db {
@@ -965,6 +998,62 @@ impl Db {
     pub fn recent_audits(&self, user_id: i64, limit: i64) -> Result<Vec<AuditRow>> {
         self.audit_page(user_id, limit, 0, None)
             .map(|(rows, _)| rows)
+    }
+
+    /// 记一条用户反馈，返回新记录的 id。
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_feedback(
+        &self,
+        user_id: i64,
+        username: &str,
+        device_id: &str,
+        device_name: &str,
+        category: &str,
+        content: &str,
+        contact: &str,
+        app_version: &str,
+    ) -> Result<i64> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO feedback
+                (user_id, username, device_id, device_name, category, content, contact, app_version, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                user_id,
+                username,
+                device_id,
+                device_name,
+                category,
+                content,
+                contact,
+                app_version,
+                crate::auth::now_ms()
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 最近的反馈，按提交时间从新到旧。管理员在服务器上用 CLI 查看。
+    pub fn list_feedback(&self, limit: i64) -> Result<Vec<FeedbackRow>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, device_id, device_name, category, content, contact, app_version, created_at
+             FROM feedback ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit.max(1)], |row| {
+            Ok(FeedbackRow {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                device_id: row.get(2)?,
+                device_name: row.get(3)?,
+                category: row.get(4)?,
+                content: row.get(5)?,
+                contact: row.get(6)?,
+                app_version: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 }
 

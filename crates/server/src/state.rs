@@ -137,6 +137,8 @@ pub struct AppState {
     pub session_open_rate: RateLimiter,
     /// 连接码尝试频率（按客户端 IP）。
     pub quick_connect_rate: RateLimiter,
+    /// 建议/BUG 提交频率（按账号）：每小时 5 条，允许一次连发 3 条。
+    pub feedback_rate: RateLimiter,
     pub metrics: Metrics,
     /// 自托管更新源（`[update]` 段）；未配置时相关接口返回 404。
     pub update: UpdateState,
@@ -188,6 +190,8 @@ impl AppState {
             std::time::Duration::from_secs(60),
             limits.quick_connect_burst,
         );
+        // 反馈不走 `[limits]` 配置：它跟业务流量无关，默认值够用。
+        let feedback_rate = RateLimiter::new(5, std::time::Duration::from_secs(3600), 3);
         Self {
             db,
             config,
@@ -204,6 +208,7 @@ impl AppState {
             view_connect_rate,
             session_open_rate,
             quick_connect_rate,
+            feedback_rate,
             metrics: Metrics::default(),
             update: UpdateState::default(),
             p2p_pending: RwLock::new(HashMap::new()),

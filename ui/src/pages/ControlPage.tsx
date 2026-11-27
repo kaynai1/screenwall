@@ -92,6 +92,7 @@ import {
 import { formatDuration } from "../audit";
 import { RemoteAudioPlayer, supportsOpusAudio } from "../audio";
 import DesktopPreview from "../components/DesktopPreview";
+import { P2pIcon, RelayIcon, RouterIcon } from "../components/QingIcons";
 import { EmptyState, Modal, Progress, Segmented, Switch } from "../components/ui";
 import { describeError, errorLine } from "../errors";
 import {
@@ -3027,7 +3028,13 @@ export default function ControlPage({
               <div>
                 <dt>连接方式</dt>
                 <dd>
-                  <Wifi size={14} strokeWidth={1.75} aria-hidden="true" />
+                  {linkMode === "direct" ? (
+                    <RouterIcon size={14} />
+                  ) : linkMode === "p2p" ? (
+                    <P2pIcon size={14} />
+                  ) : (
+                    <RelayIcon size={14} />
+                  )}
                   {linkMode === "direct"
                     ? "局域网直连"
                     : linkMode === "p2p"
@@ -3100,7 +3107,7 @@ export default function ControlPage({
               </button>
               <button
                 type="button"
-                className="ctrl-quick-btn"
+                className="ctrl-quick-btn is-wide"
                 disabled={sasDisabled}
                 onClick={() => void requestSecureAttention()}
                 title={
@@ -3126,7 +3133,7 @@ export default function ControlPage({
               </button>
               <button
                 type="button"
-                className="ctrl-quick-btn is-danger is-wide"
+                className="ctrl-quick-btn is-danger"
                 disabled={offline}
                 onClick={() => setPowerAction("shutdown")}
                 title="关闭设备"
@@ -3170,9 +3177,9 @@ export default function ControlPage({
                 aria-pressed={remoteVolume?.muted ?? false}
               >
                 {remoteVolume?.muted ? (
-                  <VolumeX size={16} strokeWidth={1.75} />
+                  <VolumeX size={15} strokeWidth={1.75} />
                 ) : (
-                  <Volume2 size={16} strokeWidth={1.75} />
+                  <Volume2 size={15} strokeWidth={1.75} />
                 )}
               </button>
               <input
@@ -3181,9 +3188,11 @@ export default function ControlPage({
                 min={0}
                 max={100}
                 step={1}
+                // 不要把 volumeBusy 放进 disabled：拖动时每次 onChange 都会
+                // 置 busy，一旦禁用它就会在拖动中途把指针捕获丢掉，
+                // 表现成「只能点、拖不动」。
                 disabled={
                   offline ||
-                  volumeBusy ||
                   volumeUnsupported ||
                   capsBlockVolume ||
                   remoteVolume === null
