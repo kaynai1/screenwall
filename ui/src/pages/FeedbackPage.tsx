@@ -6,6 +6,7 @@ import {
   Mail,
   Send,
   ShieldCheck,
+  WifiOff,
 } from "lucide-react";
 import { submitFeedback, type FeedbackCategory } from "../api";
 import { BugIcon } from "../components/QingIcons";
@@ -73,6 +74,21 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
         </div>
       </section>
 
+      {account.local ? (
+        // 局域网模式没有服务器可用，提交不出去；与其藏掉入口，不如说清楚怎么用。
+        <section className="fb-card fb-offline">
+          <div className="fb-offline-icon" aria-hidden="true">
+            <WifiOff size={18} strokeWidth={1.75} />
+          </div>
+          <div>
+            <h3>局域网模式连不上服务器</h3>
+            <p>
+              反馈要保存在服务器上，请在「设置 → 账号」里连接服务器并登录，
+              再回来提交。
+            </p>
+          </div>
+        </section>
+      ) : (
       <section className="fb-card" aria-label="提交反馈">
         <div className="fb-row">
           <span className="fb-label">类型</span>
@@ -168,6 +184,7 @@ export default function FeedbackPage({ account, active, notify }: FeedbackPagePr
           </button>
         </div>
       </section>
+      )}
     </div>
   );
 }

@@ -98,17 +98,13 @@ export default function Sidebar({
           sub: `${account.serverVersion} → ${appVersion}`,
         }
       : null;
-  // 连接码会话只有一台设备，只保留设置入口；局域网模式连不上服务器，反馈提交不了。
-  const sections = NAV_SECTIONS.map((section) => ({
-    ...section,
-    items: section.items.filter((item) =>
-      account.quick
-        ? item.key === "settings"
-        : account.local
-          ? item.key !== "feedback"
-          : true,
-    ),
-  })).filter((section) => section.items.length > 0);
+  // 连接码会话只有一台设备，只保留设置入口。
+  const sections = account.quick
+    ? NAV_SECTIONS.map((section) => ({
+        ...section,
+        items: section.items.filter((item) => item.key === "settings"),
+      })).filter((section) => section.items.length > 0)
+    : NAV_SECTIONS;
 
   return (
     <aside className="sidebar">

@@ -180,3 +180,35 @@
     justify-content: center;
   }
 }
+
+/* 局域网模式提示：没有服务器可提交，说明怎么继续。 */
+.fb-card.fb-offline {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.fb-offline-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--fill-1);
+  color: var(--text-3);
+}
+
+.fb-offline h3 {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fb-offline p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
