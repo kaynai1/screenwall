@@ -87,11 +87,19 @@ class Pusher:
             time.sleep(1.5 * (attempt + 1))
         raise SystemExit(f"{method} {path} 重试后仍失败：{last}")
 
-    def blob(self, rel_path):
-        """上传单个文件的 blob，按本地 sha 缓存。"""
-        sha = git("hash-object", "-w", rel_path).strip()
+    def blob(self, commit, rel_path):
+        """上传提交里这个文件的 blob，返回 `{sha, mode}`，按本地 sha 缓存。
+
+        从提交对象取内容，不要读工作区文件：工作区可能被 autocrlf 换成 CRLF，
+        上传后 tree 会和本地提交对不上。mode 也从提交里取，保留可执行位。
+        """
+        listing = git("ls-tree", commit, "--", rel_path).strip()
+        if not listing:
+            raise SystemExit(f"{commit[:8]} 里没有 {rel_path}")
+        meta = listing.split("\t", 1)[0].split()
+        mode, sha = meta[0], meta[2]
         if sha in self.blobs:
-            return sha
+            return {"sha": self.blobs[sha], "mode": mode}
         data = subprocess.run(
             ["git", "cat-file", "blob", sha], capture_output=True, check=True
         ).stdout
@@ -104,7 +112,7 @@ class Pusher:
             },
         )
         self.blobs[sha] = created["sha"]
-        return created["sha"]
+        return {"sha": created["sha"], "mode": mode}
 
     def build_tree(self, base_tree_sha, changes):
         """自下而上重建目录树。
@@ -133,12 +141,23 @@ class Pusher:
             """重建 `directory` 这一层；base_sha 是这一层对应的远端树。
 
             子目录要拿它自己的 base sha 递归下去，用根树的 sha 会取错项。
+            新增目录（远端还没有这一层）必须从 changes 里推出来，否则整棵
+            新目录会被静默丢掉。
             """
             base = remote_tree(base_sha) if base_sha else {}
             local = by_dir.get(directory, {})
+            prefix = f"{directory}/" if directory else ""
+            # 这一层下面还有改动的子目录名。
+            child_dirs = set()
+            for key in changes:
+                if not key.startswith(prefix):
+                    continue
+                rest = key[len(prefix) :]
+                if "/" in rest:
+                    child_dirs.add(rest.split("/", 1)[0])
             entries = []
 
-            for name in sorted(set(base) | set(local)):
+            for name in sorted(set(base) | set(local) | child_dirs):
                 child = f"{directory}/{name}" if directory else name
                 existing = base.get(name)
 
@@ -150,23 +169,24 @@ class Pusher:
                     entries.append(
                         {
                             "path": name,
-                            "mode": (existing or {}).get("mode", "100644"),
+                            "mode": blob.get("mode")
+                            or (existing or {}).get("mode", "100644"),
                             "type": "blob",
-                            "sha": blob,
+                            "sha": blob["sha"],
                         }
                     )
-                elif (
-                    existing
-                    and existing["type"] == "tree"
-                    and any(key.startswith(child + "/") for key in changes)
-                ):
-                    # 这一层没改，但子目录里有改动，递归重建后换掉。
+                elif name in child_dirs:
                     entries.append(
                         {
                             "path": name,
-                            "mode": existing["mode"],
+                            "mode": (existing or {}).get("mode", "040000"),
                             "type": "tree",
-                            "sha": make_tree(child, existing["sha"]),
+                            "sha": make_tree(
+                                child,
+                                existing["sha"]
+                                if existing and existing["type"] == "tree"
+                                else None,
+                            ),
                         }
                     )
                 elif existing:
@@ -278,7 +298,7 @@ def main():
             if status == "D":
                 changes[path] = None
             else:
-                changes[path] = pusher.blob(path)
+                changes[path] = pusher.blob(commit, path)
         tree = pusher.build_tree(tree, changes)
 
         message = git("log", "-1", "--format=%B", commit)

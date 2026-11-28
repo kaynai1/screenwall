@@ -512,6 +512,20 @@ notes = "修复若干问题，提升稳定性。"
 
 服务器重启后哈希会重新计算；同一个进程内文件变化不会自动失效，发布新包后需要重启服务器。
 
+### 6.0 网页端托管（可选）
+
+把网页端构建产物挂到服务器上，手机/浏览器打开 `https://<服务器>/app` 就能远程控制：
+
+```powershell
+cd web; npm install; npm run build
+.\screenwall-server.exe --config server.toml run --web-dir web\dist
+```
+
+- `/app/*` 提供静态站点，未知路径回落 `index.html`（SPA 路由）；根路径 307 跳 `/app/`。
+- `/ws/view` 额外接受 `?token=` 鉴权（浏览器 WebSocket 不能设请求头）；HTTP 接口仍只认 `Authorization: Bearer`。
+- 不传 `--web-dir` 时行为与旧版完全一致。
+- 必须 HTTPS 才能使用 WebCodecs、剪贴板读取与 PWA 安装（`localhost` 除外）。
+
 ### 6.1 可观测性
 
 `GET /api/v1/metrics`（需要登录）返回当前进程内的真实运行数据，全部在真实处理路径上累加，

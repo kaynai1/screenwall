@@ -1,0 +1,29 @@
+{
+  "name": "screenwall-web",
+  "private": true,
+  "version": "0.2.20",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:cap": "tsc --noEmit && vite build --mode capacitor",
+    "cap:sync": "npm run build:cap && cap sync android",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.2.4",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.2.4",
+    "@capacitor/cli": "^6.2.4",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
