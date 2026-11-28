@@ -26,7 +26,10 @@ function defaultServer(): string {
   const saved = localStorage.getItem(SERVER_KEY);
   if (saved) return saved;
   if (isNativeShell()) return "";
-  return import.meta.env.DEV ? "http://127.0.0.1:8787" : window.location.origin;
+  // 永远用页面自己的源：正式环境由账号服务器托管，开发环境由 Vite
+  // 代理 `/api` 与 `/ws` 到本机服务器；写死 127.0.0.1:8787 会变成跨域请求，
+  // 而服务器没有 CORS，登录会直接失败。
+  return window.location.origin;
 }
 
 export default function LoginPage({ onAccount }: { onAccount: (account: Account) => void }) {
