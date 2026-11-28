@@ -4,6 +4,7 @@ import android.view.Surface
 import com.screenwall.android.Prefs
 import com.screenwall.android.audio.AudioPlayer
 import com.screenwall.android.data.Account
+import com.screenwall.android.data.AppInfo
 import com.screenwall.android.data.Device
 import com.screenwall.android.data.describeCode
 import com.screenwall.android.data.describeThrow
@@ -135,13 +136,14 @@ class ControlController(
         if (started) return
         started = true
         disposed = false
+        prefs.addRecent(device.id, device.name, device.os)
         viewer.listener = listener
         mjpeg.start()
         h264.start()
         scope.launch {
             try {
                 if (!viewer.isOpen) viewer.connect(account.serverUrl, account.token)
-                viewer.open(device.id, "安卓端")
+                viewer.open(device.id, AppInfo.CLIENT_NAME)
                 phase.value = Phase.Waiting
                 sendHello()
             } catch (error: Throwable) {
@@ -166,7 +168,7 @@ class ControlController(
         scope.launch {
             try {
                 if (!viewer.isOpen) viewer.connect(account.serverUrl, account.token)
-                viewer.open(device.id, "安卓端")
+                viewer.open(device.id, AppInfo.CLIENT_NAME)
                 phase.value = Phase.Waiting
                 sendHello()
             } catch (error: Throwable) {
@@ -192,8 +194,20 @@ class ControlController(
         viewer.listener = null
         audio.close()
         h264.stop()
+        // 先取画面再停解码器：缩略图只对 MJPEG 有效，H.264 走 Surface 取不到帧。
+        runCatching { savePreviewIfEnabled() }
         mjpeg.stop()
         scope.cancel()
+    }
+
+    private fun savePreviewIfEnabled() {
+        if (!prefs.savePreview) return
+        val bitmap = mjpeg.snapshot() ?: return
+        try {
+            prefs.savePreview(device.id, bitmap)
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     // ---------------------------------------------------------------- 订阅
@@ -247,7 +261,7 @@ class ControlController(
             .put("t", "hello")
             .put("proto", 1)
             .put("token", "")
-            .put("client", JSONObject().put("name", "安卓端").put("version", "0.1.0"))
+            .put("client", JSONObject().put("name", AppInfo.CLIENT_NAME).put("version", AppInfo.VERSION))
             // 空数组按 v1 基线处理，可选能力一条都不虚报。
             .put("caps", JSONArray())
         viewer.sendSession(hello)

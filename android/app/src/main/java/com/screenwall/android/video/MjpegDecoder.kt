@@ -85,6 +85,28 @@ class MjpegDecoder {
         front?.let { if (it.isRecycled) null else it.width to it.height }
     }
 
+    /** 复制当前帧（可缩小），用于保存最近连接缩略图；没有画面时返回 null。 */
+    fun snapshot(maxWidth: Int = 480): Bitmap? = synchronized(lock) {
+        val bitmap = front ?: return null
+        if (bitmap.isRecycled) return null
+        val copied = runCatching { bitmap.copy(Bitmap.Config.RGB_565, false) }.getOrNull() ?: return null
+        if (copied.width <= maxWidth) return copied
+        val scaled = runCatching {
+            Bitmap.createScaledBitmap(
+                copied,
+                maxWidth,
+                (copied.height.toLong() * maxWidth / copied.width).toInt().coerceAtLeast(1),
+                true,
+            )
+        }.getOrNull()
+        if (scaled == null || scaled === copied) {
+            copied
+        } else {
+            copied.recycle()
+            scaled
+        }
+    }
+
     /** 每秒调用一次：这期间的解码帧率与入站码率。 */
     fun sample(): Pair<Double, Int> {
         val now = System.nanoTime()

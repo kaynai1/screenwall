@@ -1,5 +1,7 @@
 package com.screenwall.android.ui
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -58,6 +60,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,6 +97,17 @@ fun ControlScreen(
     SystemBars(lightIcons = false)
 
     val phase by controller.phase.collectAsState()
+    val activity = LocalContext.current as? Activity
+    val lockLandscape = prefs.lockLandscape
+    DisposableEffect(activity, lockLandscape, phase) {
+        if (activity != null && lockLandscape && phase == Phase.Streaming) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     val errorText by controller.errorText.collectAsState()
     val stats by controller.stats.collectAsState()
     val audioOn by controller.audioOn.collectAsState()

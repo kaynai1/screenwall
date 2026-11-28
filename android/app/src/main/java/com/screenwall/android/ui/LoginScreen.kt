@@ -44,6 +44,8 @@ fun LoginScreen(
     var server by remember { mutableStateOf(prefs.serverUrl) }
     var username by remember { mutableStateOf(prefs.username) }
     var password by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var quickMode by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -55,7 +57,16 @@ fun LoginScreen(
             error = "服务器地址无效，例如 http://192.168.1.10:8787"
             return
         }
-        if (username.isBlank() || password.isBlank()) {
+        if (quickMode) {
+            if (!code.trim().matches(Regex("\\d{9}"))) {
+                error = "识别码是 9 位数字，在被控端「连接码连接」里查看"
+                return
+            }
+            if (password.isBlank()) {
+                error = "请输入连接密码"
+                return
+            }
+        } else if (username.isBlank() || password.isBlank()) {
             error = "请输入用户名和密码"
             return
         }
@@ -63,11 +74,16 @@ fun LoginScreen(
         error = ""
         scope.launch {
             try {
-                val account = api.login(normalized, username.trim(), password)
-                prefs.serverUrl = normalized
-                prefs.username = account.username
-                prefs.saveAccount(account)
-                onLoggedIn(account)
+                if (quickMode) {
+                    val account = api.quickConnect(normalized, code.trim(), password)
+                    prefs.serverUrl = normalized
+                    onLoggedIn(account)
+                } else {
+                    val account = api.login(normalized, username.trim(), password)
+                    prefs.serverUrl = normalized
+                    prefs.username = account.username
+                    onLoggedIn(account)
+                }
             } catch (throwable: Throwable) {
                 error = describeThrow(throwable)
             } finally {
@@ -105,7 +121,17 @@ fun LoginScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(26.dp))
+
+            SegmentedControl(
+                options = listOf(false to "账号登录", true to "识别码"),
+                selected = quickMode,
+                onSelect = {
+                    quickMode = it
+                    error = ""
+                },
+            )
+            Spacer(Modifier.height(16.dp))
 
             GroupCard {
                 LabeledTextField(
@@ -117,19 +143,30 @@ fun LoginScreen(
                     imeAction = ImeAction.Next,
                 )
                 RowDivider()
-                LabeledTextField(
-                    label = "用户名",
-                    value = username,
-                    onValueChange = { username = it },
-                    placeholder = "账号",
-                    imeAction = ImeAction.Next,
-                )
+                if (quickMode) {
+                    LabeledTextField(
+                        label = "识别码",
+                        value = code,
+                        onValueChange = { code = it.filter(Char::isDigit).take(9) },
+                        placeholder = "9 位数字",
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Next,
+                    )
+                } else {
+                    LabeledTextField(
+                        label = "用户名",
+                        value = username,
+                        onValueChange = { username = it },
+                        placeholder = "账号",
+                        imeAction = ImeAction.Next,
+                    )
+                }
                 RowDivider()
                 LabeledTextField(
-                    label = "密码",
+                    label = if (quickMode) "连接密码" else "密码",
                     value = password,
                     onValueChange = { password = it },
-                    placeholder = "密码",
+                    placeholder = if (quickMode) "连接密码" else "密码",
                     password = true,
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done,
@@ -148,13 +185,21 @@ fun LoginScreen(
 
             Spacer(Modifier.height(24.dp))
             PrimaryButton(
-                text = if (busy) "正在登录…" else "登录",
+                text = when {
+                    busy -> if (quickMode) "正在连接…" else "正在登录…"
+                    quickMode -> "连接"
+                    else -> "登录"
+                },
                 loading = busy,
                 onClick = { submit() },
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                text = "用桌面客户端同一个账号登录，登录后就能看到在线的电脑。",
+                text = if (quickMode) {
+                    "识别码和连接密码在被控端「连接码连接」里查看，不需要账号；会话 15 分钟内有效。"
+                } else {
+                    "用桌面客户端同一个账号登录，登录后就能看到在线的电脑。"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier

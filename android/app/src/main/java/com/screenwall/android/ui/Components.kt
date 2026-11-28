@@ -24,10 +24,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -346,4 +350,243 @@ fun ScreenBackground(content: @Composable () -> Unit) {
     ) {
         content()
     }
+}
+
+/** 卡片上方的灰色小标题（iOS 设置页那种）。 */
+@Composable
+fun SettingsSectionTitle(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 8.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** 设置页里的一行：标题 + 可选副标题 + 右侧文字 / 箭头。 */
+@Composable
+fun SettingsRow(
+    title: String,
+    subtitle: String = "",
+    trailing: String = "",
+    trailingColor: Color? = null,
+    showChevron: Boolean = false,
+    danger: Boolean = false,
+    enabled: Boolean = true,
+    onClick: (() -> Unit)? = null,
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(enabled = enabled, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontSize = 16.sp,
+                color = when {
+                    !enabled -> colors.onSurfaceVariant.copy(alpha = 0.45f)
+                    danger -> SW.red
+                    else -> colors.onSurface
+                },
+            )
+            if (subtitle.isNotEmpty()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+        if (trailing.isNotEmpty()) {
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.bodyMedium,
+                color = trailingColor ?: colors.onSurfaceVariant,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(4.dp))
+        }
+        if (showChevron) {
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = colors.outline,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsSwitchRow(
+    title: String,
+    subtitle: String = "",
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontSize = 16.sp,
+            )
+            if (subtitle.isNotEmpty()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = SW.accent),
+        )
+    }
+}
+
+/** iOS 风格弹窗：标题 + 正文 + 右上角对齐的「取消 / 确定」。 */
+@Composable
+fun IosDialog(
+    title: String,
+    message: String = "",
+    confirmText: String,
+    dismissText: String = "取消",
+    confirmEnabled: Boolean = true,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    formula: (@Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit)? = null,
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp)) {
+                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                if (message.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                    )
+                }
+                if (formula != null) {
+                    Spacer(Modifier.height(14.dp))
+                    formula()
+                }
+                Spacer(Modifier.height(18.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    ) {
+                        Text(
+                            text = dismissText,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 16.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = confirmEnabled, onClick = onConfirm)
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    ) {
+                        Text(
+                            text = confirmText,
+                            color = if (confirmEnabled) SW.accent else SW.accent.copy(alpha = 0.35f),
+                            fontSize = 16.sp,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 弹窗里的文本输入框（白底卡片上的浅灰圆角框）。 */
+@Composable
+fun DialogTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String = "",
+    password: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    imeAction: androidx.compose.ui.text.input.ImeAction = androidx.compose.ui.text.input.ImeAction.Done,
+    onImeAction: (() -> Unit)? = null,
+) {
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(SW.accent),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
+        keyboardActions = KeyboardActions(
+            onDone = { onImeAction?.invoke() },
+            onGo = { onImeAction?.invoke() },
+            onNext = { onImeAction?.invoke() },
+        ),
+        visualTransformation = if (password) {
+            PasswordVisualTransformation()
+        } else {
+            VisualTransformation.None
+        },
+        modifier = Modifier.fillMaxWidth(),
+        decorationBox = { inner ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            ) {
+                if (value.isEmpty() && placeholder.isNotEmpty()) {
+                    Text(
+                        text = placeholder,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        fontSize = 16.sp,
+                    )
+                }
+                inner()
+            }
+        },
+    )
 }

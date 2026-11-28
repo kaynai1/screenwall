@@ -18,8 +18,10 @@ import com.screenwall.android.data.Device
 import com.screenwall.android.session.AppSession
 import com.screenwall.android.ui.ControlScreen
 import com.screenwall.android.ui.DevicesScreen
+import com.screenwall.android.ui.HomeScreen
 import com.screenwall.android.ui.LoginScreen
 import com.screenwall.android.ui.ScreenWallTheme
+import com.screenwall.android.ui.SettingsScreen
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -38,7 +40,9 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface Screen {
     data object Login : Screen
+    data object Home : Screen
     data object Devices : Screen
+    data object Settings : Screen
     data class Control(val device: Device) : Screen
 }
 
@@ -58,7 +62,7 @@ private fun AppRoot() {
 
     var account by remember { mutableStateOf<Account?>(prefs.loadAccount()) }
     var screen by remember {
-        mutableStateOf<Screen>(if (account != null) Screen.Devices else Screen.Login)
+        mutableStateOf<Screen>(if (account != null) Screen.Home else Screen.Login)
     }
 
     val session = remember(account) { account?.let { AppSession(it, api, http) } }
@@ -66,15 +70,47 @@ private fun AppRoot() {
         onDispose { session?.close() }
     }
 
+    fun logout() {
+        val active = session ?: return
+        scope.launch {
+            active.api.logout(active.account)
+            prefs.clearAccount()
+            active.close()
+            account = null
+            screen = Screen.Login
+        }
+    }
+
     when (val current = screen) {
         is Screen.Login -> LoginScreen(
             prefs = prefs,
             api = api,
             onLoggedIn = { loggedIn ->
+                prefs.saveAccount(loggedIn)
                 account = loggedIn
-                screen = Screen.Devices
+                screen = Screen.Home
             },
         )
+
+        is Screen.Home -> {
+            val active = session
+            if (active == null) {
+                screen = Screen.Login
+            } else {
+                HomeScreen(
+                    session = active,
+                    prefs = prefs,
+                    onOpenDevice = { device -> screen = Screen.Control(device) },
+                    onOpenDevices = { screen = Screen.Devices },
+                    onOpenSettings = { screen = Screen.Settings },
+                    onQuickConnected = { quickAccount, device ->
+                        // 识别码令牌不落盘，只放在这次运行的会话里。
+                        account = quickAccount
+                        screen = Screen.Control(device)
+                    },
+                )
+            }
+        }
 
         is Screen.Devices -> {
             val active = session
@@ -83,15 +119,28 @@ private fun AppRoot() {
             } else {
                 DevicesScreen(
                     session = active,
+                    onBack = { screen = Screen.Home },
                     onOpenDevice = { device -> screen = Screen.Control(device) },
-                    onLogout = {
-                        scope.launch {
-                            active.api.logout(active.account)
-                            prefs.clearAccount()
-                            active.close()
-                            account = null
-                            screen = Screen.Login
-                        }
+                    onSettings = { screen = Screen.Settings },
+                )
+            }
+        }
+
+        is Screen.Settings -> {
+            val active = session
+            if (active == null) {
+                screen = Screen.Login
+            } else {
+                SettingsScreen(
+                    session = active,
+                    prefs = prefs,
+                    onBack = { screen = Screen.Home },
+                    onLogout = { logout() },
+                    onServerChanged = {
+                        active.close()
+                        prefs.clearAccount()
+                        account = null
+                        screen = Screen.Login
                     },
                 )
             }
@@ -106,7 +155,7 @@ private fun AppRoot() {
                     session = active,
                     device = current.device,
                     prefs = prefs,
-                    onBack = { screen = Screen.Devices },
+                    onBack = { screen = Screen.Home },
                 )
             }
         }

@@ -20,6 +20,8 @@ import path from 'node:path';
 const PORT = Number(process.env.PORT || 8788);
 const FRAME_DIR = process.env.SW_FRAMES || path.join(os.tmpdir(), 'sw-fake-frames');
 const FAKE_TOKEN = 'fake-dev-token';
+const QUICK_TOKEN = 'fake-quick-token';
+const QUICK_CODE = '123456789';
 const SESSION_ID = 7;
 const VIDEO_ID = 1;
 const AUDIO_ID = 2;
@@ -54,7 +56,31 @@ function devicesPayload() {
       lastSeen: nowMs() - 8 * 60 * 1000,
       controllable: true,
     },
+    // 查看端也会出现在账号设备表里，客户端应当把它们隐藏。
+    {
+      id: 'web-1',
+      name: '网页端',
+      os: 'web',
+      version: 'vweb',
+      online: true,
+      lastSeen: nowMs(),
+      controllable: true,
+    },
+    {
+      id: 'android-1',
+      name: '安卓端',
+      os: 'android',
+      version: 'v15',
+      online: false,
+      lastSeen: nowMs() - 3 * 60 * 1000,
+      controllable: true,
+    },
   ];
+}
+
+/** 识别码会话只能看到自己那台设备。 */
+function quickDevicesPayload() {
+  return devicesPayload().filter((device) => device.id === 'dev-1');
 }
 
 // ---------------------------------------------------------------- WebSocket 帧
@@ -373,7 +399,41 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/api/v1/quick/connect') {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 16 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      let code = '';
+      let hasPassword = false;
+      try {
+        const parsed = JSON.parse(body);
+        code = String(parsed.code || '');
+        hasPassword = Boolean(parsed.password);
+      } catch {
+        // 参数坏掉按校验失败处理
+      }
+      console.log(`[quick] 识别码=${code} 密码=${hasPassword ? '已填' : '空'}`);
+      if (code !== QUICK_CODE || !hasPassword) {
+        json(res, 401, { error: 'quick_auth_failed', msg: '连接码或密码不正确' });
+        return;
+      }
+      json(res, 200, {
+        token: QUICK_TOKEN,
+        expiresAt: nowMs() + 15 * 60 * 1000,
+        device: { id: 'dev-1', name: '测试电脑（假设备）' },
+      });
+    });
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/api/v1/devices') {
+    if ((req.headers.authorization || '').includes(QUICK_TOKEN)) {
+      json(res, 403, { error: 'quick_token', msg: '连接码会话只能访问一台设备' });
+      return;
+    }
     json(res, 200, { devices: devicesPayload() });
     return;
   }
@@ -408,14 +468,16 @@ server.on('upgrade', (req, socket) => {
 
   const state = { buffer: Buffer.alloc(0) };
   const session = startSession(socket);
+  const quick = url.searchParams.get('token') === QUICK_TOKEN;
+  const list = () => (quick ? quickDevicesPayload() : devicesPayload());
 
   sendText(socket, { t: 'ready' });
-  sendText(socket, { t: 'devices', devices: devicesPayload() });
-  console.log('[ws] 主控端已连接');
+  sendText(socket, { t: 'devices', devices: list() });
+  console.log(quick ? '[ws] 识别码会话已连接' : '[ws] 主控端已连接');
 
   // 模拟设备上下线推送，让设备列表的实时刷新也能看到效果。
   const devicesTimer = setInterval(() => {
-    sendText(socket, { t: 'devices', devices: devicesPayload() });
+    sendText(socket, { t: 'devices', devices: list() });
   }, 30_000);
 
   socket.on('data', (chunk) => {
