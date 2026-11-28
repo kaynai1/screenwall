@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { logout as apiLogout, Viewer, type Account, type DeviceView } from "./api";
 import ControlPage from "./pages/ControlPage";
 import DevicesPage from "./pages/DevicesPage";
+import GroupPage from "./pages/GroupPage";
 import LoginPage from "./pages/LoginPage";
 import WallPage from "./pages/WallPage";
 
@@ -38,6 +39,7 @@ export default function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [target, setTarget] = useState<DeviceView | null>(null);
   const [wallOpen, setWallOpen] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const toastSeq = useRef(0);
@@ -111,6 +113,7 @@ export default function App() {
     setAccount(null);
     setTarget(null);
     setWallOpen(false);
+    setGroupOpen(false);
     if (current) void apiLogout(current);
   }, [account]);
 
@@ -144,6 +147,8 @@ export default function App() {
           }}
           onBack={() => setWallOpen(false)}
         />
+      ) : groupOpen && connected ? (
+        <GroupPage account={account} devices={devices} onBack={() => setGroupOpen(false)} />
       ) : (
         <DevicesPage
           account={account}
@@ -152,6 +157,7 @@ export default function App() {
           connectionError={connectionError}
           onOpen={(device) => setTarget(device)}
           onOpenWall={() => setWallOpen(true)}
+          onOpenGroup={() => setGroupOpen(true)}
           onLogout={handleLogout}
           onReconnect={() => setAccount({ ...account })}
         />

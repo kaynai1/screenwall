@@ -6,6 +6,7 @@ import {
   Monitor,
   RefreshCw,
   Smartphone,
+  UsersRound,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -47,6 +48,7 @@ export default function DevicesPage({
   connectionError,
   onOpen,
   onOpenWall,
+  onOpenGroup,
   onLogout,
   onReconnect,
 }: {
@@ -56,6 +58,7 @@ export default function DevicesPage({
   connectionError: string | null;
   onOpen: (device: DeviceView) => void;
   onOpenWall: () => void;
+  onOpenGroup: () => void;
   onLogout: () => void;
   onReconnect: () => void;
 }) {
@@ -115,6 +118,11 @@ export default function DevicesPage({
           </p>
         </div>
         <div className="app-bar-actions">
+          {previewable >= 2 && (
+            <button type="button" className="icon-btn" onClick={onOpenGroup} aria-label="群控">
+              <UsersRound size={18} />
+            </button>
+          )}
           {previewable > 0 && (
             <button type="button" className="icon-btn" onClick={onOpenWall} aria-label="屏幕墙">
               <LayoutGrid size={18} />

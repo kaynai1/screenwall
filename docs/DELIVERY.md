@@ -551,9 +551,9 @@ sidecar 模式下：
 | 项目 | 内容 |
 | --- | --- |
 | 网页端 | 新增 `web/`：Vite + React + TS 的纯浏览器客户端，登录 / 设备列表 / 控制页全流程；MJPEG 用 `createImageBitmap`，H.264 用 WebCodecs（从 SPS 解析 `avc1` 串，失败自动回退 MJPEG） |
-| 手机端 | PWA（manifest + service worker + 192/512/maskable 图标），设备页有安装提示（Chrome 自动安装 / 手动「添加到主屏幕」），安卓上全屏运行；触摸映射为移动/左键/长按右键/双指滚轮，软键盘用 `beforeinput` 实时注入文本 |
+| 手机端 | PWA（manifest + service worker + 192/512/maskable 图标），设备页有安装提示（Chrome 自动安装 / 手动「添加到主屏幕」），安卓上全屏运行；触摸映射为移动/左键/长按右键/双指滚轮/双指捏合缩放，另支持触控板模式、屏幕键盘、声音与音量、多显示器、画中画、文件上传、屏幕墙与群控（iOS 走 PWA「添加到主屏幕」） |
 | 画质 | 分辨率 1280/1920/2560/3840、帧率 15/30/60、压缩档 省流量/均衡/清晰，默认 720p30 均衡，选择存本机 |
 | 服务器 | `--web-dir` 把静态站点挂在 `/app`（SPA 回落 `index.html`），根路径 307 跳到 `/app/`；`/ws/view` 接受 `?token=`（浏览器 WebSocket 无法设请求头），HTTP 接口仍只认 Bearer |
 | 协议实现 | 网页端按 `cloud.rs` 的 8 字节会话帧与 `frame.rs` 的 24 字节媒体帧逐字节解码，输入按 16ms 批量发送 |
 | 安卓 APK | `web/android/`（Capacitor 6 壳，WebView 跑同一份前端）：`npm run build:cap` → `npx cap sync android` → `gradlew assembleDebug`，产物 `app-debug.apk`；壳内页面源 `http://localhost`，登录页手填服务器，Manifest 开 `usesCleartextTraffic` 支持局域网 http/ws |
-| 限制 | 不含声音、文件传输、屏幕墙、群控、多显示器切换；走账号中转，不参与直连/打洞；APK 需在装有 Android SDK 的机器上按 `docs/web.md` 打包。**已并入 H.264 硬编分支**，被控端与本分支一致时网页端可走 WebCodecs H.264 |
+| 限制 | 文件只支持上传，下载与目录浏览未做；走账号中转，不参与直连/打洞；切后台可能被系统挂起，恢复后需手动重连；iOS 原生 App 暂不做，用 PWA；APK 需在装有 Android SDK 的机器上按 `docs/web.md` 打包。**已并入 H.264 硬编分支**，被控端与本分支一致时网页端可走 WebCodecs H.264 |

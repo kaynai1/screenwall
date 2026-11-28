@@ -943,3 +943,241 @@ textarea {
     padding: 7px 9px 9px;
   }
 }
+
+/* ---------------------------------------------------------------- 群控 */
+
+.group-page.is-running {
+  max-width: 1100px;
+  padding-bottom: calc(88px + env(safe-area-inset-bottom));
+}
+
+.group-pick-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.group-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 10px;
+}
+
+.group-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  text-align: left;
+}
+
+.group-pick-row.is-on {
+  box-shadow: var(--shadow), inset 0 0 0 1.5px var(--accent);
+}
+
+.pick-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 7px;
+  border: 1.5px solid var(--line);
+  color: #fff;
+}
+
+.group-pick-row.is-on .pick-box {
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.group-pick-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.group-pick-copy strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-pick-copy small {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.group-start {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.group-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  padding: 10px 0 12px;
+}
+
+.group-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.group-card.is-active {
+  box-shadow: var(--shadow), 0 0 0 1px var(--accent);
+}
+
+/* 画布会盖住内阴影，用覆盖层画选中框。 */
+.group-card.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  border-radius: 14px;
+  pointer-events: none;
+}
+
+.group-thumb {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--stage);
+}
+
+/* 与控制页一致：画布按画面比例缩放，元素矩形就是画面矩形，
+   这样 pointToNormalized 算出的坐标不会被黑边带偏。 */
+.group-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.group-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px;
+  background: rgba(5, 6, 7, 0.62);
+  color: rgba(235, 235, 245, 0.76);
+  font-size: 11px;
+  text-align: center;
+}
+
+.group-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.group-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 12px 10px;
+}
+
+.group-copy strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-copy small {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.group-card.is-error .group-copy small {
+  color: var(--red);
+}
+
+.group-dock {
+  position: fixed;
+  left: 50%;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 8;
+  transform: translateX(-50%);
+}
+
+.group-dock .chip {
+  height: 40px;
+  padding: 0 18px;
+  box-shadow: var(--shadow);
+}
+
+.group-keyboard {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(70px + env(safe-area-inset-bottom));
+  z-index: 9;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+@media (max-width: 640px) {
+  .group-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .group-page.is-running {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+.group-dock .chip.is-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 600;
+  font-size: 13px;
+}
