@@ -16,12 +16,24 @@ import crypto from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PORT || 8788);
 const FRAME_DIR = process.env.SW_FRAMES || path.join(os.tmpdir(), 'sw-fake-frames');
 const FAKE_TOKEN = 'fake-dev-token';
 const QUICK_TOKEN = 'fake-quick-token';
 const QUICK_CODE = '123456789';
+/** SW_WEBRTC=1 时假装被控端支持直连，用来验证「先试 P2P、失败回中继」。 */
+const FAKE_WEBRTC = process.env.SW_WEBRTC === '1';
+/**
+ * 浏览器里的假被控端（`scripts/fake-agent.html`）。
+ *
+ * 打开后连 `/ws/agent`，这里把主控端的 `t:"webrtc"` 信令转发给它，
+ * 再把它的 answer / trickle ICE 原样转回主控端——手机端就能真的跑通
+ * WebRTC 直连（H.264 + Opus 轨道、`ctrl` DataChannel）。
+ */
+const agent = { socket: null, viewers: new Map() };
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_ID = 7;
 const VIDEO_ID = 1;
 const AUDIO_ID = 2;
@@ -46,6 +58,7 @@ function devicesPayload() {
       online: true,
       lastSeen: nowMs(),
       controllable: true,
+      webrtc: FAKE_WEBRTC,
     },
     {
       id: 'dev-2',
@@ -192,6 +205,7 @@ function startSession(socket) {
   let frameIndex = 0;
   let inputBatches = 0;
   let inputEvents = 0;
+  let acks = 0;
 
   const sessionJson = (value) => sendBinary(socket, tunnelJson(SESSION_ID, value));
 
@@ -207,7 +221,8 @@ function startSession(socket) {
 
   function startVideo(fps) {
     stopVideo();
-    const interval = Math.max(33, Math.round(1000 / Math.max(1, fps)));
+    // 允许 60/90 fps，测帧率上限时别被假服务器自己卡住。
+    const interval = Math.max(8, Math.round(1000 / Math.max(1, fps)));
     videoTimer = setInterval(() => {
       if (JPEGS.length === 0) return;
       const jpeg = JPEGS[frameIndex % JPEGS.length];
@@ -297,6 +312,10 @@ function startSession(socket) {
       case 'audio.unsub':
         if (Number(message.id) === AUDIO_ID) stopAudio();
         break;
+      case 'video.ack':
+        acks += 1;
+        if (acks % 120 === 1) console.log(`[ack] 已确认 ${acks} 帧`);
+        break;
       case 'ping':
         sessionJson({ t: 'pong', ts: message.ts });
         break;
@@ -334,6 +353,12 @@ function startSession(socket) {
       case 'close':
         stopVideo();
         stopAudio();
+        break;
+      case 'webrtc':
+        // 有假被控端在线就转发信令，跑真正的直连；没有就静默丢弃，
+        // 主控端等 4 秒后回退中继（和「被控端不支持 WebRTC」一致）。
+        console.log(`[webrtc] ${message.event} request=${message.request}`);
+        forwardViewerWebrtc(socket, message);
         break;
       default:
         break;
@@ -437,23 +462,44 @@ const server = http.createServer((req, res) => {
     json(res, 200, { devices: devicesPayload() });
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/api/v1/p2p/ice') {
+    if (!FAKE_WEBRTC) {
+      json(res, 404, { error: 'webrtc_disabled', msg: '假服务器没有开启 WebRTC' });
+      return;
+    }
+    json(res, 200, {
+      iceServers: [{ urls: ['stun:127.0.0.1:3478'] }],
+      ttl: 3600,
+    });
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/v1/logout') {
     json(res, 200, { ok: true });
     return;
   }
-  json(res, 404, { error: 'not_found', msg: '假服务器只有 login / devices / logout' });
-});
-
-server.on('upgrade', (req, socket) => {
-  const url = new URL(req.url || '/', 'http://localhost');
-  if (url.pathname !== '/ws/view') {
-    socket.destroy();
+  if (req.method === 'GET' && url.pathname === '/agent.html') {
+    const file = path.join(SCRIPT_DIR, 'fake-agent.html');
+    if (!existsSync(file)) {
+      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('缺少 scripts/fake-agent.html');
+      return;
+    }
+    const body = readFileSync(file);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': body.length });
+    res.end(body);
     return;
   }
+  json(res, 404, { error: 'not_found', msg: '假服务器只有 login / devices / logout / agent.html' });
+});
+
+// ---------------------------------------------------------------- 假被控端（WebRTC）
+
+/** 完成 WebSocket 握手；缺 key 直接断开并返回 false。 */
+function acceptUpgrade(req, socket) {
   const key = req.headers['sec-websocket-key'];
   if (!key) {
     socket.destroy();
-    return;
+    return false;
   }
   const accept = crypto
     .createHash('sha1')
@@ -465,6 +511,100 @@ server.on('upgrade', (req, socket) => {
       'Connection: Upgrade\r\n' +
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
   );
+  return true;
+}
+
+/** 主控端的 `t:"webrtc"` 信令转给浏览器假被控端；没有假被控端就丢弃。 */
+function forwardViewerWebrtc(viewerSocket, message) {
+  const target = agent.socket;
+  if (!target) return;
+  const request = Number(message.request) || 0;
+  if (message.event === 'offer') {
+    agent.viewers.set(request, viewerSocket);
+    sendText(target, {
+      t: 'webrtc',
+      request,
+      viewerId: 1,
+      event: 'offer',
+      viewer: message.viewer || '手机端',
+      sdp: message.sdp,
+      iceServers: [{ urls: ['stun:127.0.0.1:3478'] }],
+    });
+  } else if (message.event === 'ice') {
+    sendText(target, { t: 'webrtc', request, viewerId: 1, event: 'ice', ice: message.ice });
+  } else if (message.event === 'bye') {
+    agent.viewers.delete(request);
+    sendText(target, { t: 'webrtc', request, viewerId: 1, event: 'bye' });
+  }
+}
+
+/** 假被控端的 answer / trickle ICE 转回发起 offer 的那个主控端。 */
+function handleAgentText(socket, text) {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return;
+  }
+  if (message.t !== 'webrtc') return;
+  const request = Number(message.request) || 0;
+  const viewer = agent.viewers.get(request);
+  if (!viewer) return;
+  console.log(`[webrtc] agent ${message.event} request=${request}`);
+  const out = { t: 'webrtc', request, event: message.event };
+  if (typeof message.sdp === 'string') out.sdp = message.sdp;
+  if (message.ice) out.ice = message.ice;
+  if (typeof message.msg === 'string') out.msg = message.msg;
+  sendText(viewer, out);
+  if (message.event === 'bye' || message.event === 'reject') agent.viewers.delete(request);
+}
+
+function attachAgent(req, socket) {
+  if (!acceptUpgrade(req, socket)) return;
+  if (agent.socket) {
+    // 同一时间只保留一个假被控端，新的顶掉旧的。
+    try {
+      wsSend(agent.socket, OP_CLOSE, Buffer.alloc(0));
+      agent.socket.end();
+    } catch {
+      // 旧连接已经坏了，不用管
+    }
+  }
+  agent.socket = socket;
+  agent.viewers.clear();
+  console.log('[agent] 假被控端已连接');
+  const state = { buffer: Buffer.alloc(0) };
+  socket.on('data', (chunk) => {
+    feedFrames(state, chunk, (opcode, payload) => {
+      if (opcode === OP_TEXT) handleAgentText(socket, payload.toString('utf8'));
+      else if (opcode === OP_PING) wsSend(socket, OP_PONG, payload);
+      else if (opcode === OP_CLOSE) {
+        wsSend(socket, OP_CLOSE, Buffer.alloc(0));
+        socket.end();
+      }
+    });
+  });
+  socket.on('close', () => {
+    if (agent.socket === socket) {
+      agent.socket = null;
+      agent.viewers.clear();
+    }
+    console.log('[agent] 假被控端断开');
+  });
+  socket.on('error', () => socket.destroy());
+}
+
+server.on('upgrade', (req, socket) => {
+  const url = new URL(req.url || '/', 'http://localhost');
+  if (url.pathname === '/ws/agent') {
+    attachAgent(req, socket);
+    return;
+  }
+  if (url.pathname !== '/ws/view') {
+    socket.destroy();
+    return;
+  }
+  if (!acceptUpgrade(req, socket)) return;
 
   const state = { buffer: Buffer.alloc(0) };
   const session = startSession(socket);
@@ -495,6 +635,9 @@ server.on('upgrade', (req, socket) => {
   socket.on('close', () => {
     clearInterval(devicesTimer);
     session.cleanup();
+    for (const [request, viewer] of agent.viewers) {
+      if (viewer === socket) agent.viewers.delete(request);
+    }
     console.log('[ws] 主控端断开');
   });
   socket.on('error', () => socket.destroy());

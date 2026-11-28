@@ -20,6 +20,8 @@ data class RecentDevice(
 /** 画面偏好预设：和网页端/桌面端的「帧率优先 / 画质优先 / 平衡」同一套档位。 */
 enum class PicturePreset(val label: String, val maxWidth: Int, val fps: Int, val quality: Int) {
     Fps("帧率优先", 1280, 60, 45),
+    /** 0 = 不设上限，被控端只在桌面变化时出帧，实际跟着显示器刷新率走。 */
+    Auto("自动帧率", 1280, 0, 65),
     Quality("画质优先", 1920, 30, 80),
     Balanced("平衡", 1280, 30, 65),
 }

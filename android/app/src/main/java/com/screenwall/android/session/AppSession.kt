@@ -9,7 +9,7 @@ import okhttp3.OkHttpClient
 class AppSession(
     val account: Account,
     val api: Api,
-    http: OkHttpClient,
+    val http: OkHttpClient,
 ) {
     val viewer = ViewerClient(http)
 
