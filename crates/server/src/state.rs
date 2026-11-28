@@ -1,8 +1,8 @@
 //! 服务器运行状态：在线设备、主控连接与会话表。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::json;
@@ -31,6 +31,242 @@ pub struct DeviceConn {
     pub tx: mpsc::UnboundedSender<WsOut>,
 }
 
+/// 主控端待发的最新画面帧。
+///
+/// 被控端出帧的速度往往远高于主控端链路的带宽。全塞进无界队列会让画面越积
+/// 越旧：延迟无限增长、服务端内存也跟着涨，连 `video.sub.ok` / `pong` 这些
+/// 控制消息都被压在后面。这里给每个主控端留一个很短的队列，写线程取走就发：
+///
+/// - MJPEG 每帧独立，队列里只留最新一帧，来一帧覆盖一帧；
+/// - H.264 有关键帧依赖，丢帧后解码链就断了，所以整段丢弃并等下一个关键帧；
+/// - 音频等其他二进制帧不进这个队列（丢音频比晚一点更糟），仍走控制通道。
+///
+/// 只留最新一帧还不够：写线程把帧交给内核缓冲后立刻就能发下一帧，慢链路上
+/// 内核 + 中间设备的缓冲会攒出好几秒的延迟。网页端每收到一帧回一条
+/// `video.ack`，这里按确认的往返时间做拥塞控制：链路有余量就多放几帧在途
+/// 把带宽跑满，延迟涨上来就少放几帧把队列排空。延迟因此有上限，不会越积越多。
+/// 老客户端不回确认，那就退回改动前的行为（不拦）。
+pub struct MediaSlot {
+    inner: Mutex<MediaQueue>,
+}
+
+/// H.264 最多排几帧：再多说明主控端已经跟不上，直接丢到下一个关键帧。
+const H264_MAX_QUEUED: usize = 3;
+
+/// 一条在途记录最多保留多久。确认只用来算「在途」帧数，来晚了丢掉记录
+/// 只是少算一点，不能因此把画面卡死。
+const PENDING_MAX_AGE: f64 = 6.0;
+/// 「在途」帧数的初始值和上下限。用确认回来的时间做拥塞控制：
+/// 延迟低就多发几帧把带宽跑满，延迟高了就少发几帧把队列排空。
+const WINDOW_START: f64 = 2.0;
+const WINDOW_MIN: f64 = 1.0;
+const WINDOW_MAX: f64 = 8.0;
+/// 排队延迟（当前往返减去这条链路的基线往返）超过这个值就收窗口。
+const WINDOW_SLOW_DELAY: f64 = 0.6;
+/// 排队延迟低于这个值说明链路还有余量，可以加窗口。
+const WINDOW_FAST_DELAY: f64 = 0.25;
+/// 连续这么多次「够快」才加一帧（加性增），减速则一次到位（乘性减）。
+const WINDOW_GROW_ACKS: u32 = 5;
+
+struct StoredFrame {
+    data: Vec<u8>,
+    seq: u32,
+}
+
+struct PendingFrame {
+    seq: u32,
+    sent_at: std::time::Instant,
+}
+
+struct MediaQueue {
+    jpeg: Option<StoredFrame>,
+    h264: VecDeque<StoredFrame>,
+    /// 丢过 H.264 帧，下一个关键帧之前送过去的都解不出来。
+    wait_keyframe: bool,
+    /// 当前画面流。换流（重新订阅）后旧的确认序号作废。
+    stream: u16,
+    /// 已发出、还没等到 `video.ack` 的帧（按发送顺序）。
+    pending: VecDeque<PendingFrame>,
+    /// 主控端有没有回过确认（网页端才回）。
+    ack_seen: bool,
+    /// 当前允许在途的帧数（拥塞窗口）。
+    window: f64,
+    /// 连续「够快」的确认次数。
+    grow: u32,
+    /// 上次收窗口的时间，避免一次拥塞被连续罚好几次。
+    last_shrink: Option<std::time::Instant>,
+    /// 见过的最小「发出 → 确认」耗时，也就是这条链路的基线往返。
+    /// 真实的排队情况要看「当前耗时 − 基线」，不能只看绝对值。
+    min_age: f64,
+}
+
+impl Default for MediaQueue {
+    fn default() -> Self {
+        Self {
+            jpeg: None,
+            h264: VecDeque::new(),
+            wait_keyframe: false,
+            stream: 0,
+            pending: VecDeque::new(),
+            ack_seen: false,
+            window: WINDOW_START,
+            grow: 0,
+            last_shrink: None,
+            min_age: f64::MAX,
+        }
+    }
+}
+
+impl std::fmt::Debug for MediaSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queue = self.lock();
+        f.debug_struct("MediaSlot")
+            .field("jpeg", &queue.jpeg.as_ref().map(|frame| frame.data.len()))
+            .field("h264", &queue.h264.len())
+            .field("wait_keyframe", &queue.wait_keyframe)
+            .field("pending", &queue.pending.len())
+            .field("ack_seen", &queue.ack_seen)
+            .field("window", &queue.window)
+            .finish()
+    }
+}
+
+impl Default for MediaSlot {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(MediaQueue::default()),
+        }
+    }
+}
+
+impl MediaSlot {
+    fn lock(&self) -> std::sync::MutexGuard<'_, MediaQueue> {
+        // 锁里只有一次替换/取出，不会 panic；真被毒化也继续用，别让画面线程挂掉。
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 投放一帧 JPEG。返回是否挤掉了上一帧（计入丢弃指标）。
+    pub fn put_jpeg(&self, data: Vec<u8>, stream: u16, seq: u32) -> bool {
+        let mut queue = self.lock();
+        queue.switch_stream(stream);
+        queue.jpeg.replace(StoredFrame { data, seq }).is_some()
+    }
+
+    /// 投放一帧 H.264。返回是否丢了帧（需要主控端等关键帧）。
+    pub fn put_h264(&self, data: Vec<u8>, stream: u16, seq: u32, keyframe: bool) -> bool {
+        let mut queue = self.lock();
+        queue.switch_stream(stream);
+        let frame = StoredFrame { data, seq };
+        let mut dropped = false;
+        if queue.wait_keyframe {
+            if !keyframe {
+                return true;
+            }
+            queue.wait_keyframe = false;
+            queue.h264.clear();
+        } else if queue.h264.len() >= H264_MAX_QUEUED {
+            queue.h264.clear();
+            dropped = true;
+            if !keyframe {
+                queue.wait_keyframe = true;
+                return true;
+            }
+        }
+        queue.h264.push_back(frame);
+        dropped
+    }
+
+    /// 现在能不能发下一帧。
+    pub fn ready(&self) -> bool {
+        let mut queue = self.lock();
+        if !queue.ack_seen {
+            // 客户端不回确认（老版本 / 非网页端）：不拦，行为与改动前一致。
+            return true;
+        }
+        // 确认一直不回来时只把过老的记录放掉，避免永久卡住。
+        while let Some(oldest) = queue.pending.front() {
+            if oldest.sent_at.elapsed().as_secs_f64() < PENDING_MAX_AGE {
+                break;
+            }
+            queue.pending.pop_front();
+        }
+        (queue.pending.len() as f64) < queue.window
+    }
+
+    /// 主控端确认已收到 `seq` 那一帧（序号是累计的，之前发的也都到了）。
+    pub fn ack(&self, seq: u32) {
+        let mut queue = self.lock();
+        queue.ack_seen = true;
+        let Some(position) = queue.pending.iter().position(|frame| frame.seq == seq) else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let age = now
+            .duration_since(queue.pending[position].sent_at)
+            .as_secs_f64();
+        for _ in 0..=position {
+            queue.pending.pop_front();
+        }
+        // 拥塞控制：一帧「发出 → 主控端收到」的耗时减去这条链路的基线往返，
+        // 就是服务端自己攒出来的排队延迟。排队多了收窗口，排队很少就加窗口，
+        // 直到带宽跑满或延迟到上限。
+        if age < queue.min_age {
+            queue.min_age = age;
+        }
+        let delay = age - queue.min_age;
+        if delay > WINDOW_SLOW_DELAY {
+            queue.grow = 0;
+            let cooldown = queue
+                .last_shrink
+                .map(|at| now.duration_since(at).as_secs_f64() >= 0.3)
+                .unwrap_or(true);
+            if cooldown {
+                queue.window = (queue.window * 0.6).max(WINDOW_MIN);
+                queue.last_shrink = Some(now);
+            }
+        } else if delay < WINDOW_FAST_DELAY {
+            queue.grow += 1;
+            if queue.grow >= WINDOW_GROW_ACKS {
+                queue.grow = 0;
+                queue.window = (queue.window + 1.0).min(WINDOW_MAX);
+            }
+        } else {
+            queue.grow = 0;
+        }
+    }
+
+    /// 取下一帧：JPEG 优先，其次 H.264 队首；取出即记为一帧在途。
+    pub fn take(&self) -> Option<Vec<u8>> {
+        let mut queue = self.lock();
+        let frame = queue.jpeg.take().or_else(|| queue.h264.pop_front())?;
+        // 不回确认的客户端（桌面端 / 旧网页端）不需要记账，否则「在途」列表
+        // 会随整场会话一直长下去；收到第一条确认后这里才开始记。
+        if queue.ack_seen {
+            queue.pending.push_back(PendingFrame {
+                seq: frame.seq,
+                sent_at: std::time::Instant::now(),
+            });
+        }
+        Some(frame.data)
+    }
+}
+
+impl MediaQueue {
+    fn switch_stream(&mut self, stream: u16) {
+        if self.stream != stream {
+            self.stream = stream;
+            self.pending.clear();
+            self.jpeg = None;
+            self.h264.clear();
+            self.wait_keyframe = false;
+            self.min_age = f64::MAX;
+            self.grow = 0;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ViewerConn {
     pub user_id: i64,
@@ -39,6 +275,8 @@ pub struct ViewerConn {
     /// 连接码令牌只允许看见/打开这一台设备。
     pub restricted: Option<String>,
     pub tx: mpsc::UnboundedSender<WsOut>,
+    /// 待发的画面帧（慢链路时只保留最新的）。
+    pub media: Arc<MediaSlot>,
 }
 
 /// 单个会话的累计中转字节数，被会话克隆共享。
@@ -57,6 +295,8 @@ pub struct Session {
     pub controller_device_id: String,
     pub viewer_id: u64,
     pub viewer_tx: mpsc::UnboundedSender<WsOut>,
+    /// 主控端的画面队列（慢链路只留最新帧）。
+    pub media: Arc<MediaSlot>,
     pub request: u32,
     /// `control`（可操作）或 `wall`（只读缩略图，不写审计）。
     pub mode: String,
@@ -77,6 +317,7 @@ pub struct SessionInit {
     pub controller_device_id: String,
     pub viewer_id: u64,
     pub viewer_tx: mpsc::UnboundedSender<WsOut>,
+    pub media: Arc<MediaSlot>,
     pub request: u32,
     pub mode: String,
 }
@@ -90,6 +331,7 @@ impl Session {
             controller_device_id: init.controller_device_id,
             viewer_id: init.viewer_id,
             viewer_tx: init.viewer_tx,
+            media: init.media,
             request: init.request,
             mode: init.mode,
             started_at: now_ms(),

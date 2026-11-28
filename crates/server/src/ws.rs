@@ -11,13 +11,14 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::{SinkExt, StreamExt};
 use screenwall_proto::cloud::{decode_tunnel_frame, TunnelKind};
+use screenwall_proto::frame::{decode_frame, FrameCodec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::api::authorize_token;
 use crate::auth::{now_ms, valid_device_id};
-use crate::state::{AppState, DeviceConn, Session, SessionInit, ViewerConn, WsOut};
+use crate::state::{AppState, DeviceConn, MediaSlot, Session, SessionInit, ViewerConn, WsOut};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
@@ -179,7 +180,8 @@ async fn handle_device(
     ));
 
     let (sink, stream) = socket.split();
-    let writer = tokio::spawn(write_loop(sink, rx));
+    // 设备连接不往画面队列里放东西，给一个用不到的槽位即可。
+    let writer = tokio::spawn(write_loop(sink, rx, Arc::new(MediaSlot::default())));
     let heartbeat = spawn_ping(tx.clone());
 
     let mut stream = stream;
@@ -403,12 +405,41 @@ async fn handle_device_binary(state: &Arc<AppState>, key: &str, data: &[u8]) {
             let bytes = payload.len() as u64;
             session.stats.down.fetch_add(bytes, Ordering::Relaxed);
             state.metrics.add_down(bytes);
-            if session
-                .viewer_tx
-                .send(WsOut::Binary(data.to_vec()))
-                .is_err()
-            {
-                // 主控端已断开：该帧无法送达，计入丢弃。
+            // 画面帧进「只留最新」的队列：主控端带宽不够时宁可丢帧，也别把
+            // 延迟越积越大。应用消息（JSON）和音频等其余二进制帧仍按原样排队。
+            let dropped = if header.kind == TunnelKind::Json {
+                session
+                    .viewer_tx
+                    .send(WsOut::Binary(data.to_vec()))
+                    .is_err()
+            } else {
+                match decode_frame(payload) {
+                    Ok((frame, _)) => match frame.codec {
+                        FrameCodec::Jpeg => {
+                            session
+                                .media
+                                .put_jpeg(data.to_vec(), frame.stream_id, frame.seq)
+                        }
+                        FrameCodec::H264 => session.media.put_h264(
+                            data.to_vec(),
+                            frame.stream_id,
+                            frame.seq,
+                            frame.is_keyframe(),
+                        ),
+                        _ => session
+                            .viewer_tx
+                            .send(WsOut::Binary(data.to_vec()))
+                            .is_err(),
+                    },
+                    // 认不出媒体头就按普通二进制帧原样转发：协议允许上层带着
+                    // 自己的负载走隧道，不能因为服务器不认识就把它吞掉。
+                    Err(_) => session
+                        .viewer_tx
+                        .send(WsOut::Binary(data.to_vec()))
+                        .is_err(),
+                }
+            };
+            if dropped {
                 state.metrics.add_dropped();
             }
         }
@@ -424,6 +455,7 @@ async fn handle_view(
 ) {
     let viewer_id = state.alloc_viewer();
     let (tx, rx) = mpsc::unbounded_channel::<WsOut>();
+    let media = Arc::new(MediaSlot::default());
     state.viewers.write().await.insert(
         viewer_id,
         ViewerConn {
@@ -431,6 +463,7 @@ async fn handle_view(
             device_id: viewer_device_id.clone(),
             restricted: restricted.clone(),
             tx: tx.clone(),
+            media: media.clone(),
         },
     );
 
@@ -444,7 +477,7 @@ async fn handle_view(
     let _ = tx.send(WsOut::Text(devices));
 
     let (sink, stream) = socket.split();
-    let writer = tokio::spawn(write_loop(sink, rx));
+    let writer = tokio::spawn(write_loop(sink, rx, media.clone()));
     let heartbeat = spawn_ping(tx.clone());
 
     let mut stream = stream;
@@ -573,6 +606,13 @@ async fn handle_view_text(
             }
 
             let session_id = state.alloc_session();
+            let media = {
+                let viewers = state.viewers.read().await;
+                viewers
+                    .get(&viewer_id)
+                    .map(|viewer| viewer.media.clone())
+                    .unwrap_or_default()
+            };
             let session = Session::new(SessionInit {
                 user_id,
                 device_key: key.clone(),
@@ -580,6 +620,7 @@ async fn handle_view_text(
                 controller_device_id: viewer_device_id.to_string(),
                 viewer_id,
                 viewer_tx: tx.clone(),
+                media,
                 request,
                 mode: mode.clone(),
             });
@@ -745,6 +786,14 @@ async fn handle_view_binary(state: &Arc<AppState>, viewer_id: u64, user_id: i64,
     let session = state.sessions.read().await.get(&header.session).cloned();
     if let Some(session) = session {
         if session.viewer_id == viewer_id && session.user_id == user_id {
+            // 网页端每渲染一帧回一条 `video.ack`：画面队列据此控制「在途」帧数。
+            // 这条消息只给服务器用，不转给被控端。
+            if header.kind == TunnelKind::Json {
+                if let Some(seq) = video_ack_seq(payload) {
+                    session.media.ack(seq);
+                    return;
+                }
+            }
             let bytes = payload.len() as u64;
             session.stats.up.fetch_add(bytes, Ordering::Relaxed);
             state.metrics.add_up(bytes);
@@ -756,6 +805,22 @@ async fn handle_view_binary(state: &Arc<AppState>, viewer_id: u64, user_id: i64,
             }
         }
     }
+}
+
+/// 解析网页端的 `video.ack`（`{ "t": "video.ack", "seq": n }`）。
+///
+/// 不是确认消息时返回 `None`；是确认但没带序号时返回 `Some(0)`（照旧吞掉，
+/// 不转给被控端）。
+fn video_ack_seq(payload: &[u8]) -> Option<u32> {
+    // 先粗看内容，避免给每条输入消息都做一次 JSON 解析。
+    if !payload.windows(9).any(|window| window == b"video.ack") {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(payload).ok()?;
+    if value.get("t").and_then(Value::as_str) != Some("video.ack") {
+        return None;
+    }
+    Some(value.get("seq").and_then(Value::as_u64).unwrap_or(0) as u32)
 }
 
 /// 回一条 `open.err`，并把错误码计入指标。
@@ -779,23 +844,46 @@ fn send_open_err(
     let _ = tx.send(WsOut::Text(message));
 }
 
-async fn write_loop<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<WsOut>)
+/// 一个连接只有一个写循环：控制消息和画面帧都从这里出。
+///
+/// 画面帧走 `MediaSlot`（只保留最新的，见 [`MediaSlot`] 的说明），控制消息
+/// 走无界队列 —— 主控端慢的时候画面可以丢，`video.sub.ok` / `pong` 不能。
+async fn write_loop<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<WsOut>, media: Arc<MediaSlot>)
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    while let Some(out) = rx.recv().await {
-        let message = match out {
-            WsOut::Text(text) => Message::Text(text.into()),
-            WsOut::Binary(data) => Message::Binary(data.into()),
-            WsOut::Ping(data) => Message::Ping(data.into()),
-            WsOut::Pong(data) => Message::Pong(data.into()),
-            WsOut::Close => {
-                let _ = sink.send(Message::Close(None)).await;
-                break;
+    loop {
+        tokio::select! {
+            out = rx.recv() => {
+                let Some(out) = out else { break };
+                let message = match out {
+                    WsOut::Text(text) => Message::Text(text.into()),
+                    WsOut::Binary(data) => Message::Binary(data.into()),
+                    WsOut::Ping(data) => Message::Ping(data.into()),
+                    WsOut::Pong(data) => Message::Pong(data.into()),
+                    WsOut::Close => {
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                };
+                if sink.send(message).await.is_err() {
+                    break;
+                }
             }
-        };
-        if sink.send(message).await.is_err() {
-            break;
+            // 画面队列用短轮询而不是 Notify：丢帧/合并都发生在这个队列上，
+            // 轮询只有「有新帧就发」一个语义，不会漏信号；5ms 的唤醒开销
+            // 对一台服务器上同时观看的几路主控端可以忽略。
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {
+                // 上一帧没被确认之前不再发下一帧：慢链路上只丢帧不够，
+                // 内核和中间设备的缓冲照样会攒出好几秒的延迟。
+                if media.ready() {
+                    if let Some(frame) = media.take() {
+                        if sink.send(Message::Binary(frame.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 }

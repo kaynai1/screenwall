@@ -56,6 +56,123 @@ const QUALITY_OPTIONS = [
   { value: 80, label: "清晰" },
 ];
 
+/**
+ * 自动降档：链路跑不动时先降分辨率、再压质量，链路恢复后按相反顺序升回去。
+ *
+ * 被控端按主控端请求的质量/宽度出帧；网页端不降档就会把链路塞满，画面延迟越积越多、
+ * 帧率掉到 1 帧。桌面端有同样的自适应，这里是网页端的对应实现：只改当前订阅，
+ * 不写 localStorage，用户手选的档位始终是上限。
+ */
+const AUTO_WIDTH_STEPS = [3840, 2560, 1920, 1440, 1280, 960, 720, 640, 480, 400];
+/** 自动降档可以低于界面上的三档（省流量 45），链路太差时还要继续压。 */
+const AUTO_QUALITY_STEPS = [80, 65, 55, 45, 35, 30];
+const AUTO_SLOW_WINDOWS = 2;
+const AUTO_FINE_WINDOWS = 8;
+/** 往返延迟超过这个值，说明链路上已经积压了，不等帧率统计直接降档。 */
+const AUTO_RTT_SLOW_MS = 1500;
+/** 升档只在延迟清爽时才做，避免升上去又立刻塞满。 */
+const AUTO_RTT_FINE_MS = 400;
+/**
+ * 画面在链路上排队的时长（当前帧年龄 − 见过的最小年龄）。
+ *
+ * 只看帧率分不清两种「帧少」：链路塞满了，还是桌面本来就是静态的（被控端静止时
+ * 只有 500ms 一次的补发帧）。排队时长直接量积压：静态画面下它一直在 0 附近，
+ * 只有真拥塞才会涨上去。
+ */
+const AUTO_DELAY_SLOW_MS = 500;
+const AUTO_DELAY_SEVERE_MS = 1200;
+const AUTO_DELAY_FINE_MS = 250;
+/**
+ * 到手比例 = 每秒收到的帧数 ÷ 被控端这一秒出的帧数（序号差）。
+ *
+ * 服务器只留最新帧，链路跑不动时它替我们丢帧，序号差就露出来了。桌面静止时
+ * 被控端本来就只出补发帧，出多少收多少，比例是 1；所以这个信号同样不会被
+ * 静态画面骗到。帧数太少（<4）的窗口不看，除出来的数没意义。
+ */
+const AUTO_RATIO_SEVERE = 0.4;
+const AUTO_RATIO_SLOW = 0.65;
+const AUTO_RATIO_FINE = 0.9;
+const AUTO_RATIO_MIN_FRAMES = 4;
+/** 拥塞过去后，`maxBitrate` 再保持这么久，避免一解除就又被塞满、来回抖。 */
+const AUTO_CAP_HOLD_MS = 10_000;
+/** 重新订阅后这么久还没等到 `video.sub.ok` 就重发一次（慢链路上它可能被挤掉）。 */
+const SUB_RETRY_MS = 5000;
+
+type AutoTune = {
+  /** 用户手选的档位：自动调整不会越过它。 */
+  baseQuality: number;
+  baseWidth: number;
+  quality: number;
+  width: number;
+  slow: number;
+  fine: number;
+  warmup: number;
+  announced: boolean;
+};
+
+function qualityBelow(current: number): number | null {
+  const lower = AUTO_QUALITY_STEPS.filter((value) => value < current).sort((a, b) => b - a);
+  return lower[0] ?? null;
+}
+
+function qualityAbove(current: number, ceiling: number): number | null {
+  const higher = AUTO_QUALITY_STEPS.filter((value) => value > current && value <= ceiling).sort(
+    (a, b) => a - b,
+  );
+  return higher[0] ?? null;
+}
+
+/**
+ * 降一档：先降分辨率再压质量。
+ *
+ * 带宽基本随像素数走，1280 → 960 就少一半字节，而且比把画面压花更耐看；
+ * 一直降到 640 宽之后再动质量，最后才继续往 480/400 降。
+ */
+function stepDown(auto: AutoTune): boolean {
+  const nextWidth = widthBelow(auto.width);
+  if (nextWidth !== null && auto.width > 640) {
+    auto.width = nextWidth;
+    return true;
+  }
+  const nextQuality = qualityBelow(auto.quality);
+  if (nextQuality !== null) {
+    auto.quality = nextQuality;
+    return true;
+  }
+  if (nextWidth !== null) {
+    auto.width = nextWidth;
+    return true;
+  }
+  return false;
+}
+
+/** 升一档：先把质量还回去，再恢复分辨率。 */
+function stepUp(auto: AutoTune): boolean {
+  const nextQuality = qualityAbove(auto.quality, auto.baseQuality);
+  if (nextQuality !== null) {
+    auto.quality = nextQuality;
+    return true;
+  }
+  const nextWidth = widthAbove(auto.width, auto.baseWidth);
+  if (nextWidth !== null) {
+    auto.width = nextWidth;
+    return true;
+  }
+  return false;
+}
+
+function widthBelow(current: number): number | null {
+  const lower = AUTO_WIDTH_STEPS.filter((value) => value < current).sort((a, b) => b - a);
+  return lower[0] ?? null;
+}
+
+function widthAbove(current: number, ceiling: number): number | null {
+  const higher = AUTO_WIDTH_STEPS.filter((value) => value > current && value <= ceiling).sort(
+    (a, b) => a - b,
+  );
+  return higher[0] ?? null;
+}
+
 const DEFAULT_OPTIONS: StreamOptions = {
   maxWidth: 1280,
   fps: 30,
@@ -170,6 +287,16 @@ export default function ControlPage({
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const autoRef = useRef<AutoTune>({
+    baseQuality: options.quality,
+    baseWidth: options.maxWidth,
+    quality: options.quality,
+    width: options.maxWidth,
+    slow: 0,
+    fine: 0,
+    warmup: 2,
+    announced: false,
+  });
   const displayRef = useRef(display);
   displayRef.current = display;
   const touchModeRef = useRef(touchMode);
@@ -181,35 +308,67 @@ export default function ControlPage({
   const audioFormatRef = useRef({ sampleRate: 48_000, channels: 2 });
   const viewRef = useRef({ scale: 1, x: 0, y: 0 });
   const subIdRef = useRef(0);
+  const subRetryRef = useRef(0);
   const phaseRef = useRef<Phase>("opening");
   phaseRef.current = phase;
   const batcherRef = useRef<InputBatcher | null>(null);
   const rttRef = useRef(0);
+  /** 最近一次实测的到手码率（kbps），用来给被控端定单帧预算。 */
+  const deliveredRef = useRef(0);
+  /** 帧年龄的基线（采集时间戳与浏览器时钟的固定偏移），取见过的最小值。 */
+  const minAgeRef = useRef(Number.POSITIVE_INFINITY);
+  /** 本统计窗口里最大的排队时长（毫秒）。 */
+  const maxDelayRef = useRef(0);
+  /** 最近一帧的序号，以及本统计窗口收到的帧数（算「到手比例」用）。 */
+  const seqRef = useRef<number | null>(null);
+  const seqMarkRef = useRef<number | null>(null);
+  const receivedRef = useRef(0);
+  /** 拥塞时给被控端压的码率上限（kbps，0 表示不限制），`capUntilRef` 之前一直生效。 */
+  const capRef = useRef(0);
+  const capUntilRef = useRef(0);
 
   const sendStream = useCallback(
     (next: StreamOptions) => {
       // H.264 属于 v1 基线（不走能力协商），只要浏览器有 WebCodecs 就能试；
       // 真解不出来时被控端会回 4104，那时再降回 MJPEG。
-      const h264 = next.preferH264 && typeof VideoDecoder !== "undefined";
-      viewer.sendJson({
-        t: "video.sub",
-        stream: "focus",
-        display: displayRef.current,
-        fps: next.fps,
-        maxWidth: next.maxWidth,
-        quality: next.quality,
-        codec: h264 ? "h264" : "mjpeg",
-        cursor: true,
-      });
+      const subMessage = (options: StreamOptions) => {
+        const h264 = options.preferH264 && typeof VideoDecoder !== "undefined";
+        // 被控端按 maxBitrate 折算单帧字节预算、逐帧挑质量档（与桌面端的
+        // 码率自适应同一套逻辑）。只有链路真拥塞过（排队时长涨起来）才压码率：
+        // 静态桌面下到手码率本来就低，按它压会把画面压花，而链路其实很空。
+        const capped = Date.now() < capUntilRef.current && capRef.current > 0;
+        const maxBitrate = capped
+          ? Math.round(Math.min(Math.max(capRef.current, 200), 12000))
+          : 0;
+        const message: Record<string, unknown> = {
+          t: "video.sub",
+          stream: "focus",
+          display: displayRef.current,
+          fps: options.fps,
+          maxWidth: options.maxWidth,
+          quality: options.quality,
+          codec: h264 ? "h264" : "mjpeg",
+          cursor: true,
+        };
+        if (maxBitrate > 0) message.maxBitrate = maxBitrate;
+        return message;
+      };
+      viewer.sendJson(subMessage(next));
+      // 慢链路上 `video.sub.ok` 可能迟迟回不来：等不到就重发一次，别让画面停在首帧。
+      window.clearTimeout(subRetryRef.current);
+      subRetryRef.current = window.setTimeout(() => {
+        if (subIdRef.current || phaseRef.current === "error" || !viewer.isOpen) return;
+        viewer.sendJson(subMessage(optionsRef.current));
+      }, SUB_RETRY_MS);
     },
     [viewer],
   );
 
-  const resubscribe = useCallback(
-    (next: StreamOptions) => {
+  const applyStream = useCallback(
+    (next: StreamOptions, persist: boolean) => {
       setOptions(next);
       optionsRef.current = next;
-      saveOptions(next);
+      if (persist) saveOptions(next);
       if (subIdRef.current) {
         viewer.sendJson({ t: "video.unsub", id: subIdRef.current });
         subIdRef.current = 0;
@@ -218,6 +377,24 @@ export default function ControlPage({
       sendStream(next);
     },
     [renderer, sendStream, viewer],
+  );
+
+  const resubscribe = useCallback(
+    (next: StreamOptions) => {
+      // 用户手选的档位成为新的天花板，之前的自动降档作废。
+      autoRef.current = {
+        baseQuality: next.quality,
+        baseWidth: next.maxWidth,
+        quality: next.quality,
+        width: next.maxWidth,
+        slow: 0,
+        fine: 0,
+        warmup: 2,
+        announced: false,
+      };
+      applyStream(next, true);
+    },
+    [applyStream],
   );
 
   const start = useCallback(() => {
@@ -318,6 +495,13 @@ export default function ControlPage({
           case "video.sub.ok": {
             const info = message.actual as { codec?: string; w?: number; h?: number; fps?: number } | undefined;
             subIdRef.current = Number(message.id ?? 0);
+            // 新订阅的采集时间戳和序号都从头开始，基线得跟着重算。
+            minAgeRef.current = Number.POSITIVE_INFINITY;
+            maxDelayRef.current = 0;
+            seqRef.current = null;
+            seqMarkRef.current = null;
+            receivedRef.current = 0;
+            window.clearTimeout(subRetryRef.current);
             setActual({
               w: Number(info?.w ?? 0),
               h: Number(info?.h ?? 0),
@@ -364,6 +548,18 @@ export default function ControlPage({
       },
       onFrame: (frame) => {
         if (frame.type === MEDIA_VIDEO && frame.codec !== undefined) {
+          // 帧年龄 = 现在 − 采集时间（两边时钟差是个常数，被基线吃掉）；
+          // 减去见过的最小年龄就是它在链路上排了多久。
+          const age = Date.now() - frame.tsUs / 1000;
+          if (age < minAgeRef.current) minAgeRef.current = age;
+          else if (age - minAgeRef.current > maxDelayRef.current) {
+            maxDelayRef.current = age - minAgeRef.current;
+          }
+          seqRef.current = frame.seq;
+          receivedRef.current += 1;
+          // 收到即确认：服务器据此做拥塞控制（在途帧数 1–8），
+          // 慢链路上延迟不会越积越大，控制消息也不会被画面压在后面。
+          viewer.sendJson({ t: "video.ack", seq: frame.seq });
           renderer.push(frame);
           return;
         }
@@ -387,13 +583,94 @@ export default function ControlPage({
 
     start();
 
+    // 浏览器只在安全上下文（HTTPS / localhost）里提供 WebCodecs，HTTP 部署
+    // 只能走 MJPEG，同样的画质要多好几倍带宽。进控制页时说一声，别让用户
+    // 以为「网页端就是慢」。
+    if (!window.isSecureContext && optionsRef.current.preferH264) {
+      notify("HTTP 访问只能用 MJPEG；部署 HTTPS 后会自动改用 H.264，更省流量也更流畅");
+    }
+
+    // 每秒钟看一次排队时长、到手比例和往返延迟：链路积压就降档，清爽够久再升回去。
+    // 降档只改当前订阅（不写 localStorage），用户手选的档位始终是上限。
+    // 都不看「帧率」：桌面静止时被控端本来就不出帧，帧率低不代表链路跑不动。
+    const tune = (ratio: number | null, delay: number, rtt: number) => {
+      const auto = autoRef.current;
+      const target = optionsRef.current.fps;
+      if (phaseRef.current !== "streaming" || !subIdRef.current || target < 10) return;
+      if (auto.warmup > 0) {
+        auto.warmup -= 1;
+        return;
+      }
+      // 拥塞过去很久了，之前记下的码率上限作废。
+      if (Date.now() >= capUntilRef.current) capRef.current = 0;
+      const starved = ratio !== null && ratio < AUTO_RATIO_SLOW;
+      const slow = starved || delay > AUTO_DELAY_SLOW_MS || rtt > AUTO_RTT_SLOW_MS;
+      if (slow) {
+        // 拥塞期间把实测到手码率记成上限，下一档订阅就让被控端按这个预算压帧；
+        // 只看拥塞时的值，静态桌面的低码率不会被当成链路容量。
+        capRef.current = Math.max(capRef.current, deliveredRef.current * 1.15);
+        capUntilRef.current = Date.now() + AUTO_CAP_HOLD_MS;
+        auto.fine = 0;
+        auto.slow += 1;
+        // 一半以上的帧都被服务器丢掉了（或积压一秒以上、往返已经两秒半）就是
+        // 链路根本跑不动，不用再等第二个统计窗口，一次降两档，别让用户盯着幻灯片等。
+        const severe =
+          (ratio !== null && ratio < AUTO_RATIO_SEVERE) ||
+          delay > AUTO_DELAY_SEVERE_MS ||
+          rtt > 2500;
+        if (!severe && auto.slow < AUTO_SLOW_WINDOWS) return;
+        auto.slow = 0;
+        const steps = severe ? 2 : 1;
+        let changed = false;
+        for (let index = 0; index < steps; index += 1) changed = stepDown(auto) || changed;
+        if (!changed) return;
+        auto.warmup = severe ? 2 : 3;
+        if (!auto.announced) {
+          auto.announced = true;
+          notify("网络较慢，已自动降低画质");
+        }
+        applyStream({ ...optionsRef.current, quality: auto.quality, maxWidth: auto.width }, false);
+        return;
+      }
+      if (
+        (ratio === null || ratio > AUTO_RATIO_FINE) &&
+        delay < AUTO_DELAY_FINE_MS &&
+        rtt < AUTO_RTT_FINE_MS
+      ) {
+        auto.slow = 0;
+        auto.fine += 1;
+        if (auto.fine < AUTO_FINE_WINDOWS) return;
+        auto.fine = 0;
+        if (!stepUp(auto)) return;
+        auto.warmup = 4;
+        applyStream({ ...optionsRef.current, quality: auto.quality, maxWidth: auto.width }, false);
+        return;
+      }
+      auto.slow = 0;
+      auto.fine = 0;
+    };
+
     const statsTimer = window.setInterval(() => {
       const sample = renderer.sample();
+      deliveredRef.current = sample.kbps;
       setStats({ ...sample, rtt: rttRef.current });
+      // 到手比例：这一秒被控端出了多少帧（序号差），实际收到多少帧。
+      const lastSeq = seqRef.current;
+      const mark = seqMarkRef.current;
+      const produced = lastSeq !== null && mark !== null ? (lastSeq - mark) >>> 0 : 0;
+      const ratio =
+        produced >= AUTO_RATIO_MIN_FRAMES
+          ? Math.min(1, receivedRef.current / produced)
+          : null;
+      seqMarkRef.current = lastSeq;
+      receivedRef.current = 0;
+      tune(ratio, maxDelayRef.current, rttRef.current);
+      maxDelayRef.current = 0;
     }, 1000);
+    // 延迟也是降档信号，心跳快一点统计才跟得上；上行只有几十字节，不心疼。
     const pingTimer = window.setInterval(() => {
       if (subIdRef.current) viewer.sendJson({ t: "ping", ts: Date.now() });
-    }, 5000);
+    }, 2000);
     // 每 2 秒报一次播放缓冲，被控端据此调 Opus 码率（协议里的 audio.stats）。
     const audioStatsTimer = window.setInterval(() => {
       const player = audioPlayerRef.current;
@@ -409,6 +686,7 @@ export default function ControlPage({
       window.clearInterval(statsTimer);
       window.clearInterval(pingTimer);
       window.clearInterval(audioStatsTimer);
+      window.clearTimeout(subRetryRef.current);
       if (volumeTimer.current) window.clearTimeout(volumeTimer.current);
       if (audioIdRef.current) viewer.sendJson({ t: "audio.unsub", id: audioIdRef.current });
       audioPlayerRef.current?.dispose();
