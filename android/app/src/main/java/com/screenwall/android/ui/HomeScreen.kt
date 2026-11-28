@@ -1,6 +1,8 @@
 package com.screenwall.android.ui
 
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,11 +25,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,8 +57,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,7 +69,10 @@ import com.screenwall.android.Prefs
 import com.screenwall.android.RecentDevice
 import com.screenwall.android.data.Account
 import com.screenwall.android.data.Api
+import com.screenwall.android.data.AppInfo
+import com.screenwall.android.data.AppUpdate
 import com.screenwall.android.data.Device
+import com.screenwall.android.data.Updates
 import com.screenwall.android.data.describeThrow
 import com.screenwall.android.net.ViewerClient
 import com.screenwall.android.session.AppSession
@@ -83,7 +94,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onQuickConnected: (Account, Device) -> Unit,
 ) {
-    SystemBars(lightIcons = androidx.compose.foundation.isSystemInDarkTheme().not())
+    SystemBars(lightIcons = !LocalDarkTheme.current)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -94,11 +105,13 @@ fun HomeScreen(
     var error by remember { mutableStateOf("") }
 
     var code by remember { mutableStateOf("") }
-    var fieldError by remember { mutableStateOf("") }
-    var dialogOpen by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
-    var dialogError by remember { mutableStateOf("") }
+    var fieldError by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+
+    var update by remember { mutableStateOf<AppUpdate?>(null) }
+    var updateOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     suspend fun load() {
         try {
@@ -141,31 +154,24 @@ fun HomeScreen(
         load()
     }
 
-    fun connectByCode() {
-        val value = code.trim()
-        fieldError = ""
-        when {
-            value.matches(Regex("\\d{9}")) -> {
-                password = ""
-                dialogError = ""
-                dialogOpen = true
-            }
-            value.contains('.') || value.contains(':') -> {
-                fieldError = "IP 直连暂不支持，请填被控端上的 9 位识别码"
-            }
-            else -> fieldError = "识别码是 9 位数字"
-        }
+    // 后台看一眼有没有新的安卓安装包；查不到（服务器没配置、GitHub 不通）就安静跳过。
+    LaunchedEffect(Unit) {
+        runCatching { Updates.check(session.http, session.account.serverUrl) }
+            .getOrNull()
+            ?.let { update = it }
     }
 
     fun submitQuick() {
-        if (busy || password.isBlank()) return
+        if (busy) return
+        val value = code.filter(Char::isDigit)
+        if (value.length != 9 || password.isBlank()) return
         busy = true
-        dialogError = ""
+        fieldError = ""
         scope.launch {
             try {
                 val account = session.api.quickConnect(
                     session.account.serverUrl,
-                    code.trim(),
+                    value,
                     password,
                 )
                 prefs.serverUrl = account.serverUrl
@@ -180,13 +186,30 @@ fun HomeScreen(
                 )
                 prefs.addRecent(device.id, device.name, device.os)
                 recents = prefs.recents()
-                dialogOpen = false
+                password = ""
                 onQuickConnected(account, device)
             } catch (throwable: Throwable) {
-                dialogError = describeThrow(throwable)
+                fieldError = describeThrow(throwable)
             } finally {
                 busy = false
             }
+        }
+    }
+
+    fun connectByCode() {
+        if (busy) return
+        val value = code.filter(Char::isDigit)
+        fieldError = ""
+        when {
+            value.length != 9 -> {
+                fieldError = if (code.contains('.') || code.contains(':')) {
+                    "IP 直连暂不支持，请填被控端上的 9 位识别码"
+                } else {
+                    "识别码是 9 位数字"
+                }
+            }
+            password.isBlank() -> fieldError = "请输入连接密码"
+            else -> submitQuick()
         }
     }
 
@@ -248,14 +271,25 @@ fun HomeScreen(
                 ) {
                     item {
                         RemoteDesktopCard(
-                            value = code,
-                            onValueChange = {
+                            code = code,
+                            onCodeChange = {
                                 code = it
                                 fieldError = ""
                             },
+                            password = password,
+                            onPasswordChange = {
+                                password = it
+                                fieldError = ""
+                            },
                             error = fieldError,
+                            busy = busy,
                             onConnect = { connectByCode() },
                         )
+                    }
+                    update?.let { info ->
+                        item {
+                            UpdateBanner(info = info, onClick = { updateOpen = true })
+                        }
                     }
                     if (error.isNotEmpty() && !connected) {
                         item {
@@ -306,33 +340,28 @@ fun HomeScreen(
         }
     }
 
-    if (dialogOpen) {
+    val pending = update
+    if (updateOpen && pending != null) {
         IosDialog(
-            title = "连接 ${code.trim()}",
-            message = "输入被控端「连接码连接」里设置的密码",
-            confirmText = if (busy) "连接中…" else "连接",
-            confirmEnabled = password.isNotBlank() && !busy,
-            onConfirm = { submitQuick() },
-            onDismiss = { if (!busy) dialogOpen = false },
+            title = "发现新版本 ${Updates.pretty(pending.version)}",
+            message = "当前是 v${AppInfo.VERSION}，服务器上已有 ${Updates.pretty(pending.version)}。",
+            confirmText = "去下载",
+            dismissText = "稍后",
+            onConfirm = {
+                updateOpen = false
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pending.downloadUrl)))
+                }
+            },
+            onDismiss = { updateOpen = false },
         ) {
-            DialogTextField(
-                value = password,
-                onValueChange = {
-                    password = it
-                    dialogError = ""
-                },
-                placeholder = "连接密码",
-                password = true,
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Done,
-                onImeAction = { submitQuick() },
-            )
-            if (dialogError.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
+            if (pending.notes.isNotBlank()) {
                 Text(
-                    text = dialogError,
-                    color = MaterialTheme.colorScheme.error,
+                    text = pending.notes.trim(),
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                 )
             }
@@ -359,11 +388,12 @@ private fun StatusPill(connected: Boolean, loading: Boolean, onClick: () -> Unit
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (connected) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = color,
-                    modifier = Modifier.size(16.dp),
+                // 和 Windows 端的链路胶囊一样：一个状态点 + 当前协议。
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(color),
                 )
             } else {
                 CircularProgressIndicator(
@@ -375,7 +405,7 @@ private fun StatusPill(connected: Boolean, loading: Boolean, onClick: () -> Unit
             Spacer(Modifier.width(6.dp))
             Text(
                 text = when {
-                    connected -> "已连接服务器"
+                    connected -> "已连接服务器 · 中转"
                     loading -> "正在连接服务器…"
                     else -> "未连接服务器"
                 },
@@ -389,85 +419,274 @@ private fun StatusPill(connected: Boolean, loading: Boolean, onClick: () -> Unit
 
 @Composable
 private fun RemoteDesktopCard(
-    value: String,
-    onValueChange: (String) -> Unit,
+    code: String,
+    onCodeChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
     error: String,
+    busy: Boolean,
     onConnect: () -> Unit,
 ) {
+    val colors = MaterialTheme.colorScheme
+    var showPassword by remember { mutableStateOf(false) }
+    val canConnect = code.filter(Char::isDigit).length == 9 && password.isNotBlank() && !busy
     GroupCard {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                text = "远程桌面",
-                style = MaterialTheme.typography.titleMedium,
-                fontSize = 20.sp,
-            )
-            Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                        .padding(horizontal = 12.dp),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    BasicTextField(
-                        value = value,
-                        onValueChange = onValueChange,
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 16.sp,
-                        ),
-                        cursorBrush = SolidColor(SW.accent),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { inner ->
-                            Box {
-                                if (value.isEmpty()) {
-                                    Text(
-                                        text = "设备 ID 或 IP 地址",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        fontSize = 16.sp,
-                                    )
-                                }
-                                inner()
-                            }
-                        },
-                    )
-                }
-                Spacer(Modifier.width(10.dp))
-                Box(
-                    modifier = Modifier
-                        .width(82.dp)
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (value.isNotBlank()) SW.accent else SW.accent.copy(alpha = 0.35f),
-                        )
-                        .clickable(enabled = value.isNotBlank(), onClick = onConnect),
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(SW.accent.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center,
                 ) {
+                    Icon(
+                        imageVector = Icons.Filled.Link,
+                        contentDescription = null,
+                        tint = SW.accent,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
                     Text(
-                        text = "连接",
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        style = MaterialTheme.typography.labelLarge,
+                        text = "控制别人的电脑",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontSize = 17.sp,
+                    )
+                    Text(
+                        text = "填对方的识别码和密码",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant,
+                        fontSize = 13.sp,
                     )
                 }
             }
+            Spacer(Modifier.height(16.dp))
+
+            FieldLabel("对方的识别码")
+            Spacer(Modifier.height(6.dp))
+            CodeInputBox(
+                value = code,
+                onValueChange = { raw -> onCodeChange(raw.filter(Char::isDigit).take(9)) },
+                placeholder = "9 位识别码",
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Next,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            FieldLabel("密码")
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.onSurface.copy(alpha = 0.06f))
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = password,
+                    onValueChange = onPasswordChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = colors.onSurface,
+                        fontSize = 16.sp,
+                    ),
+                    cursorBrush = SolidColor(SW.accent),
+                    visualTransformation = if (showPassword) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { onConnect() },
+                        onGo = { onConnect() },
+                    ),
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (password.isEmpty()) {
+                                Text(
+                                    text = "临时密码或固定密码",
+                                    color = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                                    fontSize = 16.sp,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+                Text(
+                    text = if (showPassword) "隐藏" else "显示",
+                    color = SW.accent,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { showPassword = !showPassword }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (canConnect) SW.accent else SW.accent.copy(alpha = 0.35f))
+                    .clickable(enabled = canConnect, onClick = onConnect),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Link,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (busy) "正在连接…" else "连接",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
             if (error.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Text(
                     text = error,
-                    color = MaterialTheme.colorScheme.error,
+                    color = colors.error,
                     style = MaterialTheme.typography.bodyMedium,
                     fontSize = 13.sp,
                 )
             }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    imageVector = Icons.Filled.Shield,
+                    contentDescription = null,
+                    tint = colors.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "识别码和密码在对方「远程协助」页顶部；同一网段会自动直连。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun UpdateBanner(info: AppUpdate, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = SW.accent.copy(alpha = 0.10f),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Download,
+                contentDescription = null,
+                tint = SW.accent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "发现新版本 ${Updates.pretty(info.version)}",
+                    color = SW.accent,
+                    fontSize = 14.sp,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    text = "点这里查看更新说明并下载",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = SW.accent,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FieldLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 13.sp,
+    )
+}
+
+@Composable
+private fun CodeInputBox(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    keyboardType: KeyboardType,
+    imeAction: ImeAction,
+) {
+    val colors = MaterialTheme.colorScheme
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(
+            color = colors.onSurface,
+            fontSize = 17.sp,
+            letterSpacing = 1.sp,
+        ),
+        cursorBrush = SolidColor(SW.accent),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.onSurface.copy(alpha = 0.06f))
+            .padding(horizontal = 12.dp),
+        decorationBox = { inner ->
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        color = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                        fontSize = 16.sp,
+                    )
+                }
+                inner()
+            }
+        },
+    )
 }
 
 @Composable

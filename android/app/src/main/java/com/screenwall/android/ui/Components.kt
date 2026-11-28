@@ -3,7 +3,6 @@ package com.screenwall.android.ui
 import android.app.Activity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +61,7 @@ import androidx.compose.material3.Icon
 /** 三色竖柱标志：和启动图标同一套形状。 */
 @Composable
 fun BrandMark(modifier: Modifier = Modifier, size: Int = 56) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current
     Box(
         modifier = modifier
             .size(size.dp)
@@ -232,7 +231,7 @@ fun <T> SegmentedControl(
     modifier: Modifier = Modifier,
     onSelect: (T) -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current
     Row(
         modifier = modifier
             .fillMaxWidth()

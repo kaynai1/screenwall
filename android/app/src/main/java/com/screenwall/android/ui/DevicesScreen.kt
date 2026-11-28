@@ -2,7 +2,6 @@ package com.screenwall.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,7 +68,7 @@ fun DevicesScreen(
     onOpenDevice: (Device) -> Unit,
     onSettings: () -> Unit,
 ) {
-    SystemBars(lightIcons = !isSystemInDarkTheme())
+    SystemBars(lightIcons = !LocalDarkTheme.current)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var devices by remember {
