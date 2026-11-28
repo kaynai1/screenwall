@@ -4,6 +4,7 @@ import ControlPage from "./pages/ControlPage";
 import DevicesPage from "./pages/DevicesPage";
 import GroupPage from "./pages/GroupPage";
 import LoginPage from "./pages/LoginPage";
+import RemotePage from "./pages/RemotePage";
 import WallPage from "./pages/WallPage";
 
 const STORAGE_KEY = "screenwall.web.account";
@@ -40,6 +41,7 @@ export default function App() {
   const [target, setTarget] = useState<DeviceView | null>(null);
   const [wallOpen, setWallOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const toastSeq = useRef(0);
@@ -66,8 +68,14 @@ export default function App() {
     viewerRef.current = viewer;
     let alive = true;
     const offDevices = viewer.subscribe({
-      // 网页登录本身会注册一台「网页端」设备，它永远不可能被控，别列出来。
-      onDevices: (list) => setDevices(list.filter((item) => item.id !== account.deviceId)),
+      // 网页登录本身会注册一台「网页端」设备，它永远不可能被控，别列出来；
+      // 老版本每次登录换一个 ID 留下的历史「网页端」也一并隐藏。
+      onDevices: (list) =>
+        setDevices(
+          list.filter(
+            (item) => item.id !== account.deviceId && item.os.toLowerCase() !== "web",
+          ),
+        ),
     });
     const offSocket = viewer.subscribe({
       onSocketClosed: (reason) => {
@@ -114,6 +122,7 @@ export default function App() {
     setTarget(null);
     setWallOpen(false);
     setGroupOpen(false);
+    setRemoteOpen(false);
     if (current) void apiLogout(current);
   }, [account]);
 
@@ -149,6 +158,13 @@ export default function App() {
         />
       ) : groupOpen && connected ? (
         <GroupPage account={account} devices={devices} onBack={() => setGroupOpen(false)} />
+      ) : remoteOpen && connected ? (
+        <RemotePage
+          account={account}
+          onBack={() => setRemoteOpen(false)}
+          onOpenDevice={(device) => setTarget(device)}
+          notify={notify}
+        />
       ) : (
         <DevicesPage
           account={account}
@@ -158,6 +174,7 @@ export default function App() {
           onOpen={(device) => setTarget(device)}
           onOpenWall={() => setWallOpen(true)}
           onOpenGroup={() => setGroupOpen(true)}
+          onOpenRemote={() => setRemoteOpen(true)}
           onLogout={handleLogout}
           onReconnect={() => setAccount({ ...account })}
         />

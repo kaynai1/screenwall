@@ -25,6 +25,28 @@ export type Account = {
 /** 网页端自己的名字，出现在被控端的授权弹窗里。 */
 const VIEWER_NAME = "网页端";
 
+/** 网页端在这台浏览器上的固定设备 ID（存在 localStorage）。 */
+const DEVICE_KEY = "screenwall.web.deviceId";
+
+/**
+ * 每次登录都换一个新设备，会在账号里堆一堆「网页端」，还会吃掉设备配额。
+ * 同一浏览器固定用同一个 ID：重复登录只是刷新这台设备的记录。
+ */
+function webDeviceId(): string {
+  try {
+    const saved = localStorage.getItem(DEVICE_KEY);
+    if (saved && /^[A-Za-z0-9_-]{1,64}$/.test(saved)) return saved;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const id = `web-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    localStorage.setItem(DEVICE_KEY, id);
+    return id;
+  } catch {
+    // 隐私模式下存不了，就让服务器发一个（只是这台浏览器的设备会重复）。
+    return "";
+  }
+}
+
 export function normalizeServerUrl(input: string): string {
   const value = input.trim();
   if (!value) return window.location.origin;
@@ -45,10 +67,15 @@ export class ApiError extends Error {
   }
 }
 
-async function postJson<T>(serverUrl: string, path: string, body: unknown): Promise<T> {
+async function postJson<T>(
+  serverUrl: string,
+  path: string,
+  body: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
   const response = await fetch(`${serverUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   const data = (await response.json().catch(() => null)) as
@@ -76,6 +103,7 @@ export async function login(
     username,
     password,
     device: {
+      id: webDeviceId() || undefined,
       name: "网页端",
       os: "Web",
       version: "web",
@@ -129,6 +157,25 @@ export async function quickConnect(
     quick: true,
     expiresAt: data.expiresAt,
   };
+}
+
+/**
+ * 按 9 位识别码在本账号里找在线设备（服务器 `/api/v1/resolve-id`）。
+ *
+ * 浏览器做不了 UDP 广播和局域网直连，这是网页端唯一能「输识别码就连」的路径：
+ * 两台机器都登录了同一个账号，且不在同一网段时也能走中转。
+ */
+export async function resolvePeerId(
+  account: Account,
+  id: string,
+): Promise<{ deviceId: string; name: string }> {
+  const data = await postJson<{ id: string; name: string; online: boolean }>(
+    account.serverUrl,
+    "/api/v1/resolve-id",
+    { id },
+    { authorization: `Bearer ${account.token}` },
+  );
+  return { deviceId: data.id, name: data.name };
 }
 
 export async function logout(account: Account): Promise<void> {

@@ -2,6 +2,7 @@ import {
   ChevronRight,
   Download,
   LayoutGrid,
+  Link2,
   LogOut,
   Monitor,
   RefreshCw,
@@ -49,6 +50,7 @@ export default function DevicesPage({
   onOpen,
   onOpenWall,
   onOpenGroup,
+  onOpenRemote,
   onLogout,
   onReconnect,
 }: {
@@ -59,6 +61,7 @@ export default function DevicesPage({
   onOpen: (device: DeviceView) => void;
   onOpenWall: () => void;
   onOpenGroup: () => void;
+  onOpenRemote: () => void;
   onLogout: () => void;
   onReconnect: () => void;
 }) {
@@ -118,6 +121,9 @@ export default function DevicesPage({
           </p>
         </div>
         <div className="app-bar-actions">
+          <button type="button" className="icon-btn" onClick={onOpenRemote} aria-label="远程协助">
+            <Link2 size={18} />
+          </button>
           {previewable >= 2 && (
             <button type="button" className="icon-btn" onClick={onOpenGroup} aria-label="群控">
               <UsersRound size={18} />
