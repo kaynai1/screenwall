@@ -4494,7 +4494,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screenwall-agent"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4532,7 +4532,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-client"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-proto"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -4569,7 +4569,7 @@ dependencies = [
 
 [[package]]
 name = "screenwall-server"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "anyhow",
  "argon2",

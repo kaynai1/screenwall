@@ -149,4 +149,6 @@ export type FeedbackPageProps = PageProps;
 export type SettingsPageProps = PageProps & {
   onLogout: () => void;
   busy: boolean;
+  /** 递增后让设置页跳到「关于」并自动检查更新（更新弹窗的「立即更新」用）。 */
+  openAbout?: number;
 };

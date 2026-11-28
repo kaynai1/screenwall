@@ -29,6 +29,7 @@ import { subscribeWatchdog } from "./connection";
 import { describeError, errorLine } from "./errors";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
+import { Modal } from "./components/ui";
 import AuditPage from "./pages/AuditPage";
 import ControlPage from "./pages/ControlPage";
 import DevicesPage from "./pages/DevicesPage";
@@ -41,7 +42,7 @@ import SettingsPage from "./pages/SettingsPage";
 import WallPage from "./pages/WallPage";
 import RemotePage from "./pages/RemotePage";
 import { isDirectDeviceId, stopActiveSession } from "./session";
-import { checkUpdate, currentVersion } from "./update";
+import { checkUpdate, currentVersion, type UpdateInfo } from "./update";
 import type {
   AccountView,
   DeviceView,
@@ -79,6 +80,12 @@ export default function App() {
   /** 当前客户端版本与启动时检查到的新版；左下角更新提示用。 */
   const [appVersion, setAppVersion] = useState("");
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  /** 启动时查到的更新详情：用来弹「发现新版本」对话框。 */
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  /** 本次启动已经点过「稍后」；下次启动仍会再提示。 */
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  /** 让设置页直接跳到「关于」并自动检查一次更新（从更新弹窗进入时）。 */
+  const [aboutRequest, setAboutRequest] = useState(0);
   /** 当前远程会话真实走的链路；没有会话时为 null（侧栏胶囊按它显示）。 */
   const [controlLink, setControlLink] = useState<
     "relay" | "direct" | "p2p" | null
@@ -159,11 +166,15 @@ export default function App() {
   useEffect(() => {
     // 换服务器或退出登录后先清掉，避免把上一台的版本提示带过来。
     setUpdateVersion(null);
+    setUpdateInfo(null);
+    setUpdateDismissed(false);
     if (!account?.loggedIn) return;
     let alive = true;
     checkUpdate()
       .then((info) => {
-        if (alive) setUpdateVersion(info ? info.version : null);
+        if (!alive) return;
+        setUpdateVersion(info ? info.version : null);
+        setUpdateInfo(info ?? null);
       })
       .catch(() => {});
     return () => {
@@ -654,6 +665,7 @@ export default function App() {
             active={active}
             onLogout={handleLogout}
             busy={busy}
+            openAbout={aboutRequest}
           />
         );
       case "control":
@@ -723,6 +735,49 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {/* 启动时查到新版本就弹一次，直到本次启动点「稍后」；下次启动仍然会提示。 */}
+      <Modal
+        open={updateInfo !== null && !updateDismissed}
+        onClose={() => setUpdateDismissed(true)}
+        title={updateInfo ? `发现新版本 ${updateInfo.version}` : "发现新版本"}
+        subtitle={
+          updateInfo
+            ? `当前版本 ${updateInfo.current} → 新版本 ${updateInfo.version}`
+            : undefined
+        }
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setUpdateDismissed(true)}
+            >
+              稍后
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                setUpdateDismissed(true);
+                setAboutRequest((n) => n + 1);
+                navigate("settings");
+              }}
+            >
+              立即更新
+            </button>
+          </>
+        }
+      >
+        <div className="update-modal">
+          <p className="update-modal-hint">
+            建议先更新到最新版本，再继续使用。
+          </p>
+          <div className="update-modal-notes">
+            {updateInfo?.notes.trim() || "本次更新没有附加说明。"}
+          </div>
+        </div>
+      </Modal>
 
       <ControlRequestDialog
         request={requests[0] ?? null}

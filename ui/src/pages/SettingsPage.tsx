@@ -144,6 +144,7 @@ export default function SettingsPage({
   notify,
   onLogout,
   busy,
+  openAbout,
 }: SettingsPageProps) {
   const [activeSection, setActiveSection] = useState<SectionKey>("account");
   const [serverUrl, setServerUrl] = useState(account.serverUrl);
@@ -211,6 +212,15 @@ export default function SettingsPage({
   useEffect(() => {
     setServerUrl(account.serverUrl);
   }, [account.serverUrl]);
+
+  // 从「发现新版本」弹窗点「立即更新」进来：跳到「关于」并自动查一次，
+  // 用户落地就能看到版本说明和「下载并安装」，不用再点一遍检查更新。
+  useEffect(() => {
+    if (!openAbout) return;
+    setActiveSection("about");
+    void runCheckUpdate();
+    // 只在请求序号变化时触发；runCheckUpdate 每次渲染都是新函数，不列入依赖。
+  }, [openAbout]);
 
   useEffect(() => {
     let alive = true;

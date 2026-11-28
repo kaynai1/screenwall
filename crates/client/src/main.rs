@@ -4606,22 +4606,32 @@ async fn view_once(app: &AppHandle, shared: &Arc<Shared>, config: &ClientConfig)
         let probe_app = app.clone();
         let base = config.server_url.trim_end_matches('/').to_string();
         tokio::spawn(async move {
-            let response = match http
-                .get(format!("{base}/healthz"))
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => response,
-                _ => return,
-            };
-            let Ok(body) = response.json::<Value>().await else {
-                return;
-            };
-            if let Some(version) = body.get("version").and_then(Value::as_str) {
+            // /healthz 只用来拿版本号，网络抖动或服务器刚启动时可能失败一次。
+            // 只试一次的话「服务器版本」会一直显示「未探测到」，也不会提示
+            // 服务器需要更新；这里 2 秒一次重试，拿到就停。
+            for attempt in 0..5u32 {
+                if attempt > 0 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                let response = match http
+                    .get(format!("{base}/healthz"))
+                    .timeout(Duration::from_secs(5))
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => response,
+                    _ => continue,
+                };
+                let Ok(body) = response.json::<Value>().await else {
+                    continue;
+                };
+                let Some(version) = body.get("version").and_then(Value::as_str) else {
+                    continue;
+                };
                 *probe.server_version.lock().unwrap() = Some(version.to_string());
                 // 让侧栏/设置页及时看到服务器版本，而不是等下次重连。
                 let _ = probe_app.emit("account", account_view(&probe).await);
+                return;
             }
         });
     }

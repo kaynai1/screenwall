@@ -1626,6 +1626,32 @@ button:not(:disabled),
   border-top: 1px solid var(--line-soft);
 }
 
+/* 启动时的「发现新版本」弹窗 */
+.update-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.update-modal-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.update-modal-notes {
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
 /* 被控端：远程控制请求弹窗 */
 
 .ctrl-request {

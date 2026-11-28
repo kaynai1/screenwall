@@ -30,7 +30,7 @@ export type UpdateProgress = {
 };
 
 /** 浏览器预览用的假版本号，与 Cargo / tauri 配置一致。 */
-const PREVIEW_VERSION = "0.2.20";
+const PREVIEW_VERSION = "0.2.22";
 
 /** 当前运行版本；浏览器预览返回固定值。 */
 export async function currentVersion(): Promise<string> {
