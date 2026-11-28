@@ -77,28 +77,48 @@ export default function App() {
           ),
         ),
     });
+    // 断线自动重连：服务器重启、网络短暂中断之后页面自己回来，不用手动刷新。
+    // 退避 1 / 2 / 4 秒，之后固定 5 秒；连上就把退避清零。
+    let retryTimer = 0;
+    let retry = 0;
+    const scheduleRetry = () => {
+      if (!alive) return;
+      retry += 1;
+      const delay = Math.min(1000 * 2 ** (retry - 1), 5000);
+      window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(() => {
+        if (alive) attempt();
+      }, delay);
+    };
+    const attempt = () => {
+      if (!alive) return;
+      viewer
+        .connect()
+        .then(() => {
+          if (!alive) return;
+          retry = 0;
+          setConnected(true);
+          setConnectionError(null);
+        })
+        .catch((error: unknown) => {
+          if (!alive) return;
+          setConnectionError(error instanceof Error ? error.message : "无法连接服务器");
+          scheduleRetry();
+        });
+    };
     const offSocket = viewer.subscribe({
       onSocketClosed: (reason) => {
         if (!alive) return;
         setConnected(false);
         setConnectionError(reason);
+        scheduleRetry();
       },
     });
     setConnectionError(null);
-    viewer
-      .connect()
-      .then(() => {
-        if (alive) {
-          setConnected(true);
-          setConnectionError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!alive) return;
-        setConnectionError(error instanceof Error ? error.message : "无法连接服务器");
-      });
+    attempt();
     return () => {
       alive = false;
+      window.clearTimeout(retryTimer);
       offDevices();
       offSocket();
       viewer.close();

@@ -25,6 +25,9 @@ export type Account = {
 /** 网页端自己的名字，出现在被控端的授权弹窗里。 */
 const VIEWER_NAME = "网页端";
 
+/** 连上 WebSocket 后等 `ready` 的上限；超时按失败处理，外层会退避重连。 */
+const CONNECT_TIMEOUT_MS = 10_000;
+
 /** 网页端在这台浏览器上的固定设备 ID（存在 localStorage）。 */
 const DEVICE_KEY = "screenwall.web.deviceId";
 
@@ -253,15 +256,30 @@ export class Viewer {
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
       this.socket = socket;
+      // 握手没拿到 `ready`（服务器刚重启、中间设备把连接挂住）时不能一直
+      // 停在「正在连接服务器…」：超时就断开重来，外层会按退避重连。
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.close();
+        } catch {
+          // 已经关了就算了。
+        }
+        reject(new Error("连接服务器超时"));
+      }, CONNECT_TIMEOUT_MS);
+      const settle = () => window.clearTimeout(timer);
 
       socket.onopen = () => {};
       socket.onerror = () => {
+        settle();
         if (!settled) {
           settled = true;
           reject(new Error("无法连接服务器"));
         }
       };
       socket.onclose = (event) => {
+        settle();
         if (!settled) {
           settled = true;
           reject(new Error(`连接被服务器关闭（${event.code}）`));
@@ -277,6 +295,7 @@ export class Viewer {
             const parsed = safeJson(event.data);
             if (parsed?.t === "ready") {
               settled = true;
+              settle();
               resolve();
             }
           }
