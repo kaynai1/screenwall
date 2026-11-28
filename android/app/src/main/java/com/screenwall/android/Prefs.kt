@@ -26,6 +26,13 @@ enum class PicturePreset(val label: String, val maxWidth: Int, val fps: Int, val
     Balanced("平衡", 1280, 30, 65),
 }
 
+/** 界面外观：跟系统走，或固定浅色 / 深色（和桌面端双主题一致）。 */
+enum class ThemeMode(val label: String) {
+    System("跟随系统"),
+    Light("浅色"),
+    Dark("深色"),
+}
+
 /** 本机持久化：服务器地址、上次登录的账号、画质选项、最近连接、预览图。 */
 class Prefs(context: Context) {
     private val appContext = context.applicationContext
@@ -144,6 +151,15 @@ class Prefs(context: Context) {
             sp.edit().putBoolean(KEY_SAVE_PREVIEW, value).apply()
         }
 
+    /** 界面外观。默认跟随系统。 */
+    var themeMode: ThemeMode
+        get() = runCatching {
+            ThemeMode.valueOf(sp.getString(KEY_THEME, ThemeMode.System.name) ?: ThemeMode.System.name)
+        }.getOrDefault(ThemeMode.System)
+        set(value) {
+            sp.edit().putString(KEY_THEME, value.name).apply()
+        }
+
     // ------------------------------------------------------------ 最近连接
 
     fun recents(): List<RecentDevice> {
@@ -226,5 +242,6 @@ class Prefs(context: Context) {
         private const val KEY_RECENTS = "recents"
         private const val KEY_LOCK_LANDSCAPE = "lockLandscape"
         private const val KEY_SAVE_PREVIEW = "savePreview"
+        private const val KEY_THEME = "themeMode"
     }
 }

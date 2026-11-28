@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,7 +39,7 @@ fun LoginScreen(
     api: Api,
     onLoggedIn: (Account) -> Unit,
 ) {
-    SystemBars(lightIcons = !isSystemInDarkTheme())
+    SystemBars(lightIcons = !LocalDarkTheme.current)
     var server by remember { mutableStateOf(prefs.serverUrl) }
     var username by remember { mutableStateOf(prefs.username) }
     var password by remember { mutableStateOf("") }

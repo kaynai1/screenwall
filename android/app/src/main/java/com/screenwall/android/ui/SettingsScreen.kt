@@ -6,7 +6,6 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +31,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,12 +43,16 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.screenwall.android.PicturePreset
 import com.screenwall.android.Prefs
+import com.screenwall.android.ThemeMode
 import com.screenwall.android.data.Api
 import com.screenwall.android.data.AppInfo
+import com.screenwall.android.data.AppUpdate
+import com.screenwall.android.data.Updates
 import com.screenwall.android.session.AppSession
 import com.screenwall.android.session.InputMode
 import kotlinx.coroutines.launch
@@ -62,11 +67,13 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     session: AppSession,
     prefs: Prefs,
+    themeMode: ThemeMode,
+    onThemeMode: (ThemeMode) -> Unit,
     onBack: () -> Unit,
     onLogout: () -> Unit,
     onServerChanged: (String) -> Unit,
 ) {
-    SystemBars(lightIcons = !isSystemInDarkTheme())
+    SystemBars(lightIcons = !LocalDarkTheme.current)
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -83,6 +90,11 @@ fun SettingsScreen(
     var serverError by remember { mutableStateOf("") }
     var pairingOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
+    var serverVersion by remember { mutableStateOf<String?>(null) }
+    var serverVersionLoading by remember { mutableStateOf(false) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateMessage by remember { mutableStateOf("") }
+    var updateFound by remember { mutableStateOf<AppUpdate?>(null) }
 
     val account = session.account
     val localId = if (account.quick) "" else account.deviceId
@@ -103,6 +115,40 @@ fun SettingsScreen(
                 ),
             )
         }
+    }
+
+    fun openUrl(url: String) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+    }
+
+    fun checkUpdates() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        updateMessage = "正在检查…"
+        updateFound = null
+        scope.launch {
+            try {
+                val info = Updates.check(session.http, session.account.serverUrl)
+                updateFound = info
+                updateMessage = if (info == null) {
+                    "已是最新版本"
+                } else {
+                    "发现新版本 ${Updates.pretty(info.version)}"
+                }
+            } catch (throwable: Throwable) {
+                updateMessage = "检查失败：${throwable.message ?: "网络不可用"}"
+            } finally {
+                checkingUpdate = false
+            }
+        }
+    }
+
+    // 打开「关于」时顺手查一下服务端自己的版本（/healthz），失败就显示暂不可用。
+    LaunchedEffect(aboutOpen) {
+        if (!aboutOpen) return@LaunchedEffect
+        serverVersionLoading = true
+        serverVersion = Updates.serverVersion(session.http, session.account.serverUrl)
+        serverVersionLoading = false
     }
 
     ScreenBackground {
@@ -142,6 +188,20 @@ fun SettingsScreen(
                         .navigationBarsPadding()
                         .padding(horizontal = 16.dp),
                 ) {
+                    SettingsSectionTitle("外观")
+                    GroupCard {
+                        Box(Modifier.padding(12.dp)) {
+                            SegmentedControl(
+                                options = ThemeMode.entries.map { it.name to it.label },
+                                selected = themeMode.name,
+                                onSelect = { name ->
+                                    onThemeMode(ThemeMode.entries.first { it.name == name })
+                                },
+                            )
+                        }
+                    }
+                    Caption("跟随系统会随手机的深色模式自动切换；浅色 / 深色只影响本机界面。")
+
                     SettingsSectionTitle("鼠标控制")
                     GroupCard {
                         Box(Modifier.padding(12.dp)) {
@@ -392,7 +452,76 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(14.dp))
+                VersionLine("安卓端版本", "v${AppInfo.VERSION}")
+                Spacer(Modifier.height(6.dp))
+                VersionLine(
+                    label = "服务端版本",
+                    value = when {
+                        serverVersionLoading -> "查询中…"
+                        serverVersion != null -> "v$serverVersion"
+                        else -> "暂不可用"
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+                RowDivider(startPadding = 0)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val found = updateFound
+                            if (found != null) openUrl(found.downloadUrl) else checkUpdates()
+                        }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "检查更新",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontSize = 15.sp,
+                        )
+                        Text(
+                            text = updateMessage.ifEmpty {
+                                if (checkingUpdate) "正在检查…" else "在服务器和 GitHub 上查找安卓安装包"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (updateMessage.startsWith("检查失败")) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            fontSize = 12.sp,
+                        )
+                    }
+                    if (checkingUpdate) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(15.dp),
+                            strokeWidth = 2.dp,
+                            color = SW.accent,
+                        )
+                    } else {
+                        Text(
+                            text = if (updateFound != null) "去下载" else "检查",
+                            color = SW.accent,
+                            fontSize = 14.sp,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+                updateFound?.let { info ->
+                    if (info.notes.isNotBlank()) {
+                        Text(
+                            text = info.notes.trim(),
+                            maxLines = 5,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
                 Text(
                     text = "官方 QQ 群 128906393\n邮箱 xqtban@88.com\nGitHub kaynai1/screenwall",
                     style = MaterialTheme.typography.bodyMedium,
@@ -401,6 +530,25 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun VersionLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 13.sp,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 13.sp,
+        )
     }
 }
 

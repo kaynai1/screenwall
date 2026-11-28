@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -31,9 +32,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            ScreenWallTheme {
-                AppRoot()
-            }
+            AppRoot()
         }
     }
 }
@@ -50,6 +49,12 @@ private sealed interface Screen {
 private fun AppRoot() {
     val context = LocalContext.current
     val prefs = remember { Prefs(context) }
+    var themeMode by remember { mutableStateOf(prefs.themeMode) }
+    val dark = when (themeMode) {
+        ThemeMode.System -> isSystemInDarkTheme()
+        ThemeMode.Light -> false
+        ThemeMode.Dark -> true
+    }
     val http = remember {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -81,6 +86,7 @@ private fun AppRoot() {
         }
     }
 
+    ScreenWallTheme(darkTheme = dark) {
     when (val current = screen) {
         is Screen.Login -> LoginScreen(
             prefs = prefs,
@@ -134,6 +140,11 @@ private fun AppRoot() {
                 SettingsScreen(
                     session = active,
                     prefs = prefs,
+                    themeMode = themeMode,
+                    onThemeMode = {
+                        themeMode = it
+                        prefs.themeMode = it
+                    },
                     onBack = { screen = Screen.Home },
                     onLogout = { logout() },
                     onServerChanged = {
@@ -159,5 +170,6 @@ private fun AppRoot() {
                 )
             }
         }
+    }
     }
 }

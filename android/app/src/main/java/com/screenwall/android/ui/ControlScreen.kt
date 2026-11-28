@@ -438,7 +438,7 @@ private fun SettingsSheet(
         )
         Text(
             text = buildString {
-                if (stats.link == Link.P2p) append("直连 · ")
+                append(if (stats.link == Link.P2p) "直连 · " else "中转 · ")
                 append(stats.codec.ifBlank { "连接的画面" })
                 if (stats.width > 0) append(" · ${stats.width}×${stats.height}")
                 if (stats.kbps > 0) append(" · ${stats.kbps} kbps")
@@ -736,7 +736,7 @@ private fun KeyChip(label: String, onClick: () -> Unit) {
 private fun statusText(stats: SessionStats): String {
     val fps = stats.fps.roundToInt()
     val text = if (stats.rttMs > 0) "$fps fps · ${stats.rttMs}ms" else "$fps fps"
-    return if (stats.link == Link.P2p) "直连 · $text" else text
+    return if (stats.link == Link.P2p) "直连 · $text" else "中转 · $text"
 }
 
 private fun detailText(stats: SessionStats): String {

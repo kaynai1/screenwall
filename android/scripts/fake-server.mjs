@@ -473,6 +473,27 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && url.pathname === '/healthz') {
+    // 关于页用它显示「服务端版本」。
+    json(res, 200, { ok: true, version: '0.2.20' });
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/v1/version') {
+    // 真实服务器没给安卓包时返回 404；SW_FAKE_UPDATE=1 时假装有一个新版本，
+    // 用来验证首页「发现新版本」提示和关于页的检查更新。
+    if (process.env.SW_FAKE_UPDATE !== '1') {
+      json(res, 404, { msg: '未配置更新' });
+      return;
+    }
+    json(res, 200, {
+      version: '0.1.9',
+      url: '/downloads/screenwall-android.apk',
+      sha256: '0'.repeat(64),
+      notes: '假服务器提供的测试更新：修了几处小问题。',
+      publishedAt: Date.now(),
+    });
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/v1/logout') {
     json(res, 200, { ok: true });
     return;
