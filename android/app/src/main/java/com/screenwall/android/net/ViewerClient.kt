@@ -18,6 +18,22 @@ import java.util.concurrent.atomic.AtomicLong
 class OpenError(val code: Int, val msg: String) : Exception("$code: $msg")
 
 /**
+ * 会话的另一种承载：WebRTC 的 `ctrl` DataChannel。
+ *
+ * 直连协议里 `open` / `close` 是普通 JSON，会话建立后的消息还是同一套隧道帧，
+ * 所以 [ViewerClient] 只需要在发的时候多一个出口。
+ */
+interface ChannelTransport {
+    val isOpen: Boolean
+
+    fun send(bytes: ByteArray): Boolean
+
+    fun sendText(text: String): Boolean
+
+    fun close()
+}
+
+/**
  * 主控端 WebSocket（`/ws/view?token=…`）。
  *
  * 服务端先发纯文本的 `ready` / `devices` / `open.ok` / `open.err` / `closed`；
@@ -33,6 +49,12 @@ class ViewerClient(private val http: OkHttpClient) {
         fun onSessionMessage(message: JSONObject) {}
         fun onFrame(frame: MediaFrame) {}
         fun onSocketClosed(reason: String) {}
+        /** 服务器转发的 `t:"webrtc"` 信令（offer / answer / ice / reject / bye）。 */
+        fun onWebrtcSignal(message: JSONObject) {}
+        /** 直连通道已经建立、可以收发会话消息。 */
+        fun onP2pActive() {}
+        /** 已经走直连后链路断开（与服务器 WebSocket 无关）。 */
+        fun onP2pLost(reason: String) {}
     }
 
     @Volatile
@@ -40,9 +62,21 @@ class ViewerClient(private val http: OkHttpClient) {
 
     private var socket: WebSocket? = null
 
+    /** 非空时表示会话走 WebRTC 直连，所有隧道帧都发到这里。 */
+    @Volatile
+    private var channel: ChannelTransport? = null
+
     @Volatile
     var session: Int = 0
         private set
+
+    /** 服务器最近一次推送的设备列表（识别码会话只有目标那一台，用它判断直连能力）。 */
+    @Volatile
+    var lastDevices: List<JSONObject> = emptyList()
+        private set
+
+    /** 当前会话是否走 P2P 直连。 */
+    val isP2p: Boolean get() = channel != null
 
     private var ready: CompletableDeferred<Unit>? = null
     private var pendingOpen: CompletableDeferred<Int>? = null
@@ -133,9 +167,10 @@ class ViewerClient(private val http: OkHttpClient) {
     /** 发一条隧道内的应用消息。会话还没建立时静默丢弃。 */
     fun sendSession(message: JSONObject): Boolean {
         val current = session
-        val webSocket = socket ?: return false
         if (current == 0) return false
         val bytes = Protocol.tunnelJson(current, message.toString())
+        channel?.let { return it.isOpen && it.send(bytes) }
+        val webSocket = socket ?: return false
         return webSocket.send(bytes.toByteString())
     }
 
@@ -145,9 +180,12 @@ class ViewerClient(private val http: OkHttpClient) {
     fun closeSession() {
         val current = session
         if (current != 0) {
-            sendText(JSONObject().put("t", "close").put("session", current))
+            val text = JSONObject().put("t", "close").put("session", current).toString()
+            val transport = channel
+            if (transport != null) transport.sendText(text) else socket?.send(text)
         }
         session = 0
+        channel = null
     }
 
     fun disconnect() {
@@ -160,6 +198,44 @@ class ViewerClient(private val http: OkHttpClient) {
         pendingOpen = null
     }
 
+    // ------------------------------------------------------------ P2P 直连
+
+    /** 直连通道握手完成后交给会话层：之后 [sendSession] 自动改走 DataChannel。 */
+    fun adoptP2p(transport: ChannelTransport, sessionId: Int) {
+        channel = transport
+        session = sessionId
+        listener?.onP2pActive()
+    }
+
+    /** 直连通道断了：清掉会话状态并通知上层，由它决定回退中继还是报错。 */
+    fun channelLost(reason: String) {
+        if (channel == null) return
+        channel = null
+        session = 0
+        listener?.onP2pLost(reason)
+    }
+
+    /** DataChannel 上的纯文本消息（`open.ok` 已由 P2pClient 消化）。 */
+    fun handleP2pText(text: String) {
+        val message = runCatching { JSONObject(text) }.getOrNull() ?: return
+        if (message.optString("t") == "closed") {
+            session = 0
+            listener?.onControlClosed(
+                message.optInt("code", 4201),
+                message.optString("msg", "会话已关闭"),
+            )
+            return
+        }
+        if (message.optString("t") == "webrtc") {
+            listener?.onWebrtcSignal(message)
+            return
+        }
+        listener?.onSessionMessage(message)
+    }
+
+    /** DataChannel 上的二进制消息（隧道帧）。 */
+    fun handleP2pBinary(bytes: ByteArray) = handleBinary(bytes)
+
     private fun handleText(text: String, deferred: CompletableDeferred<Unit>, webSocket: WebSocket) {
         val message = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (message.optString("t")) {
@@ -170,6 +246,7 @@ class ViewerClient(private val http: OkHttpClient) {
             "devices" -> {
                 val array = message.optJSONArray("devices") ?: JSONArray()
                 val list = (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                lastDevices = list
                 listener?.onDevices(list)
             }
             "open.ok" -> {
@@ -197,6 +274,7 @@ class ViewerClient(private val http: OkHttpClient) {
                 session = 0
                 listener?.onControlClosed(message.optInt("code", 4201), message.optString("msg", "会话已关闭"))
             }
+            "webrtc" -> listener?.onWebrtcSignal(message)
             "pong" -> listener?.onSessionMessage(message)
             else -> listener?.onSessionMessage(message)
         }

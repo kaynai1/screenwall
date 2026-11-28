@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,11 +36,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.ui.unit.sp
+import com.screenwall.android.net.P2pEngine
 import com.screenwall.android.session.ControlController
 import com.screenwall.android.session.InputMode
 import com.screenwall.android.session.Phase
 import com.screenwall.android.video.H264SurfaceView
 import com.screenwall.android.video.MjpegView
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.min
@@ -52,6 +57,7 @@ import kotlin.math.roundToInt
 fun VideoStage(controller: ControlController, modifier: Modifier = Modifier) {
     val dims by controller.videoDims.collectAsState()
     val h264 by controller.isH264.collectAsState()
+    val p2pTrack by controller.p2pVideoTrack.collectAsState()
     val mode by controller.inputMode.collectAsState()
 
     var zoom by remember { mutableFloatStateOf(1f) }
@@ -101,7 +107,11 @@ fun VideoStage(controller: ControlController, modifier: Modifier = Modifier) {
                         translationY = pan.y,
                     ),
             ) {
-                if (!h264) {
+                if (p2pTrack != null) {
+                    key(p2pTrack) {
+                        P2pVideoView(track = p2pTrack!!)
+                    }
+                } else if (!h264) {
                     AndroidView(
                         factory = { context ->
                             MjpegView(context, controller.mjpeg) { width, height ->
@@ -346,6 +356,31 @@ fun VideoStage(controller: ControlController, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+/**
+ * P2P 画面：WebRTC 自己解码 H.264 并渲染到 [SurfaceViewRenderer]，
+ * 缩放/平移仍由外层 Box 的 graphicsLayer 负责。
+ */
+@Composable
+private fun P2pVideoView(track: VideoTrack) {
+    val eglContext = remember { P2pEngine.eglBase().eglBaseContext }
+    AndroidView(
+        factory = { context ->
+            SurfaceViewRenderer(context).apply {
+                init(eglContext, null)
+                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                setEnableHardwareScaler(true)
+                setMirror(false)
+                track.addSink(this)
+            }
+        },
+        onRelease = { view ->
+            runCatching { track.removeSink(view) }
+            runCatching { view.release() }
+        },
+        modifier = Modifier.fillMaxSize(),
+    )
 }
 
 private const val LONG_PRESS_MS = 550L

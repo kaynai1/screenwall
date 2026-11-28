@@ -60,6 +60,8 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // WebRTC P2P：与网页端同一套信令与被控端 webrtc-rs 对接。
+    implementation 'io.github.webrtc-sdk:android:125.6422.07'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>ScreenWall 假被控端（WebRTC）</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0d10; color: #e8eaed; font: 14px/1.5 system-ui, sans-serif; }
+  #screen { width: 100vw; height: auto; display: block; }
+  #status { position: fixed; left: 12px; bottom: 12px; background: #000a; padding: 8px 12px;
+    border-radius: 8px; white-space: pre; font-family: ui-monospace, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<!--
+  假被控端：和真被控端一样接 WebRTC offer、回 answer、挂 H.264 + Opus 轨道，
+  并在 `ctrl` DataChannel 上跑直连会话协议（open / hello / video.sub / ping…）。
+  由 android/scripts/fake-server.mjs 在 /ws/agent 注册，只用于本机验证手机端直连。
+-->
+<canvas id="screen" width="1280" height="720"></canvas>
+<div id="status">连接假服务器中…</div>
+<script>
+(() => {
+  const canvas = document.getElementById('screen');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const SESSION_ID = 7;
+  const VIDEO_ID = 1;
+  const AUDIO_ID = 2;
+
+  let pc = null;
+  let dc = null;
+  let request = 0;
+  let started = 0;
+
+  const log = (text) => {
+    statusEl.textContent = text;
+    console.log(text);
+  };
+
+  // ---------------------------------------------------------------- 画面
+  function draw(now) {
+    const t = (now || 0) / 1000;
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, `hsl(${(t * 30) % 360} 70% 25%)`);
+    gradient.addColorStop(1, `hsl(${(t * 30 + 90) % 360} 70% 12%)`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 72px system-ui, sans-serif';
+    ctx.fillText('ScreenWall 假被控端', 64, 150);
+    ctx.font = '40px ui-monospace, monospace';
+    ctx.fillStyle = '#8ab4f8';
+    ctx.fillText(`WebRTC · 1280×720`, 64, 230);
+    ctx.fillStyle = '#e8eaed';
+    ctx.fillText(new Date().toLocaleTimeString('zh-CN', { hour12: false }), 64, 300);
+    ctx.beginPath();
+    ctx.fillStyle = '#4fc3f7';
+    ctx.arc(640 + Math.sin(t * 1.6) * 380, 520 + Math.cos(t * 2.1) * 100, 48, 0, Math.PI * 2);
+    ctx.fill();
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  // ---------------------------------------------------------------- 声音
+  function audioStream() {
+    try {
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      const audio = new AudioCtor();
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      gain.gain.value = 0.02; // 很轻的 440 Hz，用来确认声音链路
+      const destination = audio.createMediaStreamDestination();
+      oscillator.frequency.value = 440;
+      oscillator.connect(gain).connect(destination);
+      oscillator.start();
+      return destination.stream;
+    } catch (error) {
+      console.warn('音频轨道创建失败', error);
+      return new MediaStream();
+    }
+  }
+
+  // ---------------------------------------------------------------- 隧道帧
+  const tunnel = (kind, json) => {
+    const payload = new TextEncoder().encode(JSON.stringify(json));
+    const buffer = new ArrayBuffer(8 + payload.length);
+    const view = new DataView(buffer);
+    view.setUint8(0, 1);
+    view.setUint8(1, kind); // 1 = JSON
+    view.setUint32(2, SESSION_ID, true);
+    view.setUint16(6, 0, true);
+    new Uint8Array(buffer, 8).set(payload);
+    return buffer;
+  };
+
+  const sendJson = (json) => {
+    if (dc && dc.readyState === 'open') dc.send(tunnel(1, json));
+  };
+
+  function sessionMessage(message) {
+    switch (message.t) {
+      case 'hello':
+        sendJson({
+          t: 'welcome',
+          proto: 1,
+          agent: { name: '假被控端（浏览器）', version: 'fake' },
+          limits: { maxStreams: 4, maxChunk: 1048576, allowControl: true },
+          caps: [],
+        });
+        sendJson({
+          t: 'display.list',
+          displays: [{ index: 0, w: 1280, h: 720, primary: true, x: 0, y: 0 }],
+        });
+        break;
+      case 'video.sub': {
+        log(`直连已建立\nvideo.sub codec=${message.codec} ${message.maxWidth}px ${message.fps}fps`);
+        if (message.codec !== 'h264') {
+          sendJson({ t: 'error', code: 4104, msg: '直连轨道只支持 H.264' });
+          break;
+        }
+        sendJson({
+          t: 'video.sub.ok',
+          id: VIDEO_ID,
+          stream: 'focus',
+          actual: { codec: 'h264', w: 1280, h: 720, fps: Number(message.fps) || 30 },
+        });
+        break;
+      }
+      case 'video.unsub':
+        break;
+      case 'audio.sub':
+        sendJson({
+          t: 'audio.sub.ok',
+          id: AUDIO_ID,
+          actual: { codec: 'opus', sampleRate: 48000, channels: 2, bitrate: 0, source: 'loopback' },
+        });
+        break;
+      case 'audio.unsub':
+      case 'video.ack':
+      case 'input':
+        break;
+      case 'ping':
+        sendJson({ t: 'pong', ts: message.ts });
+        break;
+      default:
+        break;
+    }
+  }
+
+  function handleDcMessage(event) {
+    if (typeof event.data === 'string') {
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (message.t === 'open') {
+        // 与真被控端一致：先回 open.ok，主控端据此拿到会话号。
+        dc.send(JSON.stringify({
+          t: 'open.ok',
+          request: Number(message.request) || 0,
+          session: SESSION_ID,
+          deviceId: 'local',
+        }));
+      } else if (message.t === 'close') {
+        log('主控端关闭了会话');
+      }
+    } else {
+      const view = new DataView(event.data);
+      if (view.byteLength < 8 || view.getUint8(0) !== 1 || view.getUint8(1) !== 1) return;
+      try {
+        sessionMessage(JSON.parse(new TextDecoder().decode(new Uint8Array(event.data, 8))));
+      } catch {
+        // 坏帧直接忽略
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- 信令
+  async function handleOffer(message) {
+    request = Number(message.request) || 0;
+    if (pc) {
+      pc.close();
+      pc = null;
+      dc = null;
+    }
+    pc = new RTCPeerConnection({ iceServers: Array.isArray(message.iceServers) ? message.iceServers : [] });
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      send({ event: 'ice', ice: event.candidate.toJSON() });
+    };
+    pc.onconnectionstatechange = () => {
+      log(`直连已建立\nWebRTC: ${pc.connectionState} / ICE: ${pc.iceConnectionState}`);
+      if (pc.connectionState === 'failed') send({ event: 'reject', msg: 'fake agent pc failed' });
+    };
+    pc.ondatachannel = (event) => {
+      dc = event.channel;
+      dc.binaryType = 'arraybuffer';
+      dc.onmessage = handleDcMessage;
+      dc.onopen = () => log(`直连已建立\nDataChannel: open`);
+      log(`收到 DataChannel: ${dc.label}`);
+    };
+    await pc.setRemoteDescription({ type: 'offer', sdp: String(message.sdp || '') });
+    const video = canvas.captureStream(30);
+    const audio = audioStream();
+    for (const track of [...video.getTracks(), ...audio.getTracks()]) {
+      pc.addTrack(track, track.kind === 'video' ? video : audio);
+    }
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    send({ event: 'answer', sdp: pc.localDescription.sdp });
+    log('已回 answer，等待 ICE…');
+  }
+
+  function send(payload) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ t: 'webrtc', request, ...payload }));
+    }
+  }
+
+  function handleIce(message) {
+    if (!pc || !message.ice) return;
+    pc.addIceCandidate(message.ice).catch(() => undefined);
+  }
+
+  // ---------------------------------------------------------------- WebSocket
+  let socket = null;
+  let retry = 0;
+
+  function connect() {
+    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/agent`;
+    socket = new WebSocket(url);
+    socket.onopen = () => {
+      retry = 0;
+      log('假被控端已连接服务器，等待手机端 offer…');
+    };
+    socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') return;
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (message.t !== 'webrtc') return;
+      if (message.event === 'offer') handleOffer(message).catch((error) => log(`offer 处理失败：${error}`));
+      else if (message.event === 'ice') handleIce(message);
+      else if (message.event === 'bye') log('主控端结束了直连');
+    };
+    socket.onclose = () => {
+      retry = Math.min(retry + 1, 5);
+      log(`服务器连接断开，${retry} 秒后重试…`);
+      setTimeout(connect, retry * 1000);
+    };
+    socket.onerror = () => socket.close();
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

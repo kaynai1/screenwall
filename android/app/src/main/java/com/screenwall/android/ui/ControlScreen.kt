@@ -72,6 +72,7 @@ import com.screenwall.android.session.AppSession
 import com.screenwall.android.session.ControlController
 import com.screenwall.android.session.DisplayInfo
 import com.screenwall.android.session.InputMode
+import com.screenwall.android.session.Link
 import com.screenwall.android.session.Phase
 import com.screenwall.android.session.SessionStats
 import com.screenwall.android.session.StreamOptions
@@ -86,8 +87,9 @@ fun ControlScreen(
     prefs: Prefs,
     onBack: () -> Unit,
 ) {
+    val appContext = LocalContext.current.applicationContext
     val controller = remember {
-        ControlController(session.viewer, session.account, device, prefs)
+        ControlController(appContext, session.http, session.viewer, session.account, device, prefs)
     }
     DisposableEffect(controller) {
         controller.start()
@@ -436,6 +438,7 @@ private fun SettingsSheet(
         )
         Text(
             text = buildString {
+                if (stats.link == Link.P2p) append("直连 · ")
                 append(stats.codec.ifBlank { "连接的画面" })
                 if (stats.width > 0) append(" · ${stats.width}×${stats.height}")
                 if (stats.kbps > 0) append(" · ${stats.kbps} kbps")
@@ -470,7 +473,7 @@ private fun SettingsSheet(
         GroupCard {
             Box(Modifier.padding(12.dp)) {
                 SegmentedControl(
-                    options = listOf(15 to "15 FPS", 30 to "30 FPS", 60 to "60 FPS"),
+                    options = listOf(0 to "自动", 15 to "15 FPS", 30 to "30 FPS", 60 to "60 FPS"),
                     selected = options.fps,
                     onSelect = { onOptions(options.copy(fps = it)) },
                 )
@@ -732,7 +735,8 @@ private fun KeyChip(label: String, onClick: () -> Unit) {
 
 private fun statusText(stats: SessionStats): String {
     val fps = stats.fps.roundToInt()
-    return if (stats.rttMs > 0) "$fps fps · ${stats.rttMs}ms" else "$fps fps"
+    val text = if (stats.rttMs > 0) "$fps fps · ${stats.rttMs}ms" else "$fps fps"
+    return if (stats.link == Link.P2p) "直连 · $text" else text
 }
 
 private fun detailText(stats: SessionStats): String {

@@ -36,6 +36,8 @@ data class Device(
     val online: Boolean,
     val lastSeen: Long,
     val controllable: Boolean,
+    /** 被控端支持网页/手机端 WebRTC 直连（服务器把 `webrtc=1` 的连接标在这里）。 */
+    val webrtc: Boolean = false,
 ) {
     companion object {
         fun fromJson(value: JSONObject): Device = Device(
@@ -46,6 +48,7 @@ data class Device(
             online = value.optBoolean("online"),
             lastSeen = value.optLong("lastSeen"),
             controllable = value.optBoolean("controllable", true),
+            webrtc = value.optBoolean("webrtc", false),
         )
     }
 }
