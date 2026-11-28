@@ -155,10 +155,15 @@ fun HomeScreen(
     }
 
     // 后台看一眼有没有新的安卓安装包；查不到（服务器没配置、GitHub 不通）就安静跳过。
+    // 查到就顺手弹出对话框：只在首页横幅里放一行字，用户根本注意不到，
+    // 等于没提醒。
     LaunchedEffect(Unit) {
         runCatching { Updates.check(session.http, session.account.serverUrl) }
             .getOrNull()
-            ?.let { update = it }
+            ?.let {
+                update = it
+                updateOpen = true
+            }
     }
 
     fun submitQuick() {
@@ -344,7 +349,7 @@ fun HomeScreen(
     if (updateOpen && pending != null) {
         IosDialog(
             title = "发现新版本 ${Updates.pretty(pending.version)}",
-            message = "当前是 v${AppInfo.VERSION}，服务器上已有 ${Updates.pretty(pending.version)}。",
+            message = "当前是 v${AppInfo.VERSION}，最新版是 ${Updates.pretty(pending.version)}。",
             confirmText = "去下载",
             dismissText = "稍后",
             onConfirm = {

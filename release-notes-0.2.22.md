@@ -22,3 +22,10 @@
 
 安装包：`ScreenWall_0.2.22_x64-setup.exe`
 服务器：`screenwall-server-0.2.22.exe`
+
+### 安卓端：提供签名安装包
+
+- 新增 `ScreenWall_0.2.22_android.apk`，与 Windows 端同版本号。
+- 安卓 App 打开首页时会自己检查 GitHub Release 上的新版 APK，查到就弹
+  「发现新版本」，点「去下载」直接下载安装，不再需要手动找安装包。
+- 已装旧版安卓 App 的用户可以直接覆盖安装，设置与最近设备保留。

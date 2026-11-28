@@ -10,3 +10,6 @@ captures/
 # JVM 崩溃日志
 hs_err_pid*.log
 replay_pid*.log
+
+# 签名密钥路径与口令（本机配置，绝不进仓库）
+keystore.properties

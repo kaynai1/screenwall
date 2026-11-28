@@ -30,3 +30,7 @@
 .cdref/
 scripts/__pycache__/
 ui/vite.preview.config.ts
+/keystore.properties
+
+# 发布用的安卓安装包副本
+/*.apk

@@ -7,9 +7,9 @@
 设计细节见 [webrtc-p2p.md](webrtc-p2p.md)，服务器配置见
 [server.md](server.md) 的「网页端 P2P」。
 
-> 安卓 APK 需要 JDK + Android SDK 才能打包，本仓库暂不提供独立安装包；
-> 网页端的 PWA 已覆盖手机使用场景（见下文「装到安卓手机」），要独立 APK 的打包路线
-> 见「打包成安卓 APK」。
+> 安卓 App 有两种：仓库里的原生主控端（`android/`，Kotlin + Compose，Release 里
+> 提供签名好的 `ScreenWall_<版本>_android.apk`），以及网页端本身的 PWA。前者功能更全、
+> 支持 WebRTC 直连；后者不用安装。要自己打包见「打包成安卓 APK」。
 
 ## 能力
 

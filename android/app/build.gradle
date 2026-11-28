@@ -11,12 +11,34 @@ android {
         applicationId "com.screenwall.android"
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName "0.1.2"
+        versionCode 222
+        versionName "0.2.22"
+    }
+
+    // 发到 Release 的安装包必须带签名，否则手机装不上、更装不上更新。
+    // 密钥不进仓库：keystore.properties 只记录本机路径与口令，已 gitignore，
+    // 文件缺失时退回 debug 签名（本地自测用，不要拿这个包分发）。
+    signingConfigs {
+        release {
+            def properties = rootProject.file('keystore.properties')
+            if (properties.exists()) {
+                def props = new Properties()
+                properties.withInputStream { props.load(it) }
+                storeFile file(props.storeFile)
+                storePassword props.storePassword
+                keyAlias props.keyAlias
+                keyPassword props.keyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
+            // 没有 keystore.properties（没在本机配置签名）就跳过，留成无签名包，
+            // 只在本地自测用，避免 CI 或别人 clone 时直接报错。
+            if (signingConfigs.release.storeFile != null) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

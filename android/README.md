@@ -47,6 +47,39 @@ D:\tools\gradle-8.2.1\bin\gradle assembleDebug
 
 `android/local.properties` 里的 `sdk.dir` 指向本机 SDK，已被 git 忽略。
 
+### 打 Release 包（发到 GitHub Release）
+
+Release 包必须用固定密钥签名，否则已装用户装不上更新。密钥和口令不进仓库：
+
+1. 生成一次密钥（已有就跳过）：
+
+```powershell
+keytool -genkeypair -keystore D:\tools\screenwall-android\screenwall-release.jks `
+  -storetype PKCS12 -alias screenwall -keyalg RSA -keysize 4096 -validity 10000 `
+  -dname "CN=ScreenWall, OU=ScreenWall, O=ScreenWall, C=CN"
+```
+
+2. 在 `android/keystore.properties` 写密钥路径与口令（该文件已 gitignore）：
+
+```properties
+storeFile=D:/tools/screenwall-android/screenwall-release.jks
+storePassword=...
+keyAlias=screenwall
+keyPassword=...
+```
+
+3. 构建并改名：
+
+```powershell
+$env:JAVA_HOME = "D:\tools\jdk17\jdk-17.0.17+10"
+D:\tools\gradle-8.2.1\bin\gradle assembleRelease
+copy app\build\outputs\apk\release\app-release.apk ..\ScreenWall_<版本>_android.apk
+```
+
+没有 `keystore.properties` 时构建仍然通过，但产物是 `app-release-unsigned.apk`，
+只能本地自测，不能分发。发布时把这个 APK 作为附件传到对应 Release，App 首页
+启动就会自己检查并提示更新（只认 Release 里名字以 `.apk` 结尾的附件）。
+
 ## 本地联调（不依赖 Windows 被控端）
 
 `scripts/fake-server.mjs` 是一个只有账号接口、一台假设备和假画面/声音的服务器：
