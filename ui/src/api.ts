@@ -2015,3 +2015,14 @@ export function hideServerPanel(): Promise<void> {
 export function resizeServerPanel(bounds: PanelBounds): Promise<void> {
   return invoke<void>("resize_server_panel", { bounds });
 }
+
+/** 官网与 GitHub 仓库地址；Rust 侧 `open_external` 只放行这两个。 */
+export const SITE_URL = "https://kaynai1.github.io/screenwall/";
+export const REPO_URL = "https://github.com/kaynai1/screenwall";
+
+/** 用系统默认浏览器打开官网 / GitHub；浏览器演示模式退化为开新标签。 */
+export function openExternal(url: string): Promise<void> {
+  if (isTauri) return invoke<void>("open_external", { url });
+  window.open(url, "_blank", "noopener,noreferrer");
+  return Promise.resolve();
+}

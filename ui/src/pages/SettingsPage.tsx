@@ -4,6 +4,8 @@ import {
   ChevronDown,
   Copy,
   Download,
+  Github,
+  Globe,
   Info,
   Loader2,
   LogOut,
@@ -22,6 +24,7 @@ import {
   getConnectCode,
   getDirectState,
   getLocalSettings,
+  openExternal,
   regeneratePairingCode,
   setAllowControl,
   setAutostart,
@@ -32,6 +35,8 @@ import {
   setUiZoom,
   setVirtualDisplay,
   testServer,
+  REPO_URL,
+  SITE_URL,
   type ConnectCodeView,
 } from "../api";
 import { Modal, Progress, Segmented, Switch } from "../components/ui";
@@ -171,6 +176,12 @@ export default function SettingsPage({
   const [version, setVersion] = useState("0.1.0");
   const [update, setUpdate] = useState<UpdatePhase>({ kind: "idle" });
   const [download, setDownload] = useState<DownloadPhase>({ kind: "idle" });
+  /** 打开官网 / GitHub 失败时的提示（正常情况下不会出现）。 */
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const openLink = (url: string) => {
+    setLinkError(null);
+    void openExternal(url).catch((e) => setLinkError(errorLine(e)));
+  };
   const installRef = useRef(false);
 
   // 连接码（ID + 密码）：开关和密码都即时生效，不参与保存按钮。
@@ -1365,6 +1376,57 @@ export default function SettingsPage({
                           )}
                         </div>
                       )}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="set-group" aria-labelledby="set-links">
+                <h3 className="set-group-title" id="set-links">
+                  项目与帮助
+                </h3>
+                <div className="set-rows">
+                  <div className="set-row">
+                    <div className="set-row-copy">
+                      <span className="set-row-label">官方网站</span>
+                      <span className="set-row-hint">
+                        kaynai1.github.io/screenwall · 下载、三端说明与自建服务器教程
+                      </span>
+                    </div>
+                    <div className="set-inline-control">
+                      <button
+                        type="button"
+                        className="btn btn-ghost set-test"
+                        onClick={() => openLink(SITE_URL)}
+                      >
+                        <Globe size={14} />
+                        打开
+                      </button>
+                    </div>
+                  </div>
+                  <div className="set-row">
+                    <div className="set-row-copy">
+                      <span className="set-row-label">GitHub 仓库</span>
+                      <span className="set-row-hint">
+                        github.com/kaynai1/screenwall · 源代码、问题反馈与全部版本
+                      </span>
+                    </div>
+                    <div className="set-inline-control">
+                      <button
+                        type="button"
+                        className="btn btn-ghost set-test"
+                        onClick={() => openLink(REPO_URL)}
+                      >
+                        <Github size={14} />
+                        打开
+                      </button>
+                    </div>
+                  </div>
+                  {linkError && (
+                    <div className="set-field">
+                      <p className="set-field-hint set-field-error" role="alert">
+                        {linkError}
+                      </p>
                     </div>
                   )}
                 </div>
