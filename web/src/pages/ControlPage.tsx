@@ -1,6 +1,7 @@
 import {
   ChevronLeft,
   Clipboard,
+  Download,
   Gauge,
   Keyboard,
   Loader2,
@@ -22,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type * as React from "react";
 import type { DeviceView, Viewer } from "../api";
 import { RemoteAudioPlayer, supportsOpusAudio } from "../audio";
+import { RemoteFiles } from "../download";
 import { describeCode } from "../errors";
 import { uploadFiles } from "../files";
 import {
@@ -33,6 +35,7 @@ import {
 import { CODEC_OPUS, CODEC_PCM16, MEDIA_AUDIO, MEDIA_VIDEO, DISPLAY_ALL } from "../protocol";
 import { VideoRenderer } from "../video";
 import { WEB_VERSION } from "../version";
+import FileBrowser from "./FileBrowser";
 
 type Phase = "opening" | "waiting" | "streaming" | "error";
 
@@ -162,6 +165,8 @@ export default function ControlPage({
   /** 画面是否被放大/平移过（显示「还原」按钮用）。 */
   const [zoomed, setZoomed] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [remoteFiles] = useState(() => new RemoteFiles((message) => viewer.sendJson(message)));
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -274,6 +279,8 @@ export default function ControlPage({
         });
       },
       onMessage: (message) => {
+        // 目录浏览与下载的消息由 RemoteFiles 消化，别让控制页当成未知消息。
+        if (remoteFiles.handle(message)) return;
         switch (message.t) {
           case "welcome": {
             sendStream(optionsRef.current);
@@ -407,6 +414,7 @@ export default function ControlPage({
       audioPlayerRef.current?.dispose();
       audioPlayerRef.current = null;
       viewer.sendJson({ t: "input", events: [{ k: "releaseAll" }] });
+      remoteFiles.dispose();
       viewer.closeSession();
       renderer.detach();
     };
@@ -1192,6 +1200,17 @@ export default function ControlPage({
               <Upload size={13} />
               {upload ? "发送中…" : "发送文件到电脑"}
             </button>
+            <button
+              type="button"
+              className="chip"
+              onClick={() => {
+                setPanelOpen(false);
+                setFilesOpen(true);
+              }}
+            >
+              <Download size={13} />
+              从电脑下载
+            </button>
           </div>
           {upload && (
             <div className="upload-bar" aria-label="上传进度">
@@ -1272,6 +1291,8 @@ export default function ControlPage({
           </div>
         </div>
       )}
+
+      {filesOpen && <FileBrowser files={remoteFiles} onClose={() => setFilesOpen(false)} />}
     </div>
   );
 }

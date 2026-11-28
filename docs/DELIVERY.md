@@ -556,4 +556,4 @@ sidecar 模式下：
 | 服务器 | `--web-dir` 把静态站点挂在 `/app`（SPA 回落 `index.html`），根路径 307 跳到 `/app/`；`/ws/view` 接受 `?token=`（浏览器 WebSocket 无法设请求头），HTTP 接口仍只认 Bearer |
 | 协议实现 | 网页端按 `cloud.rs` 的 8 字节会话帧与 `frame.rs` 的 24 字节媒体帧逐字节解码，输入按 16ms 批量发送 |
 | 安卓 APK | `web/android/`（Capacitor 6 壳，WebView 跑同一份前端）：`npm run build:cap` → `npx cap sync android` → `gradlew assembleDebug`，产物 `app-debug.apk`；壳内页面源 `http://localhost`，登录页手填服务器，Manifest 开 `usesCleartextTraffic` 支持局域网 http/ws |
-| 限制 | 文件只支持上传，下载与目录浏览未做；走账号中转，不参与直连/打洞；切后台可能被系统挂起，恢复后需手动重连；iOS 原生 App 暂不做，用 PWA；APK 需在装有 Android SDK 的机器上按 `docs/web.md` 打包。**已并入 H.264 硬编分支**，被控端与本分支一致时网页端可走 WebCodecs H.264 |
+| 限制 | 文件下载只支持逐个文件，目录浏览只读、不能批量打包；走账号中转，不参与直连/打洞；切后台可能被系统挂起，恢复后需手动重连；iOS 原生 App 暂不做，用 PWA；APK 需在装有 Android SDK 的机器上按 `docs/web.md` 打包。**已并入 H.264 硬编分支**，被控端与本分支一致时网页端可走 WebCodecs H.264 |
