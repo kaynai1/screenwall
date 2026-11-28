@@ -145,26 +145,29 @@
           <p>桌面端既是主控也是被控；网页端和安卓端随时接手，不用再装一套客户端。</p>
         </div>
         <div class="clients">
-          <article class="client-card wide">
-            <div class="mock assist">
-              <div class="assist-head">
-                <b>远程协助</b>
-                <span>把本机交给别人控制，或者连到另一台电脑</span>
-              </div>
-              <div class="assist-grid">
-                <div class="assist-box">
-                  <div class="assist-label">本机识别码</div>
-                  <div class="assist-code">572 955 600</div>
-                  <div class="assist-line">临时密码 <em>••••••••</em></div>
-                  <div class="assist-btn blue">复制识别码和密码</div>
-                  <div class="assist-chips"><span class="on">一次性</span><span>1 小时</span><span>1 天</span><span>长期</span></div>
+          <article class="client-card">
+            <div class="client-visual">
+              <div class="mock assist">
+                <div class="assist-head">
+                  <b>远程协助</b>
+                  <span>把本机交给别人控制，或者连到另一台电脑</span>
                 </div>
-                <div class="assist-box">
-                  <div class="assist-label">对方的识别码</div>
-                  <div class="assist-input">9 位识别码，或 192.168.1.20:47900</div>
-                  <div class="assist-input">临时密码或固定密码</div>
-                  <div class="assist-btn">连接</div>
-                  <div class="assist-note">同一网段会自动走直连，画面不经过任何服务器。</div>
+                <div class="assist-grid">
+                  <div class="assist-box">
+                    <div class="assist-label">本机识别码</div>
+                    <div class="assist-code">572 955 600</div>
+                    <div class="assist-line">临时密码 <em>••••••••</em></div>
+                    <div class="assist-btn blue">复制识别码和密码</div>
+                    <div class="assist-chips"><span class="on">一次性</span><span>1 小时</span><span>1 天</span><span>长期</span></div>
+                    <div class="assist-lan">局域网直连 10.0.12.21:47900</div>
+                  </div>
+                  <div class="assist-box">
+                    <div class="assist-label">对方的识别码</div>
+                    <div class="assist-input">9 位识别码或 IP:端口</div>
+                    <div class="assist-input">临时密码或固定密码</div>
+                    <div class="assist-btn">连接</div>
+                    <div class="assist-note">同一网段会自动走直连，画面不经过任何服务器。</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -174,23 +177,25 @@
             </div>
           </article>
           <article class="client-card">
-            <div class="phone">
-              <div class="mock-phone web">
-                <div class="mp-top">
-                  <b>设备</b>
-                  <span class="mp-exit">⎋</span>
+            <div class="client-visual">
+              <div class="phone">
+                <div class="mock-phone web">
+                  <div class="mp-top">
+                    <b>设备</b>
+                    <span class="mp-exit">⎋</span>
+                  </div>
+                  <div class="mp-status"><i></i>已连接</div>
+                  <div class="mp-sub"><span>我的设备</span><span>6 在线 / 6 台</span></div>
+                  <div class="mp-list">
+                    <div><i class="mp-mon"></i><span><b>设计部 · 主力机</b><small>在线 · Windows</small></span><em>›</em></div>
+                    <div><i class="mp-mon"></i><span><b>前台 · 接待机</b><small>在线 · Windows</small></span><em>›</em></div>
+                    <div><i class="mp-mon"></i><span><b>会议室 · 投屏机</b><small>在线 · Windows</small></span><em>›</em></div>
+                    <div><i class="mp-mon"></i><span><b>仓库 · 扫码机</b><small>在线 · Windows</small></span><em>›</em></div>
+                    <div><i class="mp-mon"></i><span><b>机房 · 备用机</b><small>在线 · Windows</small></span><em>›</em></div>
+                    <div><i class="mp-mon"></i><span><b>测试机 · Win11</b><small>在线 · Windows</small></span><em>›</em></div>
+                  </div>
+                  <div class="mp-foot">当前账号 demo</div>
                 </div>
-                <div class="mp-status"><i></i>已连接</div>
-                <div class="mp-sub"><span>我的设备</span><span>6 在线 / 6 台</span></div>
-                <div class="mp-list">
-                  <div><i class="mp-mon"></i><span><b>设计部 · 主力机</b><small>在线 · Windows</small></span><em>›</em></div>
-                  <div><i class="mp-mon"></i><span><b>前台 · 接待机</b><small>在线 · Windows</small></span><em>›</em></div>
-                  <div><i class="mp-mon"></i><span><b>会议室 · 投屏机</b><small>在线 · Windows</small></span><em>›</em></div>
-                  <div><i class="mp-mon"></i><span><b>仓库 · 扫码机</b><small>在线 · Windows</small></span><em>›</em></div>
-                  <div><i class="mp-mon"></i><span><b>机房 · 备用机</b><small>在线 · Windows</small></span><em>›</em></div>
-                  <div><i class="mp-mon"></i><span><b>测试机 · Win11</b><small>在线 · Windows</small></span><em>›</em></div>
-                </div>
-                <div class="mp-foot">当前账号 demo</div>
               </div>
             </div>
             <div class="client-text">
@@ -199,8 +204,9 @@
             </div>
           </article>
           <article class="client-card">
-            <div class="phone">
-              <div class="mock-phone android">
+            <div class="client-visual">
+              <div class="phone">
+                <div class="mock-phone android">
                 <div class="mp-logo">
                   <svg viewBox="0 0 84 81" aria-hidden="true">
                     <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
@@ -218,6 +224,7 @@
                 </div>
                 <div class="mp-btn">登录</div>
                 <p class="mp-hint">用桌面客户端同一个账号登录，登录后就能看到在线的电脑。</p>
+                </div>
               </div>
             </div>
             <div class="client-text">
@@ -455,8 +462,15 @@ turn_secret = "&lt;coturn 的 static-auth-secret&gt;"</code></pre>
                 一台全新的 Linux 服务器，SSH 登录后执行这一条；服务端和网页端一起装好，
                 浏览器打开 <code>http://你的IP:8787/app</code> 就能用。
               </p>
-              <pre><code>curl -fsSL -H 'Accept: application/vnd.github.raw' \
-https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash</code></pre>
+              <div class="code-wrap">
+                <pre><code>curl -fsSL -H 'Accept: application/vnd.github.raw' \
+https://<wbr>api.github.com/<wbr>repos/<wbr>kaynai1/<wbr>screenwall/<wbr>contents/<wbr>scripts/<wbr>deploy-server.sh | bash</code></pre>
+                <button
+                  class="copy-btn"
+                  type="button"
+                  data-copy="curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash"
+                >复制命令</button>
+              </div>
             </div>
           </li>
         </ol>
@@ -482,5 +496,36 @@ https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.s
         <p class="footer-meta">MIT License · QQ 群 128906393 · xqtban@88.com</p>
       </div>
     </footer>
+    <script>
+      document.querySelectorAll("[data-copy]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var text = btn.getAttribute("data-copy");
+          function done() {
+            btn.textContent = "已复制";
+            btn.classList.add("done");
+            window.setTimeout(function () {
+              btn.textContent = "复制命令";
+              btn.classList.remove("done");
+            }, 1600);
+          }
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(done, fallback);
+          } else {
+            fallback();
+          }
+          function fallback() {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.setAttribute("readonly", "");
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand("copy"); done(); } catch (e) {}
+            ta.remove();
+          }
+        });
+      });
+    </script>
   </body>
 </html>
