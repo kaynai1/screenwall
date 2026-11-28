@@ -20,6 +20,8 @@ set -Eeuo pipefail
 # ---------- 固定配置（不再让用户填） ----------
 APP_DIR=/opt/screenwall
 SRC_DIR=/tmp/screenwall-src
+WEB_DIR="$APP_DIR/web/dist"
+NODE_VERSION="20.18.1"
 DEFAULT_PORT=8787
 REPO_OWNER=kaynai1
 REPO_NAME=screenwall
@@ -27,7 +29,7 @@ REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME.git"
 REPO_MIRROR="https://gitclone.com/github.com/$REPO_OWNER/$REPO_NAME.git"
 TARBALL="https://codeload.github.com/$REPO_OWNER/$REPO_NAME/tar.gz/refs/heads/main"
 TARBALL_MIRROR="https://gitclone.com/github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/main.tar.gz"
-SCRIPT_VERSION="1.0"
+SCRIPT_VERSION="1.1"
 SERVICE=screenwall
 CONFIG="$APP_DIR/server.toml"
 BIN="$APP_DIR/screenwall-server"
@@ -39,6 +41,7 @@ export CARGO_NET_RETRY=5
 
 # ---------- 参数 ----------
 YES=0
+UPDATE=0
 ACCOUNT=""
 PASSWORD=""
 PORT=""
@@ -50,7 +53,8 @@ usage() {
   bash deploy-server.sh                     打开管理菜单：安装 / 更新 / 状态 /
                                             日志 / 重启 / 备份 / 卸载
   bash deploy-server.sh --yes --account 账号 --password 密码 [--port 8787] [--allow-register]
-                                            无交互一键安装
+                                            无交互一键安装（含网页端）
+  bash deploy-server.sh --update            无交互更新到最新版（含网页端）
   bash deploy-server.sh --help              显示本帮助
 
 可以用管道直接执行：curl -fsSL <脚本地址> | bash
@@ -60,6 +64,7 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -y|--yes) YES=1 ;;
+    --update) UPDATE=1 ;;
     --account) ACCOUNT="${2:-}"; shift ;;
     --password) PASSWORD="${2:-}"; shift ;;
     --port) PORT="${2:-}"; shift ;;
@@ -303,6 +308,96 @@ build_server() {
   ok "编译完成。"
 }
 
+# ---------- 网页端 ----------
+
+WEB_OK=0
+
+# 网页端构建需要 Node 18+。系统自带的太旧就装一份到 /opt/node20，
+# 不动系统包；以后都优先用它。
+ensure_node() {
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    local major
+    major=$(node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/')
+    if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 18 )); then
+      ok "已检测到 Node $(node -v)。"
+      return 0
+    fi
+    warn "Node 版本过低（$(node -v 2>/dev/null)），网页端需要 18+。"
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) warn "未知架构 $(uname -m)，跳过网页端构建。"; return 1 ;;
+  esac
+
+  local dir=/opt/node20
+  if [[ -x "$dir/bin/node" ]]; then
+    export PATH="$dir/bin:$PATH"
+    ok "使用已安装的 Node（$dir）。"
+    return 0
+  fi
+
+  info "安装 Node $NODE_VERSION（走 npmmirror 镜像）…"
+  local pkg="node-v$NODE_VERSION-linux-$arch"
+  if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 300 \
+      "https://npmmirror.com/mirrors/node/v$NODE_VERSION/$pkg.tar.gz" -o "/tmp/$pkg.tar.gz"; then
+    warn "下载 Node 失败，跳过网页端构建（服务端不受影响）。"
+    return 1
+  fi
+  $SUDO rm -rf "$dir"
+  if ! $SUDO mkdir -p "$dir" ||
+     ! $SUDO tar -xzf "/tmp/$pkg.tar.gz" -C "$dir" --strip-components=1; then
+    warn "解压 Node 失败，跳过网页端构建。"
+    rm -f "/tmp/$pkg.tar.gz"
+    return 1
+  fi
+  rm -f "/tmp/$pkg.tar.gz"
+  export PATH="$dir/bin:$PATH"
+  if ! command -v node >/dev/null 2>&1; then
+    warn "Node 安装后仍不可用，跳过网页端构建。"
+    return 1
+  fi
+  ok "Node $(node -v) 已就绪。"
+}
+
+# 网页端构建失败不影响服务端安装：只提示，/app 暂时不可用。
+build_web() {
+  WEB_OK=0
+  if [[ ! -d "$SRC_DIR/web" ]]; then
+    warn "源码里没有 web/ 目录，跳过网页端。"
+    return 0
+  fi
+  ensure_node || return 0
+  info "构建网页端（npm install + vite build，约 1–2 分钟）…"
+  if ( cd "$SRC_DIR/web" &&
+       ( npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund --loglevel=error </dev/null ||
+         npm install --registry=https://registry.npmmirror.com --no-audit --no-fund --loglevel=error </dev/null ) &&
+       npm run build </dev/null ); then
+    if [[ -d "$SRC_DIR/web/dist" ]]; then
+      WEB_OK=1
+      ok "网页端构建完成。"
+    else
+      warn "网页端构建产物缺失，跳过。/app 暂时不可用。"
+    fi
+  else
+    warn "网页端构建失败，服务端仍会部署。/app 暂时不可用，可看上方 npm 报错。"
+  fi
+}
+
+# 部署网页端产物；先删旧目录再拷，避免上一版的残留文件混进去。
+deploy_web() {
+  if [[ "$WEB_OK" != "1" || ! -d "$SRC_DIR/web/dist" ]]; then
+    return 0
+  fi
+  info "部署网页端到 $WEB_DIR …"
+  $SUDO mkdir -p "$APP_DIR/web"
+  $SUDO rm -rf "$WEB_DIR"
+  $SUDO cp -a "$SRC_DIR/web/dist" "$APP_DIR/web/dist"
+  ok "网页端已部署。"
+}
+
 config_port() {
   sed -n 's/^bind *= *"[^"]*:\([0-9][0-9]*\)".*/\1/p' "$CONFIG" 2>/dev/null | head -1
 }
@@ -334,6 +429,11 @@ health_check() {
 }
 
 write_unit() {
+  # 有网页产物就挂上 /app；没有时保持旧行为，不影响服务端。
+  local exec="$BIN run --config $CONFIG"
+  if [[ -d "$WEB_DIR" ]]; then
+    exec="$exec --web-dir $WEB_DIR"
+  fi
   $SUDO tee "$UNIT" >/dev/null <<EOF
 [Unit]
 Description=ScreenWall server
@@ -341,7 +441,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$BIN run --config $CONFIG
+ExecStart=$exec
 Restart=always
 RestartSec=3
 
@@ -383,6 +483,7 @@ do_install() {
   ensure_rust
   fetch_source
   build_server
+  build_web
 
   info "安装到 $APP_DIR 并写配置…"
   $SUDO mkdir -p "$APP_DIR"
@@ -409,6 +510,7 @@ EOF
   if ! command -v systemctl >/dev/null 2>&1; then
     die "这台机器没有 systemd（常见于容器/WSL）。可手动前台运行：$BIN run --config $CONFIG"
   fi
+  deploy_web
   write_unit
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable "$SERVICE" >/dev/null 2>&1 || true
@@ -422,6 +524,11 @@ EOF
   echo
   ok "部署完成！"
   echo "  中转服务器地址： http://$ip:$port"
+  if [[ "$WEB_OK" = "1" ]]; then
+    echo "  网页端：         http://$ip:$port/app"
+  else
+    echo "  网页端：         未构建（/app 暂不可用）"
+  fi
   echo "  账号： $account"
   echo "  在 ScreenWall 登录页填服务器地址与账号即可（不要进局域网模式）。"
 }
@@ -466,11 +573,20 @@ update_server() {
   ensure_rust
   fetch_source
   build_server
+  build_web
   info "替换二进制（旧版备份为 screenwall-server.bak）…"
   $SUDO cp "$BIN" "$BIN.bak" 2>/dev/null || true
   replace_binary "$SRC_DIR/target/release/screenwall-server"
+  deploy_web
+  # 老安装没有 --web-dir，重写 unit 让 /app 生效。
+  write_unit
+  $SUDO systemctl daemon-reload
   $SUDO systemctl restart "$SERVICE"
-  ok "已更新并重启。"
+  if [[ "$WEB_OK" = "1" ]]; then
+    ok "已更新并重启；网页端： http://$(public_ip):$(config_port)/app"
+  else
+    ok "已更新并重启（网页端未构建）。"
+  fi
   health_check
 }
 
@@ -571,6 +687,14 @@ MENU
 }
 
 # ---------- 入口 ----------
+if [[ $UPDATE -eq 1 ]]; then
+  if [[ ! -f "$CONFIG" ]]; then
+    die "尚未安装（找不到 $CONFIG）。无交互首次安装请带 --yes --account 账号 --password 密码。"
+  fi
+  update_server
+  exit 0
+fi
+
 if [[ $YES -eq 1 || -n "$ACCOUNT" ]]; then
   [[ -n "$ACCOUNT" ]] || die "无交互安装需要 --account 账号 --password 密码。"
   [[ -n "$PASSWORD" ]] || die "无交互安装需要 --password 密码。"

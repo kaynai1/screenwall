@@ -56,7 +56,7 @@ scripts\cargo.bat run -p screenwall-server -- run --config server.toml
 curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash
 ```
 
-运行后先出现 **ScreenWall 管理脚本** 菜单（安装 / 更新 / 查看状态 / 查看日志 / 重启 / 备份数据 / 卸载），选 `1` 安装，然后依次问你 **请输入账号** → **请输入密码（至少 8 位，输入不显示）** → **请输入端口（直接回车用默认 8787）**。之后它会自动修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址。装完到云控制台**安全组**放行该端口；以后再执行同一条命令，就能用菜单更新、备份、卸载。
+运行后先出现 **ScreenWall 管理脚本** 菜单（安装 / 更新 / 查看状态 / 查看日志 / 重启 / 备份数据 / 卸载），选 `1` 安装，然后依次问你 **请输入账号** → **请输入密码（至少 8 位，输入不显示）** → **请输入端口（直接回车用默认 8787）**。之后它会自动修 `/dev/null`、装依赖和 Rust（走国内镜像）、下载源码、编译、建账号、注册 systemd、放行 ufw，最后打印中转地址。**网页端也会一起构建并挂到 `/app`**（没有 Node 时自动装一份到 `/opt/node20`，npm 走 npmmirror），装完浏览器打开 `http://<公网IP>:8787/app` 就能用；要 H.264、剪贴板、PWA 安装仍需 HTTPS。装完到云控制台**安全组**放行该端口；以后再执行同一条命令，就能用菜单更新、备份、卸载。
 
 不想交互就一次给全：
 
@@ -64,7 +64,13 @@ curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/
 curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash -s -- --yes --account kay --password '至少8位密码' --port 8787
 ```
 
-装过之后再运行同一条命令会显示管理菜单（更新 / 状态 / 日志 / 重启 / 备份 / 卸载）。`api.github.com` 不通时的备用地址和完整分步见 [服务器规格](docs/server.md#0-一键部署ubuntu--无域名--直绑公网最快路径)。
+已经装过、只想更新到最新版（服务端 + 网页端，自动重写 systemd 单元）：
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw' https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash -s -- --update
+```
+
+不改参数再运行同一条 `curl ... | bash` 会显示管理菜单（更新 / 状态 / 日志 / 重启 / 备份 / 卸载）。`api.github.com` 不通时的备用地址和完整分步见 [服务器规格](docs/server.md#0-一键部署ubuntu--无域名--直绑公网最快路径)。
 
 ## 当前状态
 

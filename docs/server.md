@@ -656,7 +656,7 @@ curl -fsSL -H 'Accept: application/vnd.github.raw' \
 
 ```text
 ══════════════════════════════════════════════
-            ScreenWall 管理脚本 v1.0
+            ScreenWall 管理脚本 v1.1
 ══════════════════════════════════════════════
   未安装
 
@@ -686,8 +686,12 @@ curl -fsSL -H 'Accept: application/vnd.github.raw' \
 ```
 
 端口直接回车就用 8787。装完之后客户端登录页填 `http://<公网IP>:8787`、
-账号和刚才输入的密码。以后再执行同一条 `curl ... | bash`，菜单里就能更新、
-备份数据或卸载。
+账号和刚才输入的密码。**脚本会一并构建网页端并挂到 `/app`**，浏览器打开
+`http://<公网IP>:8787/app` 就能用（要 H.264、剪贴板、PWA 安装仍需 HTTPS）。
+以后再执行同一条 `curl ... | bash`，菜单里就能更新、备份数据或卸载。
+
+没有 Node 的机器会自动装一份 Node 20 到 `/opt/node20`（走 npmmirror 镜像），
+不污染系统包；网页端构建失败只提示、不影响服务端安装，`/app` 暂时不可用。
 
 不想交互就把答案写在命令里：
 
@@ -720,7 +724,9 @@ git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/
   缺什么装什么（curl/tar/git/编译工具/pkg-config/gpgv）。
 - **源码用 tarball 优先**：不依赖 git，GitHub 不通时自动切镜像，最后才退回 `git clone`。
 - **Rust 与 crates 走 rsproxy.cn 镜像**，国内编译快。
-- 编译、写配置、建账号、装 systemd、放行 ufw，最后打印中转地址并做健康检查。
+- **网页端自动构建**：没有 Node 18+ 就装 Node 20 到 `/opt/node20`，npm 走
+  npmmirror；产物部署到 `/opt/screenwall/web/dist`，systemd 单元自动带 `--web-dir`。
+- 编译、写配置、建账号、装 systemd、放行 ufw，最后打印中转地址、网页地址并做健康检查。
 
 可选参数：`--port 8787`、`--allow-register`。**已经装过**之后再运行同一条命令，
 还是这个菜单，顶部会显示「已安装 · 端口 8787」，用 2 更新、6 备份、7 卸载：
@@ -729,6 +735,14 @@ git clone --depth 1 https://gitclone.com/github.com/kaynai1/screenwall.git /tmp/
 curl -fsSL -H 'Accept: application/vnd.github.raw' \
   https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
   | bash
+```
+
+不想走菜单、直接更新到最新版（服务端 + 网页端，自动重写 systemd 单元）：
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw' \
+  https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh \
+  | bash -s -- --update
 ```
 
 > 交互问答是从 `/dev/tty` 读的，所以要用 SSH 登录进服务器再执行（分配了终端）。
