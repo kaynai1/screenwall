@@ -24,6 +24,9 @@ private val CODE_COPY: Map<Int, Pair<String, String>> = mapOf(
 
 private val HTTP_COPY: Map<String, Pair<String, String>> = mapOf(
     "auth_failed" to ("用户名或密码错误" to "检查账号密码后再试。"),
+    "quick_auth_failed" to ("识别码或密码错误" to "检查被控端显示的 9 位识别码与连接密码。"),
+    "quick_disabled" to ("设备未开启连接码" to "在被控端打开「连接码连接」后再试。"),
+    "control_disabled" to ("对方关闭了被控" to "被控端关闭了「允许被控」开关。"),
     "invalid_token" to ("登录已失效" to "请重新登录。"),
     "rate_limited" to ("尝试过于频繁" to "请等几分钟再试。"),
     "registration_closed" to ("服务器未开放注册" to "请联系服务器管理员开账号。"),

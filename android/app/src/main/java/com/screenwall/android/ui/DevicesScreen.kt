@@ -24,8 +24,9 @@ import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.screenwall.android.data.Device
 import com.screenwall.android.data.describeThrow
+import com.screenwall.android.data.isViewerClient
 import com.screenwall.android.net.ViewerClient
 import com.screenwall.android.session.AppSession
 import kotlinx.coroutines.launch
@@ -63,13 +65,34 @@ import java.util.Locale
 @Composable
 fun DevicesScreen(
     session: AppSession,
+    onBack: () -> Unit,
     onOpenDevice: (Device) -> Unit,
-    onLogout: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     SystemBars(lightIcons = !isSystemInDarkTheme())
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
+    var devices by remember {
+        // 识别码会话拿不到账号设备列表，WS 的 devices 推送也可能在进入本页之前就发过了，
+        // 先用令牌对应的那台设备兜底。
+        mutableStateOf(
+            if (session.account.quick && session.account.deviceId.isNotBlank()) {
+                listOf(
+                    Device(
+                        id = session.account.deviceId,
+                        name = session.account.username,
+                        os = "",
+                        version = "",
+                        online = true,
+                        lastSeen = System.currentTimeMillis(),
+                        controllable = true,
+                    ),
+                )
+            } else {
+                emptyList()
+            },
+        )
+    }
     var refreshing by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
@@ -82,7 +105,10 @@ fun DevicesScreen(
                 session.viewer.connect(session.account.serverUrl, session.account.token)
             }
             connected = true
-            devices = session.api.devices(session.account)
+            // 识别码会话的设备信息由服务端经 WS 推送，账号接口会拒绝受限令牌。
+            if (!session.account.quick) {
+                devices = session.api.devices(session.account)
+            }
             error = ""
         } catch (throwable: Throwable) {
             error = describeThrow(throwable)
@@ -119,6 +145,18 @@ fun DevicesScreen(
         onRefresh = { scope.launch { load(showSpinner = true) } },
     )
 
+    val selfId = if (session.account.quick) "" else session.account.deviceId
+    val visibleDevices = remember(devices, selfId) {
+        devices
+            .filter { it.id != selfId && !it.isViewerClient }
+            .sortedWith(
+                compareByDescending<Device> { it.online }
+                    .thenByDescending { it.controllable }
+                    .thenBy { it.name.lowercase(Locale.getDefault()) },
+            )
+    }
+    val hiddenViewers = devices.count { it.id != selfId && it.isViewerClient }
+
     ScreenBackground {
         Column(
             modifier = Modifier
@@ -128,24 +166,35 @@ fun DevicesScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 6.dp),
+                    .padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+                    Icon(
+                        imageVector = Icons.Filled.ArrowBack,
+                        contentDescription = "返回",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = "设备",
-                        style = MaterialTheme.typography.headlineLarge,
+                        text = "全部设备",
+                        style = MaterialTheme.typography.titleLarge,
                     )
                     Text(
-                        text = "账号 · ${session.account.username}",
+                        text = if (session.account.quick) {
+                            "连接码会话 · 15 分钟内有效"
+                        } else {
+                            "账号 · ${session.account.username}"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onLogout, modifier = Modifier.size(44.dp)) {
+                IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) {
                     Icon(
-                        imageVector = Icons.Filled.Logout,
-                        contentDescription = "退出登录",
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "设置",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -180,10 +229,10 @@ fun DevicesScreen(
                                 CircularProgressIndicator(color = SW.accent, strokeWidth = 2.dp)
                             }
                         }
-                    } else if (devices.isEmpty()) {
+                    } else if (visibleDevices.isEmpty()) {
                         item { EmptyDevices() }
                     } else {
-                        items(devices, key = { it.id }) { device ->
+                        items(visibleDevices, key = { it.id }) { device ->
                             DeviceCard(
                                 device = device,
                                 onClick = {
@@ -206,6 +255,17 @@ fun DevicesScreen(
                                     modifier = Modifier.padding(horizontal = 4.dp),
                                 )
                             }
+                        }
+                    }
+                    if (hiddenViewers > 0) {
+                        item {
+                            Text(
+                                text = "已隐藏 $hiddenViewers 台查看端（安卓端 / 网页端）",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                            )
                         }
                     }
                 }
@@ -335,12 +395,12 @@ private fun EmptyDevices() {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = "还没有在线的设备",
+            text = "还没有可控制的电脑",
             style = MaterialTheme.typography.titleMedium,
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "在要控制的电脑上登录同一个账号，并保持被控端运行。",
+            text = "在要控制的电脑上登录同一个账号，并保持被控端运行；也可以在首页用 9 位识别码直接连。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,

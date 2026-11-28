@@ -16,7 +16,16 @@ data class Account(
     val token: String,
     val username: String,
     val deviceId: String,
+    /** 识别码换来的受限会话：只能连一台设备，令牌 15 分钟失效。 */
+    val quick: Boolean = false,
 )
+
+/** 客户端对外声明的名称与版本（hello / 登录 / 关于页共用）。 */
+object AppInfo {
+    const val NAME = "ScreenWall 安卓端"
+    const val CLIENT_NAME = "安卓端"
+    const val VERSION = "0.1.0"
+}
 
 /** `GET /api/v1/devices` 与 WS `devices` 消息共用的设备视图。 */
 data class Device(
@@ -41,6 +50,17 @@ data class Device(
     }
 }
 
+/**
+ * 查看端（安卓 / 网页 / iOS 客户端）也会以「设备」身份出现在账号里，
+ * 但它们不是被控端，放进设备列表只会造成干扰，列表里统一隐藏。
+ */
+val Device.isViewerClient: Boolean
+    get() {
+        val value = os.trim().lowercase()
+        return value.startsWith("android") || value.startsWith("web") ||
+            value.startsWith("ios") || value == "iphone" || value == "ipad"
+    }
+
 class ApiException(
     val code: String,
     val msg: String,
@@ -59,7 +79,7 @@ class Api(private val http: OkHttpClient) {
                 .put(
                     "device",
                     JSONObject()
-                        .put("name", "安卓端")
+                        .put("name", AppInfo.CLIENT_NAME)
                         .put("os", "Android")
                         .put("version", android.os.Build.VERSION.RELEASE ?: "android"),
                 )
@@ -71,6 +91,27 @@ class Api(private val http: OkHttpClient) {
                 token = data.optString("token"),
                 username = user?.optString("username").orEmpty().ifBlank { username },
                 deviceId = device?.optString("id").orEmpty(),
+            )
+        }
+
+    /**
+     * 识别码 + 密码，换一个只能打开这台设备的受限令牌，不需要账号。
+     * 对应服务端 `POST /api/v1/quick/connect`，和网页端的「识别码」入口同一条路。
+     */
+    suspend fun quickConnect(serverUrl: String, code: String, password: String): Account =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject()
+                .put("code", code.trim())
+                .put("password", password)
+                .put("name", AppInfo.CLIENT_NAME)
+            val data = postJson(serverUrl, "/api/v1/quick/connect", body)
+            val device = data.optJSONObject("device")
+            Account(
+                serverUrl = serverUrl,
+                token = data.optString("token"),
+                username = device?.optString("name").orEmpty().ifBlank { "远程设备" },
+                deviceId = device?.optString("id").orEmpty(),
+                quick = true,
             )
         }
 
