@@ -5993,6 +5993,43 @@ fn init_tracing() {
     logging::init(&base_dir());
 }
 
+/// 用系统默认浏览器打开项目链接（只允许官网与 GitHub 仓库）。
+///
+/// 设置 → 关于里用；白名单写在 Rust 侧，前端传任意 URL 也打不开别的地址。
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    const ALLOWED: [&str; 2] = [
+        "https://kaynai1.github.io/screenwall/",
+        "https://github.com/kaynai1/screenwall",
+    ];
+    if !ALLOWED.contains(&url.as_str()) {
+        return Err("不支持的链接".into());
+    }
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = format!("{url}\0").encode_utf16().collect();
+    // SAFETY: 两个字符串都以 NUL 结尾且在整个调用期间存活；ShellExecuteW
+    // 只读取它们，不保留指针。
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute 约定：返回值 <= 32 表示失败。
+    if result as isize <= 32 {
+        Err("打开浏览器失败".into())
+    } else {
+        Ok(())
+    }
+}
+
 /// 打开日志目录（资源管理器）。
 #[tauri::command]
 fn open_log_dir() -> Result<String, String> {
@@ -6390,6 +6427,7 @@ fn main() {
             set_remember_authorized,
             set_close_to_tray,
             set_virtual_display,
+            open_external,
             open_log_dir,
             export_diagnostics,
             get_log_info,
