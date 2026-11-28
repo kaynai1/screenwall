@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ScreenWall · 一屏看全，点开即控</title>
+    <meta
+      name="description"
+      content="ScreenWall 是开源自建的多机远程控制与屏幕墙：一屏看全、点开即控、群控同步、拖拽传文件、远程开机；局域网直连，跨网段用你自己的账号服务器。"
+    />
+    <meta name="theme-color" content="#f4f8fd" />
+    <link rel="icon" type="image/png" href="assets/icon-192.png" />
+    <link rel="apple-touch-icon" href="assets/icon-192.png" />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <svg class="mark" viewBox="0 0 84 81" aria-hidden="true">
+            <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
+            <rect x="37.5" y="2.5" width="21" height="76" rx="10.5" fill="#adadaf" />
+            <rect x="63" y="2.5" width="21" height="76" rx="10.5" fill="#727276" />
+          </svg>
+          <span>ScreenWall</span>
+        </a>
+        <nav class="links">
+          <a href="#features">功能</a>
+          <a href="download/">下载</a>
+          <a href="#start">快速开始</a>
+          <a class="github" href="https://github.com/kaynai1/screenwall" rel="noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-mark" aria-hidden="true">
+          <svg viewBox="0 0 84 81">
+            <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
+            <rect x="37.5" y="2.5" width="21" height="76" rx="10.5" fill="#adadaf" />
+            <rect x="63" y="2.5" width="21" height="76" rx="10.5" fill="#727276" />
+          </svg>
+        </div>
+        <h1>一屏看全，<br />点开即控。</h1>
+        <p class="lede">
+          ScreenWall 是自建的多机远程控制与屏幕墙：一屏看全、点开即控、群控同步、拖拽传文件。
+          局域网内点对点直连，跨网段才需要一台你自己的账号服务器。
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="download/">免费下载</a>
+          <a class="btn ghost" href="#start">快速开始</a>
+        </div>
+        <p class="hero-note">
+          适用于 Windows 10+、安卓与浏览器 · <a href="https://github.com/kaynai1/screenwall" rel="noreferrer">免费开源</a>
+        </p>
+      </section>
+
+      <div class="shot-wrap" aria-hidden="true">
+        <div class="shot">
+          <div class="shot-bar">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+            <span class="url">你的服务器 <b>/app</b></span>
+          </div>
+          <div class="shot-body">
+            <aside class="shot-side">
+              <div class="side-title">工作台</div>
+              <div class="side-item active">
+                <svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6" /><rect x="14" y="3" width="7" height="7" rx="1.6" /><rect x="3" y="14" width="7" height="7" rx="1.6" /><rect x="14" y="14" width="7" height="7" rx="1.6" /></svg>
+                屏幕墙
+              </div>
+              <div class="side-item">
+                <svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" /><rect x="13" y="3" width="8" height="8" rx="2" /><rect x="3" y="13" width="8" height="8" rx="2" /><path d="M15 15l4 4M19 15l-4 4" /></svg>
+                群控
+              </div>
+              <div class="side-item">
+                <svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 17v3h16v-3" /></svg>
+                文件传输
+              </div>
+              <div class="side-item">
+                <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a7.6 7.6 0 0 0 .1-6l-2.2.4a5.6 5.6 0 0 0-1.5-1.5l.4-2.2a7.6 7.6 0 0 0-6-.1l.4 2.2a5.6 5.6 0 0 0-1.5 1.5L6.9 9a7.6 7.6 0 0 0 0 6l2.2-.4a5.6 5.6 0 0 0 1.5 1.5l-.4 2.2a7.6 7.6 0 0 0 6 .1l-.4-2.2a5.6 5.6 0 0 0 1.5-1.5z" /></svg>
+                设置
+              </div>
+              <div class="side-user">
+                <span class="avatar"></span>
+                <div>
+                  <b>kaynai</b>
+                  <small>4 台设备在线</small>
+                </div>
+              </div>
+            </aside>
+            <div class="shot-main">
+              <div class="shot-head">
+                <b>屏幕墙</b>
+                <span class="live-tag"><i></i>4 台在线</span>
+              </div>
+              <div class="tiles">
+                <div class="tile">
+                  <div class="tile-screen active"><span class="cursor"></span></div>
+                  <div class="tile-meta"><b>DESKTOP-8RFJD38</b><span>Windows · 1920×1080</span></div>
+                </div>
+                <div class="tile">
+                  <div class="tile-screen t2"></div>
+                  <div class="tile-meta"><b>工作室主机</b><span>Windows · 2560×1440</span></div>
+                </div>
+                <div class="tile">
+                  <div class="tile-screen t3"></div>
+                  <div class="tile-meta"><b>展厅一号机</b><span>Windows · 3840×2160</span></div>
+                </div>
+                <div class="tile">
+                  <div class="tile-screen t4"></div>
+                  <div class="tile-meta"><b>渲染机</b><span>Windows · 1920×1080</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="support">
+        <h2>一个账号，三种客户端</h2>
+        <ul class="chips">
+          <li>Windows 桌面端</li>
+          <li>安卓 App</li>
+          <li>网页端 / PWA</li>
+          <li>iOS 添加到主屏幕</li>
+          <li>连接码直连</li>
+          <li>局域网直连</li>
+          <li>自建服务器</li>
+        </ul>
+        <p>也可以不用账号：9 位连接码、同网段识别码，或者直接把设备装进手机浏览器。</p>
+      </section>
+
+      <section id="features" class="section">
+        <div class="section-head">
+          <h2>把远程这件事，做得简单一点</h2>
+          <p>该有的都有，而且跑在你自己的网络和服务器上。</p>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6" /><rect x="14" y="3" width="7" height="7" rx="1.6" /><rect x="3" y="14" width="7" height="7" rx="1.6" /><rect x="14" y="14" width="7" height="7" rx="1.6" /></svg></span>
+            <h3>屏幕墙</h3>
+            <p>所有在线设备的实时缩略图排成一面墙，点开即控，不用来回切窗口。</p>
+          </article>
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v3" /><path d="M14 12l6 6-4 2-2-4-2 2z" /><path d="M3 10v6a2 2 0 0 0 2 2h6" /></svg></span>
+            <h3>点开即控</h3>
+            <p>鼠标、键盘、剪贴板、多显示器切换；同账号设备免确认，直连仍逐次确认。</p>
+          </article>
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" /><rect x="13" y="3" width="8" height="8" rx="2" /><rect x="3" y="13" width="8" height="8" rx="2" /><path d="M15 15l4 4M19 15l-4 4" /></svg></span>
+            <h3>群控同步</h3>
+            <p>一次点击、拖动或输入广播到多台机器，适合机房、展厅和批量操作。</p>
+          </article>
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 17v3h16v-3" /></svg></span>
+            <h3>文件传输</h3>
+            <p>拖拽即传，断点续传、SHA256 校验、整目录、3 路并发，双向都行。</p>
+          </article>
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 9a4 4 0 0 1 0 6" /></svg></span>
+            <h3>声音双向</h3>
+            <p>Opus 编码、码率自适应；远端声音、本机麦克风与回声消除都支持。</p>
+          </article>
+          <article class="card">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2" /><rect x="3" y="14" width="18" height="6" rx="2" /><path d="M7 7h.01M7 17h.01" /></svg></span>
+            <h3>自建账号服务器</h3>
+            <p>单文件 Rust 服务端：账号、设备目录、在线状态、审计与自动更新都在自己手里。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="start" class="section">
+        <div class="section-head">
+          <h2>三步开始</h2>
+          <p>不装服务端，也能在同一局域网里直连使用。</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <div>
+              <h3>下载并安装客户端</h3>
+              <p>Windows 安装包约 9 MB，装完打开就能被控，也能当主控。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>局域网里直接用连接码或识别码</h3>
+              <p>不需要账号，也不需要服务器；同一网段输入 9 位识别码就能找到设备。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>要跨网段，就起一台自己的服务器</h3>
+              <p>单文件服务端，同时托管网页端；登录同一个账号，手机浏览器也能控。</p>
+              <pre><code>./screenwall-server run --config server.toml --web-dir web/dist</code></pre>
+            </div>
+          </li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <svg class="mark small" viewBox="0 0 84 81" aria-hidden="true">
+            <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
+            <rect x="37.5" y="2.5" width="21" height="76" rx="10.5" fill="#adadaf" />
+            <rect x="63" y="2.5" width="21" height="76" rx="10.5" fill="#727276" />
+          </svg>
+          <span>ScreenWall</span>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/kaynai1/screenwall" rel="noreferrer">GitHub</a>
+          <a href="download/">下载</a>
+          <a href="https://github.com/kaynai1/screenwall/blob/main/docs/server.md" rel="noreferrer">部署文档</a>
+          <a href="https://github.com/kaynai1/screenwall/blob/main/README.md" rel="noreferrer">README</a>
+        </div>
+        <p class="footer-meta">MIT License · QQ 群 128906393 · xqtban@88.com</p>
+      </div>
+    </footer>
+  </body>
+</html>
