@@ -6,9 +6,10 @@
     <title>ScreenWall · 一屏看全，点开即控</title>
     <meta
       name="description"
-      content="ScreenWall 是开源自建的多机远程控制与屏幕墙：一屏看全、点开即控、群控同步、拖拽传文件、远程开机；局域网直连，跨网段用你自己的账号服务器。"
+      content="ScreenWall 是开源自建的多机远程控制与屏幕墙：局域网不经过服务器直接连，跨网段 UDP 打洞或用你自己的账号服务器；Windows、网页、安卓三端都能控。"
     />
     <meta name="theme-color" content="#f4f8fd" />
+    <meta name="color-scheme" content="light" />
     <link rel="icon" type="image/png" href="assets/icon-192.png" />
     <link rel="apple-touch-icon" href="assets/icon-192.png" />
     <link rel="stylesheet" href="site.css" />
@@ -25,9 +26,10 @@
           <span>ScreenWall</span>
         </a>
         <nav class="links">
+          <a href="#clients">三端</a>
           <a href="#features">功能</a>
+          <a href="#p2p">P2P</a>
           <a href="download/">下载</a>
-          <a href="#start">快速开始</a>
           <a class="github" href="https://github.com/kaynai1/screenwall" rel="noreferrer">GitHub</a>
         </nav>
       </div>
@@ -44,131 +46,387 @@
         </div>
         <h1>一屏看全，<br />点开即控。</h1>
         <p class="lede">
-          ScreenWall 是自建的多机远程控制与屏幕墙：一屏看全、点开即控、群控同步、拖拽传文件。
-          局域网内点对点直连，跨网段才需要一台你自己的账号服务器。
+          把一屋子的 Windows 机器排成一面墙：同网段不经过服务器直接连，跨网段用 UDP 打洞
+          或你自己的一台服务器；浏览器和安卓手机也能随时接手。
         </p>
         <div class="cta">
           <a class="btn primary" href="download/">免费下载</a>
-          <a class="btn ghost" href="#start">快速开始</a>
+          <a class="btn ghost" href="#clients">看看界面</a>
         </div>
         <p class="hero-note">
           适用于 Windows 10+、安卓与浏览器 · <a href="https://github.com/kaynai1/screenwall" rel="noreferrer">免费开源</a>
         </p>
       </section>
 
-      <div class="shot-wrap" aria-hidden="true">
-        <div class="shot">
-          <div class="shot-bar">
+      <div class="hero-shot">
+        <div class="mock win">
+          <div class="mock-chrome">
             <span class="dot red"></span>
             <span class="dot yellow"></span>
             <span class="dot green"></span>
-            <span class="url">你的服务器 <b>/app</b></span>
+            <span class="chrome-title">ScreenWall · 设备管理</span>
           </div>
-          <div class="shot-body">
-            <aside class="shot-side">
-              <div class="side-title">工作台</div>
-              <div class="side-item active">
-                <svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6" /><rect x="14" y="3" width="7" height="7" rx="1.6" /><rect x="3" y="14" width="7" height="7" rx="1.6" /><rect x="14" y="14" width="7" height="7" rx="1.6" /></svg>
-                屏幕墙
+          <div class="mock-app">
+            <aside class="mock-side">
+              <div class="mock-brand">
+                <svg viewBox="0 0 84 81" aria-hidden="true">
+                  <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
+                  <rect x="37.5" y="2.5" width="21" height="76" rx="10.5" fill="#adadaf" />
+                  <rect x="63" y="2.5" width="21" height="76" rx="10.5" fill="#727276" />
+                </svg>
+                <span>ScreenWall</span>
               </div>
-              <div class="side-item">
-                <svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" /><rect x="13" y="3" width="8" height="8" rx="2" /><rect x="3" y="13" width="8" height="8" rx="2" /><path d="M15 15l4 4M19 15l-4 4" /></svg>
-                群控
+              <div class="mock-nav">
+                <span>工作台</span>
+                <span>远程协助</span>
+                <span>屏幕墙</span>
+                <span>群控</span>
+                <span>文件传输</span>
+                <i>管理</i>
+                <span class="on">设备</span>
+                <span>审计</span>
+                <span>服务器管理</span>
+                <span>设置</span>
               </div>
-              <div class="side-item">
-                <svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 17v3h16v-3" /></svg>
-                文件传输
-              </div>
-              <div class="side-item">
-                <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a7.6 7.6 0 0 0 .1-6l-2.2.4a5.6 5.6 0 0 0-1.5-1.5l.4-2.2a7.6 7.6 0 0 0-6-.1l.4 2.2a5.6 5.6 0 0 0-1.5 1.5L6.9 9a7.6 7.6 0 0 0 0 6l2.2-.4a5.6 5.6 0 0 0 1.5 1.5l-.4 2.2a7.6 7.6 0 0 0 6 .1l-.4-2.2a5.6 5.6 0 0 0 1.5-1.5z" /></svg>
-                设置
-              </div>
-              <div class="side-user">
-                <span class="avatar"></span>
-                <div>
-                  <b>kaynai</b>
-                  <small>4 台设备在线</small>
-                </div>
+              <div class="mock-me">
+                <span class="avatar">D</span>
+                <span><b>demo</b><small>本机被控在线</small></span>
               </div>
             </aside>
-            <div class="shot-main">
-              <div class="shot-head">
-                <b>屏幕墙</b>
-                <span class="live-tag"><i></i>4 台在线</span>
+            <div class="mock-main">
+              <div class="mock-head">
+                <b>设备管理</b>
+                <span>设备、权限与在线状态</span>
               </div>
-              <div class="tiles">
-                <div class="tile">
-                  <div class="tile-screen active"><span class="cursor"></span></div>
-                  <div class="tile-meta"><b>DESKTOP-8RFJD38</b><span>Windows · 1920×1080</span></div>
+              <div class="mock-toolbar">
+                <div class="mock-search">搜索设备名称、系统或 IP</div>
+                <div class="mock-tabs"><span class="on">全部</span><span>在线</span><span>离线</span></div>
+                <span class="mock-count">共 6 台 · 4 台在线</span>
+                <span class="mock-btn">+ 添加设备</span>
+              </div>
+              <div class="mock-table">
+                <div class="mock-row th">
+                  <span>设备</span><span>状态</span><span>IP</span><span>最后在线</span><span>电源</span>
                 </div>
-                <div class="tile">
-                  <div class="tile-screen t2"></div>
-                  <div class="tile-meta"><b>工作室主机</b><span>Windows · 2560×1440</span></div>
+                <div class="mock-row">
+                  <span><b>设计部 · 主力机</b><small>Windows 11 Pro · v24H2</small></span>
+                  <span><em class="pill ok">在线</em></span><span>10.0.12.21</span><span>当前在线</span><span>已开机</span>
                 </div>
-                <div class="tile">
-                  <div class="tile-screen t3"></div>
-                  <div class="tile-meta"><b>展厅一号机</b><span>Windows · 3840×2160</span></div>
+                <div class="mock-row">
+                  <span><b>前台 · 接待机</b><small>Windows 11 · v23H2</small></span>
+                  <span><em class="pill ok">在线</em></span><span>10.0.12.31</span><span>当前在线</span><span>已开机</span>
                 </div>
-                <div class="tile">
-                  <div class="tile-screen t4"></div>
-                  <div class="tile-meta"><b>渲染机</b><span>Windows · 1920×1080</span></div>
+                <div class="mock-row">
+                  <span><b>会议室 · 投屏机</b><small>Windows 11 Pro · v24H2</small></span>
+                  <span><em class="pill ok">在线</em></span><span>10.0.12.42</span><span>当前在线</span><span>已开机</span>
+                </div>
+                <div class="mock-row">
+                  <span><b>仓库 · 扫码机</b><small>Windows 10 · v22H2</small></span>
+                  <span><em class="pill off">离线</em></span><span>10.0.12.57</span><span>2 小时前</span><span class="mock-mini">唤醒</span>
+                </div>
+                <div class="mock-row">
+                  <span><b>机房 · 备用机</b><small>Windows 10 · v21H2</small></span>
+                  <span><em class="pill off">离线</em></span><span>10.0.12.66</span><span>3 天前</span><span class="mock-mini">唤醒</span>
+                </div>
+                <div class="mock-row">
+                  <span><b>测试机 · Win11</b><small>Windows 11 Pro · v24H2</small></span>
+                  <span><em class="pill ok">在线</em></span><span>10.0.12.77</span><span>当前在线</span><span>已开机</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
+        <p class="shot-caption">Windows 客户端 · 设备管理（界面示意）</p>
       </div>
 
-      <section class="support">
-        <h2>一个账号，三种客户端</h2>
-        <ul class="chips">
-          <li>Windows 桌面端</li>
-          <li>安卓 App</li>
-          <li>网页端 / PWA</li>
-          <li>iOS 添加到主屏幕</li>
-          <li>连接码直连</li>
-          <li>局域网直连</li>
-          <li>自建服务器</li>
-        </ul>
-        <p>也可以不用账号：9 位连接码、同网段识别码，或者直接把设备装进手机浏览器。</p>
+      <section id="clients" class="section">
+        <div class="section-head">
+          <h2>一个账号，三端都能控</h2>
+          <p>桌面端既是主控也是被控；网页端和安卓端随时接手，不用再装一套客户端。</p>
+        </div>
+        <div class="clients">
+          <article class="client-card wide">
+            <div class="mock assist">
+              <div class="assist-head">
+                <b>远程协助</b>
+                <span>把本机交给别人控制，或者连到另一台电脑</span>
+              </div>
+              <div class="assist-grid">
+                <div class="assist-box">
+                  <div class="assist-label">本机识别码</div>
+                  <div class="assist-code">572 955 600</div>
+                  <div class="assist-line">临时密码 <em>••••••••</em></div>
+                  <div class="assist-btn blue">复制识别码和密码</div>
+                  <div class="assist-chips"><span class="on">一次性</span><span>1 小时</span><span>1 天</span><span>长期</span></div>
+                </div>
+                <div class="assist-box">
+                  <div class="assist-label">对方的识别码</div>
+                  <div class="assist-input">9 位识别码，或 192.168.1.20:47900</div>
+                  <div class="assist-input">临时密码或固定密码</div>
+                  <div class="assist-btn">连接</div>
+                  <div class="assist-note">同一网段会自动走直连，画面不经过任何服务器。</div>
+                </div>
+              </div>
+            </div>
+            <div class="client-text">
+              <h3>Windows 客户端</h3>
+              <p>屏幕墙、群控、文件传输、远程开机都在一个客户端里；不用账号，给对方识别码和密码就能连。</p>
+            </div>
+          </article>
+          <article class="client-card">
+            <div class="phone">
+              <div class="mock-phone web">
+                <div class="mp-top">
+                  <b>设备</b>
+                  <span class="mp-exit">⎋</span>
+                </div>
+                <div class="mp-status"><i></i>已连接</div>
+                <div class="mp-sub"><span>我的设备</span><span>6 在线 / 6 台</span></div>
+                <div class="mp-list">
+                  <div><i class="mp-mon"></i><span><b>设计部 · 主力机</b><small>在线 · Windows</small></span><em>›</em></div>
+                  <div><i class="mp-mon"></i><span><b>前台 · 接待机</b><small>在线 · Windows</small></span><em>›</em></div>
+                  <div><i class="mp-mon"></i><span><b>会议室 · 投屏机</b><small>在线 · Windows</small></span><em>›</em></div>
+                  <div><i class="mp-mon"></i><span><b>仓库 · 扫码机</b><small>在线 · Windows</small></span><em>›</em></div>
+                  <div><i class="mp-mon"></i><span><b>机房 · 备用机</b><small>在线 · Windows</small></span><em>›</em></div>
+                  <div><i class="mp-mon"></i><span><b>测试机 · Win11</b><small>在线 · Windows</small></span><em>›</em></div>
+                </div>
+                <div class="mp-foot">当前账号 demo</div>
+              </div>
+            </div>
+            <div class="client-text">
+              <h3>网页端 / PWA</h3>
+              <p>浏览器打开服务器的 <code>/app</code>，加到主屏幕就是全屏应用。</p>
+            </div>
+          </article>
+          <article class="client-card">
+            <div class="phone">
+              <div class="mock-phone android">
+                <div class="mp-logo">
+                  <svg viewBox="0 0 84 81" aria-hidden="true">
+                    <rect x="0" y="0" width="33" height="81" rx="16.5" fill="#0079fd" />
+                    <rect x="37.5" y="2.5" width="21" height="76" rx="10.5" fill="#adadaf" />
+                    <rect x="63" y="2.5" width="21" height="76" rx="10.5" fill="#727276" />
+                  </svg>
+                </div>
+                <b class="mp-title">ScreenWall</b>
+                <small class="mp-tag">远程控制，随时连回你的电脑</small>
+                <div class="mp-tabs"><span class="on">账号登录</span><span>识别码</span></div>
+                <div class="mp-form">
+                  <div><span>服务器</span><b>demo.example.com</b></div>
+                  <div><span>用户名</span><b>demo</b></div>
+                  <div><span>密码</span><b class="dots">••••••</b></div>
+                </div>
+                <div class="mp-btn">登录</div>
+                <p class="mp-hint">用桌面客户端同一个账号登录，登录后就能看到在线的电脑。</p>
+              </div>
+            </div>
+            <div class="client-text">
+              <h3>安卓客户端</h3>
+              <p>原生客户端：账号登录，或者直接输 9 位识别码连一台设备。</p>
+            </div>
+          </article>
+        </div>
       </section>
 
       <section id="features" class="section">
         <div class="section-head">
-          <h2>把远程这件事，做得简单一点</h2>
-          <p>该有的都有，而且跑在你自己的网络和服务器上。</p>
+          <h2>一面墙，管住所有机器</h2>
+          <p>实时缩略图、CPU / 内存、在线状态都在墙上；点开就是控制页。</p>
         </div>
-        <div class="grid">
-          <article class="card">
-            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6" /><rect x="14" y="3" width="7" height="7" rx="1.6" /><rect x="3" y="14" width="7" height="7" rx="1.6" /><rect x="14" y="14" width="7" height="7" rx="1.6" /></svg></span>
-            <h3>屏幕墙</h3>
-            <p>所有在线设备的实时缩略图排成一面墙，点开即控，不用来回切窗口。</p>
+        <figure class="feature-shot">
+          <div class="mock wall">
+            <div class="wall-head">
+              <b>屏幕墙</b>
+              <span>所有设备，一眼掌握</span>
+              <em>预览</em>
+            </div>
+            <div class="wall-toolbar">
+              <span class="wall-tab on">全部</span><span class="wall-tab">在线 3</span><span class="wall-tab">离线 1</span>
+              <span class="wall-search">搜索设备、系统、位置或 IP</span>
+              <span class="wall-add">+ 添加设备</span>
+            </div>
+            <div class="wall-grid">
+              <div class="wall-card">
+                <div class="thumb t1"><span class="thumb-win"></span><em class="badge live">实时</em></div>
+                <b>设计部 · 主力机</b>
+                <div class="wall-meta"><i></i>在线 · 12 ms · Windows 11</div>
+                <div class="bar"><span>CPU</span><i><b style="width: 32%"></b></i><em>32%</em></div>
+                <div class="bar"><span>内存</span><i><b style="width: 58%"></b></i><em>58%</em></div>
+                <div class="wall-foot"><span>当前在线</span><span class="mini-btn">控制</span></div>
+              </div>
+              <div class="wall-card">
+                <div class="thumb t2"><span class="thumb-win"></span><em class="badge live">实时</em></div>
+                <b>会议室 · 投屏机</b>
+                <div class="wall-meta"><i></i>在线 · 24 ms · Windows 11 Pro</div>
+                <div class="bar"><span>CPU</span><i><b class="warn" style="width: 76%"></b></i><em>76%</em></div>
+                <div class="bar"><span>内存</span><i><b style="width: 63%"></b></i><em>63%</em></div>
+                <div class="wall-foot"><span>当前在线</span><span class="mini-btn">控制</span></div>
+              </div>
+              <div class="wall-card off">
+                <div class="thumb t3"><span class="thumb-win"></span><em class="badge">离线</em></div>
+                <b>仓库 · 扫码机</b>
+                <div class="wall-meta off"><i></i>离线 · Windows 10 Pro</div>
+                <div class="bar"><span>CPU</span><i><b style="width: 0%"></b></i><em>—</em></div>
+                <div class="bar"><span>内存</span><i><b style="width: 0%"></b></i><em>—</em></div>
+                <div class="wall-foot"><span>最后在线 2 小时前</span><span class="mini-btn">唤醒</span></div>
+              </div>
+              <div class="wall-card">
+                <div class="thumb t4"><span class="thumb-win"></span><em class="badge live">实时</em></div>
+                <b>测试机 · Win11</b>
+                <div class="wall-meta"><i></i>在线 · 18 ms · Windows 11 Pro</div>
+                <div class="bar"><span>CPU</span><i><b style="width: 45%"></b></i><em>45%</em></div>
+                <div class="bar"><span>内存</span><i><b style="width: 41%"></b></i><em>41%</em></div>
+                <div class="wall-foot"><span>当前在线</span><span class="mini-btn">控制</span></div>
+              </div>
+            </div>
+          </div>
+          <figcaption>屏幕墙 · 每台设备一张卡片，点「控制」直接进远程桌面（界面示意）</figcaption>
+        </figure>
+        <ul class="feature-list">
+          <li><b>点开即控</b><span>键鼠、剪贴板、多显示器切换，控制页直接接管。</span></li>
+          <li><b>直连标记</b><span>同网段设备显示「局域网直连」，不经过服务器、不计流量。</span></li>
+          <li><b>远程开机</b><span>WOL 唤醒关机的机器，托盘看门狗常驻。</span></li>
+          <li><b>审计与更新</b><span>每次连接都有记录；客户端从你自己的服务器自动更新。</span></li>
+        </ul>
+
+        <div class="two-up">
+          <article class="shot-card">
+            <div class="mock group">
+              <div class="group-head"><b>群控</b><span>一次操作，多台同步</span><em>已停止</em></div>
+              <div class="group-body">
+                <div class="group-list">
+                  <div class="gl-title">设备 <span>全部在线</span></div>
+                  <div class="gl-row"><i class="cb"></i><span><b>设计部 · 主力机</b><small>Windows</small></span><em>在线</em></div>
+                  <div class="gl-row"><i class="cb on"></i><span><b>会议室 · 投屏机</b><small>Windows</small></span><em>在线</em></div>
+                  <div class="gl-row"><i class="cb on"></i><span><b>测试机 · Win11</b><small>Windows</small></span><em>在线</em></div>
+                </div>
+                <div class="group-panel">
+                  <div class="gp-title">同步台 <span>已选 2 台</span></div>
+                  <div class="gp-row"><span><b>键盘同步</b><small>把本机键盘输入同步到每台设备</small></span><i class="sw on"></i></div>
+                  <div class="gp-row"><span><b>广播输入</b><small>向所有设备同时广播点击与按键</small></span><i class="sw on"></i></div>
+                  <div class="gp-row"><span><b>跟随主控</b><small>画面焦点随当前主控设备切换</small></span><i class="sw"></i></div>
+                  <div class="gp-btn">开始群控</div>
+                </div>
+              </div>
+            </div>
+            <div class="shot-card-text">
+              <h3>群控</h3>
+              <p>一次点击、拖动或输入广播到多台机器；离线设备自动跳过，机房和展厅不用一台台点。</p>
+            </div>
           </article>
-          <article class="card">
-            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v3" /><path d="M14 12l6 6-4 2-2-4-2 2z" /><path d="M3 10v6a2 2 0 0 0 2 2h6" /></svg></span>
-            <h3>点开即控</h3>
-            <p>鼠标、键盘、剪贴板、多显示器切换；同账号设备免确认，直连仍逐次确认。</p>
+          <article class="shot-card">
+            <div class="mock files">
+              <div class="group-head"><b>文件传输</b><span>拖拽即传 · 断点续传</span><em>3 路并发</em></div>
+              <div class="file-rows">
+                <div class="file-row">
+                  <i class="file-ico"></i>
+                  <span><b>设计稿-最终版.zip</b><small>1.8 GB · 传向 设计部 · 主力机</small></span>
+                  <em>64%</em>
+                </div>
+                <div class="file-progress"><b style="width: 64%"></b></div>
+                <div class="file-row">
+                  <i class="file-ico"></i>
+                  <span><b>ScreenWall_0.2.20_x64-setup.exe</b><small>8.9 MB · 传向 前台 · 接待机</small></span>
+                  <em>32%</em>
+                </div>
+                <div class="file-progress"><b class="warn" style="width: 32%"></b></div>
+                <div class="file-row">
+                  <i class="file-ico"></i>
+                  <span><b>日志打包.tar.gz</b><small>220 MB · 已完成，SHA256 校验通过</small></span>
+                  <em>完成</em>
+                </div>
+                <div class="file-progress"><b class="done" style="width: 100%"></b></div>
+              </div>
+            </div>
+            <div class="shot-card-text">
+              <h3>文件传输</h3>
+              <p>两台设备之间拖拽即传：断点续传、SHA256 校验、整目录、3 路并发。</p>
+            </div>
           </article>
-          <article class="card">
-            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" /><rect x="13" y="3" width="8" height="8" rx="2" /><rect x="3" y="13" width="8" height="8" rx="2" /><path d="M15 15l4 4M19 15l-4 4" /></svg></span>
-            <h3>群控同步</h3>
-            <p>一次点击、拖动或输入广播到多台机器，适合机房、展厅和批量操作。</p>
+        </div>
+      </section>
+
+      <section id="p2p" class="section">
+        <div class="section-head">
+          <h2>和普通远控不一样的地方</h2>
+          <p>能直连就直连，连不上才走中转——不靠云端账号也能把机器管起来。</p>
+        </div>
+        <div class="diff-grid">
+          <article class="card diff">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M3 18a15 15 0 0 1 18 0" /><path d="M6.5 14.5a10 10 0 0 1 11 0" /><path d="M10 11a5 5 0 0 1 4 0" /><circle cx="12" cy="19" r="1" /></svg></span>
+            <h3>局域网直连</h3>
+            <p>
+              同网段不经过服务器：UDP 自动发现，输入 9 位识别码或 6 位配对码就能连。
+              证书指纹固定，配对码 10 分钟过期、用一次就换。
+            </p>
           </article>
-          <article class="card">
-            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 17v3h16v-3" /></svg></span>
-            <h3>文件传输</h3>
-            <p>拖拽即传，断点续传、SHA256 校验、整目录、3 路并发，双向都行。</p>
+          <article class="card diff">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 2v4" /><path d="M12 18v4" /><path d="M2 12h4" /><path d="M18 12h4" /><circle cx="12" cy="12" r="4" /></svg></span>
+            <h3>跨网段 P2P</h3>
+            <p>
+              STUN + QUIC 打洞，两台机器在不同的网络也能点对点；打不通自动回退中转，
+              侧栏显示真实链路。
+            </p>
           </article>
-          <article class="card">
-            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 9a4 4 0 0 1 0 6" /></svg></span>
-            <h3>声音双向</h3>
-            <p>Opus 编码、码率自适应；远端声音、本机麦克风与回声消除都支持。</p>
+          <article class="card diff">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18" /></svg></span>
+            <h3>网页端也能 P2P</h3>
+            <p>
+              浏览器里用 WebRTC 直连：画面和声音走 SRTP，控制与文件走 DataChannel；
+              3 秒没连上自动回退中转，功能不降级。
+            </p>
           </article>
-          <article class="card">
+          <article class="card diff">
             <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2" /><rect x="3" y="14" width="18" height="6" rx="2" /><path d="M7 7h.01M7 17h.01" /></svg></span>
             <h3>自建账号服务器</h3>
-            <p>单文件 Rust 服务端：账号、设备目录、在线状态、审计与自动更新都在自己手里。</p>
+            <p>
+              一条命令装好服务端和网页端（依赖、systemd、防火墙、账号一起搞定）；
+              设备目录、审计和自动更新都在自己手里。
+            </p>
           </article>
+          <article class="card diff">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="8" cy="15" r="3.5" /><path d="M11 12l8-8M16 5h3v3" /></svg></span>
+            <h3>不用账号也能连</h3>
+            <p>
+              9 位连接码 + 密码、一次性链接、局域网识别码：临时帮人看一台机器，
+              不用先注册账号。
+            </p>
+          </article>
+          <article class="card diff">
+            <span class="icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3v9" /><path d="M8 7a5 5 0 1 0 8 0" /><path d="M4 21h16" /></svg></span>
+            <h3>关机也能叫回来</h3>
+            <p>
+              远程开机（WOL）配合托盘看门狗：被控端掉线、重启、显示器关闭，
+              都能重新接上。
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="p2p-box">
+          <div class="p2p-copy">
+            <h2>网页端 P2P 怎么开</h2>
+            <p>
+              在服务器的 <code>server.toml</code> 里打开 <code>[webrtc]</code>，再用 HTTPS
+              打开网页端。之后连设备时网页端会自动先试 WebRTC 直连，3 秒没连上就回退中转，
+              不需要在界面上点任何开关。
+            </p>
+            <ul class="check-list">
+              <li>STUN 必填，TURN 可选；对称 NAT、移动网络下建议配 coturn。</li>
+              <li>被控端要 0.2.20 或更新版本（连接时会带上 <code>webrtc=1</code>）。</li>
+              <li>P2P 下视频走 H.264；被控端编不出来时自动切回中转的 MJPEG。</li>
+            </ul>
+          </div>
+          <div class="p2p-code">
+            <div class="code-head">server.toml</div>
+            <pre><code>[webrtc]
+enabled = true
+stun = ["stun:stun.l.google.com:19302"]
+turn = "turn:turn.example.com:3478?transport=udp"
+turn_secret = "&lt;coturn 的 static-auth-secret&gt;"</code></pre>
+            <p class="p2p-foot">TURN 凭据由服务器按 coturn 的 use-auth-secret 现算，不会下发给浏览器。</p>
+          </div>
         </div>
       </section>
 
@@ -193,8 +451,12 @@
           <li>
             <div>
               <h3>要跨网段，就起一台自己的服务器</h3>
-              <p>单文件服务端，同时托管网页端；登录同一个账号，手机浏览器也能控。</p>
-              <pre><code>./screenwall-server run --config server.toml --web-dir web/dist</code></pre>
+              <p>
+                一台全新的 Linux 服务器，SSH 登录后执行这一条；服务端和网页端一起装好，
+                浏览器打开 <code>http://你的IP:8787/app</code> 就能用。
+              </p>
+              <pre><code>curl -fsSL -H 'Accept: application/vnd.github.raw' \
+https://api.github.com/repos/kaynai1/screenwall/contents/scripts/deploy-server.sh | bash</code></pre>
             </div>
           </li>
         </ol>
