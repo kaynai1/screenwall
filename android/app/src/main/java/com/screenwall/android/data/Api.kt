@@ -24,7 +24,7 @@ data class Account(
 object AppInfo {
     const val NAME = "ScreenWall 安卓端"
     const val CLIENT_NAME = "安卓端"
-    const val VERSION = "0.1.1"
+    const val VERSION = "0.1.2"
 }
 
 /** `GET /api/v1/devices` 与 WS `devices` 消息共用的设备视图。 */
