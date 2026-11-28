@@ -231,7 +231,8 @@ class Prefs(context: Context) {
     fun hasPreviews(): Boolean = previewDir().listFiles()?.isNotEmpty() == true
 
     companion object {
-        const val DEFAULT_SERVER = "http://60.204.193.130:8787"
+        /** 默认指向本机假服务器；正式使用请在登录页或设置里改成自己的服务器地址。 */
+        const val DEFAULT_SERVER = "http://127.0.0.1:8788"
         const val MAX_RECENTS = 8
         private const val KEY_SERVER = "serverUrl"
         private const val KEY_USERNAME = "username"
