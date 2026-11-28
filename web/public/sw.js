@@ -1,5 +1,5 @@
 /* ScreenWall 网页端的离线壳：只缓存界面与静态资源，接口与会话永远走网络。 */
-const CACHE = "screenwall-web-v2";
+const CACHE = "screenwall-web-v3";
 const SHELL = ["/app/", "/app/manifest.webmanifest", "/app/icon-192.png"];
 
 self.addEventListener("install", (event) => {

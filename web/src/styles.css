@@ -127,33 +127,32 @@ textarea {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: var(--fill);
+  background: #ffffff;
+  border: 1px solid var(--line);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   justify-content: center;
   gap: 3px;
-  padding: 9px;
+  padding: 8px;
 }
 
 .brand-mark span {
   display: block;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--accent);
+  width: 5px;
+  height: 22px;
+  border-radius: 2.5px;
+  background: #adadaf;
 }
 
 .brand-mark span:nth-child(1) {
-  width: 60%;
-  opacity: 0.55;
-}
-
-.brand-mark span:nth-child(2) {
-  width: 100%;
+  width: 7px;
+  height: 24px;
+  background: #0079fd;
 }
 
 .brand-mark span:nth-child(3) {
-  width: 78%;
-  opacity: 0.75;
+  background: #727276;
 }
 
 .segmented {
