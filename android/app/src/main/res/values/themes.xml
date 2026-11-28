@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与原 Capacitor 壳一致的启动底色，避免冷启动闪白。 -->
+    <style name="Theme.ScreenWall" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F2F2F7</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
