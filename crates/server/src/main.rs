@@ -11,7 +11,6 @@ use clap::{Parser, Subcommand};
 use screenwall_server::auth::{hash_password, hash_token, valid_password, valid_username};
 use screenwall_server::config::{Config, LimitsConfig, TlsConfig, UpdateConfig};
 use screenwall_server::db::Db;
-use screenwall_server::router;
 use screenwall_server::state::AppState;
 use screenwall_server::tls::{self, PeerAddr, TlsListener};
 use screenwall_server::update::UpdateState;
@@ -34,7 +33,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// 启动服务器。
-    Run,
+    Run {
+        /// 网页端静态目录（`web/dist`）；配置后访问 `/app` 即可打开网页端。
+        #[arg(long)]
+        web_dir: Option<PathBuf>,
+    },
     /// 管理账号。
     User {
         #[command(subcommand)]
@@ -94,11 +97,11 @@ async fn main() -> Result<()> {
     let config = Config::load(&cli.config)?;
 
     match cli.command {
-        Command::Run => {
+        Command::Run { web_dir } => {
             let tls = TlsConfig::load(&cli.config)?;
             let update = UpdateConfig::load(&cli.config)?;
             let limits = LimitsConfig::load(&cli.config)?;
-            run(config, tls, update, limits).await
+            run(config, tls, update, limits, web_dir).await
         }
         Command::User { action } => {
             let db = Db::open(&config.db_path)?;
@@ -203,12 +206,22 @@ async fn run(
     tls: Option<TlsConfig>,
     update: UpdateConfig,
     limits: LimitsConfig,
+    web_dir: Option<PathBuf>,
 ) -> Result<()> {
     let db = Db::open(&config.db_path)?;
     let mut state = AppState::with_limits(db, config.clone(), limits);
     state.update = UpdateState::from_config(&update);
     let state = Arc::new(state);
-    let app = router(state);
+    if let Some(dir) = &web_dir {
+        if !dir.join("index.html").is_file() {
+            bail!(
+                "网页端目录 {} 里没有 index.html；先运行 `npm run build`（在 web/ 下）",
+                dir.display()
+            );
+        }
+        tracing::info!("网页端目录: {}", dir.display());
+    }
+    let app = screenwall_server::router_with_web(state, web_dir);
 
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await

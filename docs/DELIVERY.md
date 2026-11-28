@@ -546,3 +546,14 @@ sidecar 模式下：
 | P2P / 局域网直连 60fps | 直连会话的初始订阅还是 30fps（v0.2.15 只改了中转路径），拖动窗口同样发顿。两处默认统一为 1080p / 60 / Q65 |
 | 侧栏链路胶囊 | P2P 直连建立时补发 `control-state`（原来只有中转会话在开流阶段发），并让界面每 2.5 秒用 `get_control_info` 对一次账：显示 P2P 直连 / 局域网直连 / 服务器中转，跟着实际链路走，不再停在「服务器中转」 |
 | 已授权设备免确认 | 设置 → 安全新增「已授权设备免确认」（默认开）：直连设备第一次由本机点过「允许」后，长期 token 会被记住，以后用配对码/地址再连直接放行，不再弹窗；新设备第一次连接仍然需要确认。关掉即恢复每次都问 |
+## 网页端 / 手机端（2026-11-27）
+
+| 项目 | 内容 |
+| --- | --- |
+| 网页端 | 新增 `web/`：Vite + React + TS 的纯浏览器客户端，登录 / 设备列表 / 控制页全流程；MJPEG 用 `createImageBitmap`，H.264 用 WebCodecs（从 SPS 解析 `avc1` 串，失败自动回退 MJPEG） |
+| 手机端 | PWA（manifest + service worker + 192/512/maskable 图标），设备页有安装提示（Chrome 自动安装 / 手动「添加到主屏幕」），安卓上全屏运行；触摸映射为移动/左键/长按右键/双指滚轮，软键盘用 `beforeinput` 实时注入文本 |
+| 画质 | 分辨率 1280/1920/2560/3840、帧率 15/30/60、压缩档 省流量/均衡/清晰，默认 720p30 均衡，选择存本机 |
+| 服务器 | `--web-dir` 把静态站点挂在 `/app`（SPA 回落 `index.html`），根路径 307 跳到 `/app/`；`/ws/view` 接受 `?token=`（浏览器 WebSocket 无法设请求头），HTTP 接口仍只认 Bearer |
+| 协议实现 | 网页端按 `cloud.rs` 的 8 字节会话帧与 `frame.rs` 的 24 字节媒体帧逐字节解码，输入按 16ms 批量发送 |
+| 安卓 APK | `web/android/`（Capacitor 6 壳，WebView 跑同一份前端）：`npm run build:cap` → `npx cap sync android` → `gradlew assembleDebug`，产物 `app-debug.apk`；壳内页面源 `http://localhost`，登录页手填服务器，Manifest 开 `usesCleartextTraffic` 支持局域网 http/ws |
+| 限制 | 不含声音、文件传输、屏幕墙、群控、多显示器切换；走账号中转，不参与直连/打洞；APK 需在装有 Android SDK 的机器上按 `docs/web.md` 打包。**已并入 H.264 硬编分支**，被控端与本分支一致时网页端可走 WebCodecs H.264 |

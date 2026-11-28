@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::api::authorize;
+use crate::api::authorize_token;
 use crate::auth::{now_ms, valid_device_id};
 use crate::state::{AppState, DeviceConn, Session, SessionInit, ViewerConn, WsOut};
 
@@ -46,7 +46,7 @@ pub async fn device_ws(
     headers: HeaderMap,
     Query(params): Query<DeviceParams>,
 ) -> Response {
-    let auth = match authorize(&state, &headers) {
+    let auth = match authorize_token(&state, &headers, None) {
         Ok(auth) => auth,
         Err(error) => {
             state.metrics.handshake_failed();
@@ -110,12 +110,20 @@ pub async fn device_ws(
     ws.on_upgrade(move |socket| handle_device(socket, state, auth.user_id, params.device_id, name))
 }
 
+/// `/ws/view` 的查询参数：网页端无法给 WebSocket 设请求头，令牌只能放这里。
+#[derive(Debug, Default, Deserialize)]
+pub struct ViewParams {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 pub async fn view_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(params): Query<ViewParams>,
 ) -> Response {
-    let auth = match authorize(&state, &headers) {
+    let auth = match authorize_token(&state, &headers, params.token.as_deref()) {
         Ok(auth) => auth,
         Err(error) => {
             state.metrics.handshake_failed();

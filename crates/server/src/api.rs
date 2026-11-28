@@ -150,11 +150,32 @@ pub struct Auth {
 }
 
 pub fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Auth, ApiError> {
-    let token = bearer_token(headers).ok_or_else(|| {
-        state.metrics.add_error();
-        unauthorized()
-    })?;
-    let token_hash = hash_token(token);
+    authorize_token(state, headers, None)
+}
+
+/// 允许从查询串取令牌的鉴权。
+///
+/// 浏览器的 `WebSocket` 构造器不能设置请求头，网页端只能把令牌放进
+/// `/ws/view?token=...`。HTTP 接口仍只认 `Authorization: Bearer`，
+/// 这条通道只给 WebSocket 用。
+pub fn authorize_token(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> Result<Auth, ApiError> {
+    let token = bearer_token(headers)
+        .map(str::to_owned)
+        .or_else(|| {
+            query_token
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            state.metrics.add_error();
+            unauthorized()
+        })?;
+    let token_hash = hash_token(&token);
     let row = state
         .db
         .validate_token(&token_hash)

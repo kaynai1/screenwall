@@ -636,3 +636,89 @@ async fn login_request_rate_limit_returns_429() {
         "中文提示: {body}"
     );
 }
+
+/// 浏览器 `WebSocket` 不能设置请求头，网页端把令牌放进查询串。
+/// 这条路径只对 `/ws/view` 生效，HTTP 接口仍然只认 Bearer 头。
+#[tokio::test]
+async fn ws_view_accepts_token_in_query_for_browsers() {
+    let addr = start_server().await;
+    let client = reqwest::Client::new();
+    register_ok(&client, &addr, "webuser").await;
+    let token = login_token(&client, &addr, "webuser", "WEB-1").await;
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/ws/view?token={token}"))
+            .await
+            .expect("查询串令牌应能建立连接");
+    assert_eq!(next_json(&mut ws).await["t"], "ready");
+    assert_eq!(next_json(&mut ws).await["t"], "devices");
+
+    let bad = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/view?token=wrong"))
+        .await;
+    assert!(bad.is_err(), "错误令牌不应建立连接");
+
+    // 账号接口不接受查询串令牌：仍要求 Bearer 头。
+    let me = client
+        .get(format!("http://{addr}/api/v1/me?token={token}"))
+        .send()
+        .await
+        .expect("me 请求");
+    assert_eq!(me.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+/// `--web-dir` 挂载网页端：根路径跳转到 `/app/`，未知子路径回落 `index.html`。
+#[tokio::test]
+async fn web_dir_serves_spa_under_app_prefix() {
+    let dir = std::env::temp_dir().join(format!("screenwall-web-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    std::fs::write(dir.join("index.html"), "<!doctype html><title>spa</title>").expect("写 index");
+
+    let state = Arc::new(AppState::with_limits(
+        Db::open_in_memory().expect("内存数据库"),
+        test_config(),
+        LimitsConfig::default(),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("绑定端口");
+    let addr = listener.local_addr().expect("本地地址");
+    let served = screenwall_server::router_with_web(state, Some(dir.clone()));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            served.into_make_service_with_connect_info::<PeerAddr>(),
+        )
+        .await
+        .expect("服务器退出");
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("客户端");
+    let root = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("根路径");
+    assert_eq!(root.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(root.headers()["location"], "/app/");
+
+    let app = client
+        .get(format!("http://{addr}/app/"))
+        .send()
+        .await
+        .expect("/app/ 请求");
+    assert_eq!(app.status(), reqwest::StatusCode::OK);
+    assert!(app.text().await.expect("读文本").contains("spa"));
+
+    // 前端自己的路由（例如 /app/control）由 SPA 接管。
+    let deep = client
+        .get(format!("http://{addr}/app/control"))
+        .send()
+        .await
+        .expect("深路径请求");
+    assert_eq!(deep.status(), reqwest::StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -21,6 +21,7 @@
 - [局域网自动发现](docs/lan-discovery.md) — UDP 广播扫描同网段开启了直连的设备
 - [服务器管理](docs/server-panel.md) — 内嵌 KayPanel：sidecar + 子 webview 的架构、构建与排障
 - [更新与分发](docs/update.md) — 用户在哪里检查更新、你自己在哪里发新版（GitHub / 自建服务器两条路线）
+- [网页端 / 手机端](docs/web.md) — 纯浏览器控制与安卓 PWA：构建、部署、触摸手势与能力边界
 
 ## 快速开始
 

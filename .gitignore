@@ -1,6 +1,8 @@
 /target
 /ui/node_modules
 /ui/dist
+/web/node_modules
+/web/dist
 /crates/client/gen
 *.log
 
@@ -8,6 +10,8 @@
 /dev-data
 /server.toml
 /server.dev.toml
+# 网页端端到端联调用的临时服务器 / 被控端配置
+/.webtest
 
 # 本机工具与编辑器状态
 /.claude
@@ -21,3 +25,8 @@
 
 # 自托管更新产物（scripts/publish-update.ps1 复制安装包到这里）
 /dist
+
+# 本地参考源码与缓存
+.cdref/
+scripts/__pycache__/
+ui/vite.preview.config.ts
