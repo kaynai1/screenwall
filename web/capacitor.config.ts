@@ -13,6 +13,11 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: true,
   },
+  plugins: {
+    // 壳里的页面源是 `http://localhost`，直接 fetch 服务器属于跨域；交给原生层
+    // 发请求可以绕开 WebView 的 CORS 与混内容限制（浏览器里的网页端不走这里）。
+    CapacitorHttp: { enabled: true },
+  },
 };
 
 export default config;

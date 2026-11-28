@@ -18,6 +18,7 @@ use std::sync::Arc;
 use axum::response::Redirect;
 use axum::routing::{get, patch, post};
 use axum::Router;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::state::AppState;
@@ -69,7 +70,7 @@ pub fn router_with_web(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router
         .route("/ws/view", get(ws::view_ws))
         .with_state(state);
 
-    match web_dir {
+    let app = match web_dir {
         Some(dir) => {
             let index = dir.join("index.html");
             app.route("/", get(|| async { Redirect::temporary("/app/") }))
@@ -79,5 +80,22 @@ pub fn router_with_web(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router
                 )
         }
         None => app,
-    }
+    };
+
+    // 安卓壳（页面源 `http://localhost`）和嵌入其它页面的客户端都会跨域调 `/api`，
+    // 浏览器的预检请求也要能过。认证走 `Authorization` 头而不是 Cookie，所以放行
+    // 任意来源不会被别的网站借 Cookie 冒用身份。
+    //
+    // 请求头要逐个列出、不能用通配符 `*`：按 Fetch 规范 `Authorization` 不在
+    // `Access-Control-Allow-Headers: *` 的覆盖范围内，Chromium 会因此拒绝预检。
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+        ])
+        .max_age(std::time::Duration::from_secs(86_400));
+    app.layer(cors)
 }

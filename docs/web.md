@@ -150,6 +150,11 @@ cd android
 地址会记在本机。`AndroidManifest.xml` 已开 `usesCleartextTraffic`，局域网里用
 `http://<电脑 IP>:8787` 也能连；正式部署建议上 HTTPS。
 
+壳的页面源是 `http://localhost`，直接 `fetch` 服务器属于跨域，所以 `capacitor.config.ts`
+里开了 `CapacitorHttp`：HTTP 请求交给原生层发，不受 WebView 的 CORS / 混内容限制，
+旧版服务器也能登录（服务器新版同样放开了 CORS，见 [server.md](server.md) 第 1 节）。
+WebSocket（`/ws/view`）不检查 Origin，按原样直连。
+
 上架要换成自己的 release keystore（`android/app/build.gradle` 的 `signingConfigs`）。
 另一条路是 TWA / Bubblewrap：站点能 HTTPS 访问后用
 `npx @bubblewrap/cli init --manifest https://<服务器>/app/manifest.webmanifest` 生成。

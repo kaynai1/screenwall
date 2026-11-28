@@ -32,6 +32,12 @@
 Authorization: Bearer <token>
 ```
 
+所有接口都带 CORS 头（`Access-Control-Allow-Origin: *`，预检 `OPTIONS` 直接放行），
+这样页面源不是服务器本身的客户端也能直接调用：安卓壳（页面源 `http://localhost`）、
+嵌入到别的系统里的网页端等。认证只认 `Authorization` 头、不用 Cookie，所以放行任意
+来源不会被其它网站借 Cookie 冒用身份。安卓壳另外开启 `CapacitorHttp`，把 HTTP 请求
+交给原生层发，旧版服务器（没有 CORS 头）也能登录。
+
 ### 1.1 注册
 
 `POST /api/v1/register`
