@@ -48,7 +48,11 @@ const RESOLUTIONS = [
   { value: 2560, label: "2K" },
   { value: 3840, label: "4K" },
 ];
-const FPS_OPTIONS = [15, 30, 60];
+/**
+ * 帧率档位，与桌面端一致：`0` 是「不限」，被控端按显示器的实际刷新率出帧
+ * （上限 240）。低帧率档位在省流量、弱网下有用。
+ */
+const FPS_OPTIONS = [0, 10, 15, 30, 60, 90, 120, 144];
 /** MJPEG 的码率几乎只由 JPEG 质量决定，手机上必须让用户能压下来。 */
 const QUALITY_OPTIONS = [
   { value: 45, label: "省流量" },
@@ -595,7 +599,8 @@ export default function ControlPage({
     // 都不看「帧率」：桌面静止时被控端本来就不出帧，帧率低不代表链路跑不动。
     const tune = (ratio: number | null, delay: number, rtt: number) => {
       const auto = autoRef.current;
-      const target = optionsRef.current.fps;
+      // 「不限」（0）按 60 算：链路照常自适应，只是不给被控端设目标帧率。
+      const target = optionsRef.current.fps === 0 ? 60 : optionsRef.current.fps;
       if (phaseRef.current !== "streaming" || !subIdRef.current || target < 10) return;
       if (auto.warmup > 0) {
         auto.warmup -= 1;
@@ -1328,7 +1333,7 @@ export default function ControlPage({
                 className={`chip ${options.fps === fps ? "is-on" : ""}`}
                 onClick={() => resubscribe({ ...options, fps })}
               >
-                {fps} FPS
+                {fps === 0 ? "不限" : `${fps} FPS`}
               </button>
             ))}
           </div>
