@@ -750,6 +750,31 @@ pub struct ResolveIdReq {
 /// 用它跨账号找人等于让任何人凭一个公开数字连进别人电脑。同账号本来
 /// 就是已授权关系（服务器会话带 `sameAccount`），用它跨网段连自己的另一台机器
 /// 才是这条链路真正的用途。
+/// `POST /api/v1/p2p/ice`：网页端 WebRTC 用的 STUN / TURN 清单。
+///
+/// TURN 凭据按账号、带过期时间签发，`turn_secret` 本身永远不下发。
+pub async fn p2p_ice(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = authorize_account(&state, &headers)?;
+    if !state.webrtc.enabled {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "webrtc_disabled",
+            "服务器未启用网页端 P2P",
+        ));
+    }
+    if let Some(seconds) = state.ice_rate.check(&format!("ice:{}", auth.user_id)) {
+        return Err(too_many_requests("获取 ICE 配置", seconds));
+    }
+    let servers = crate::webrtc::ice_servers(&state.webrtc, auth.user_id);
+    Ok(Json(json!({
+        "iceServers": servers,
+        "ttl": state.webrtc.turn_ttl_secs,
+    })))
+}
+
 pub async fn resolve_local_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

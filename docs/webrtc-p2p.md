@@ -1,6 +1,18 @@
 # 网页端 WebRTC P2P 方案（设计稿）
 
-> 状态：**方案稿，未实现**。日期：2026-11-28。
+> 状态：**已按完整方案落地**（2026-11-28）。实现位置：
+> `crates/server/src/webrtc.rs` + `ws.rs`、`crates/agent/src/webrtc_host.rs`、
+> `web/src/api.ts` 的 `Viewer`、`web/src/pages/ControlPage.tsx`。
+>
+> 已实现：`t:"webrtc"` 信令（offer/answer/trickle ICE/reject/bye，TTL 与条数上限）、
+> `POST /api/v1/p2p/ice`（STUN + coturn `use-auth-secret` 临时凭据）、被控端
+> webrtc-rs answerer（H.264 + Opus 轨道、`ctrl` DataChannel 复用中转协议）、
+> 网页端 3 秒建连超时后回退中继、`error 4104` 时切回中继、P2P 统计从
+> `getStats()` 取、标题栏「直连」标记、P2P 下文件块 96 KiB。
+>
+> 尚未实现（后续）：ICE 重启（`disconnected` 后自动恢复）、PLI 主动请求关键帧、
+> 被控端把 `sender.get_stats()` 回灌 `video.bitrate`、TURN 是否被用到的诊断上报。
+>
 > 目标读者：实现这套改造的开发者 / 后续会话。
 
 ## 1. 结论

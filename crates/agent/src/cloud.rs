@@ -36,6 +36,7 @@ use crate::input;
 use crate::power;
 use crate::server::{AgentState, ApprovalRequest};
 use crate::stats;
+use crate::webrtc_host::WebrtcHub;
 use crate::wol;
 
 /// 被控端授权等待时长：宿主界面不答复就拒绝。
@@ -158,10 +159,13 @@ impl CloudOptions {
 }
 
 pub async fn run(state: Arc<AgentState>, options: CloudOptions) -> Result<()> {
+    // WebRTC 信令和账号连接同生命周期：重连后旧的 PeerConnection 已被丢弃，
+    // 主控端会重新发起协商。
+    let webrtc = WebrtcHub::new(state.clone());
     let mut backoff = 2u64;
     loop {
         let started = Instant::now();
-        match connect_once(state.clone(), &options).await {
+        match connect_once(state.clone(), &options, &webrtc).await {
             Ok(()) => tracing::warn!("与服务器的连接已关闭"),
             Err(error) => tracing::warn!("连接服务器失败: {error:#}"),
         }
@@ -173,7 +177,11 @@ pub async fn run(state: Arc<AgentState>, options: CloudOptions) -> Result<()> {
     }
 }
 
-async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<()> {
+async fn connect_once(
+    state: Arc<AgentState>,
+    options: &CloudOptions,
+    webrtc: &Arc<WebrtcHub>,
+) -> Result<()> {
     let url = device_url(options, &state.gpu, &state.ip)?;
     let mut request = url
         .clone()
@@ -226,7 +234,7 @@ async fn connect_once(state: Arc<AgentState>, options: &CloudOptions) -> Result<
 
         match message {
             WsMessage::Text(text) => {
-                handle_control(&state, options, text.as_str(), &out_tx, &sessions).await;
+                handle_control(&state, options, text.as_str(), &out_tx, &sessions, webrtc).await;
             }
             WsMessage::Binary(data) => dispatch(&data, &sessions),
             WsMessage::Ping(payload) => {
@@ -256,7 +264,7 @@ fn device_url(options: &CloudOptions, gpu: &str, ip: &str) -> Result<String> {
         bail!("server_url 需要 http(s):// 或 ws(s):// 前缀");
     }
     Ok(format!(
-        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}&gpu={}&ip={}&local_id={}",
+        "{base}/ws/device?device_id={}&name={}&os=Windows&version={}&gpu={}&ip={}&local_id={}&webrtc=1",
         urlencoding::encode(&options.device_id),
         urlencoding::encode(&options.name),
         urlencoding::encode(env!("CARGO_PKG_VERSION")),
@@ -272,6 +280,7 @@ async fn handle_control(
     text: &str,
     out: &mpsc::UnboundedSender<WsMessage>,
     sessions: &Sessions,
+    webrtc: &Arc<WebrtcHub>,
 ) {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return;
@@ -393,6 +402,17 @@ async fn handle_control(
                 .unwrap_or("未知设备")
                 .to_string();
             provider.handle_offer(request, viewer_id, viewer, candidates, out.clone());
+        }
+        "webrtc" => {
+            // 网页端 P2P 协商：浏览器发 offer，这里回 answer；后续 trickle ICE
+            // 和挂断都按 request 路由到对应的连接任务。
+            let viewer_id = value
+                .get("viewerId")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            if viewer_id != 0 {
+                webrtc.handle(viewer_id, &value, out);
+            }
         }
         "ping" => send_control(out, json!({ "t": "pong", "ts": now_ms() })),
         _ => {}

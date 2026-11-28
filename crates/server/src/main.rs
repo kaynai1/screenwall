@@ -9,7 +9,7 @@ use axum::extract::connect_info::Connected;
 use axum::serve::IncomingStream;
 use clap::{Parser, Subcommand};
 use screenwall_server::auth::{hash_password, hash_token, valid_password, valid_username};
-use screenwall_server::config::{Config, LimitsConfig, TlsConfig, UpdateConfig};
+use screenwall_server::config::{Config, LimitsConfig, TlsConfig, UpdateConfig, WebrtcConfig};
 use screenwall_server::db::Db;
 use screenwall_server::state::AppState;
 use screenwall_server::tls::{self, PeerAddr, TlsListener};
@@ -101,7 +101,8 @@ async fn main() -> Result<()> {
             let tls = TlsConfig::load(&cli.config)?;
             let update = UpdateConfig::load(&cli.config)?;
             let limits = LimitsConfig::load(&cli.config)?;
-            run(config, tls, update, limits, web_dir).await
+            let webrtc = WebrtcConfig::load(&cli.config)?;
+            run(config, tls, update, limits, webrtc, web_dir).await
         }
         Command::User { action } => {
             let db = Db::open(&config.db_path)?;
@@ -206,11 +207,13 @@ async fn run(
     tls: Option<TlsConfig>,
     update: UpdateConfig,
     limits: LimitsConfig,
+    webrtc: WebrtcConfig,
     web_dir: Option<PathBuf>,
 ) -> Result<()> {
     let db = Db::open(&config.db_path)?;
     let mut state = AppState::with_limits(db, config.clone(), limits);
     state.update = UpdateState::from_config(&update);
+    state.webrtc = webrtc;
     let state = Arc::new(state);
     if let Some(dir) = &web_dir {
         if !dir.join("index.html").is_file() {

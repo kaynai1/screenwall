@@ -39,6 +39,9 @@ pub struct DeviceParams {
     /// 本机识别码（9 位数字）：别人登录后也能凭它跨网段找到本机。
     #[serde(default)]
     pub local_id: Option<String>,
+    /// `webrtc=1` 表示这台被控端支持网页端 WebRTC P2P。
+    #[serde(default)]
+    pub webrtc: Option<String>,
 }
 
 pub async fn device_ws(
@@ -108,7 +111,10 @@ pub async fn device_ws(
     }
 
     state.metrics.handshake_ok();
-    ws.on_upgrade(move |socket| handle_device(socket, state, auth.user_id, params.device_id, name))
+    let webrtc = params.webrtc.as_deref() == Some("1");
+    ws.on_upgrade(move |socket| {
+        handle_device(socket, state, auth.user_id, params.device_id, name, webrtc)
+    })
 }
 
 /// `/ws/view` 的查询参数：网页端无法给 WebSocket 设请求头，令牌只能放这里。
@@ -155,6 +161,7 @@ async fn handle_device(
     user_id: i64,
     device_id: String,
     name: String,
+    webrtc: bool,
 ) {
     let key = AppState::device_key(user_id, &device_id);
     let (tx, rx) = mpsc::unbounded_channel::<WsOut>();
@@ -162,6 +169,7 @@ async fn handle_device(
         user_id,
         device_id: device_id.clone(),
         tx: tx.clone(),
+        webrtc,
     };
 
     // 同一设备重连时，旧连接让位。
@@ -304,6 +312,9 @@ async fn handle_device_text(
         }
         "p2p" => {
             handle_device_p2p(state, user_id, key, &value).await;
+        }
+        "webrtc" => {
+            handle_device_webrtc(state, user_id, key, &value).await;
         }
         "ping" => {
             let _ = tx.send(WsOut::Text(
@@ -514,6 +525,7 @@ async fn handle_view(
     state.viewers.write().await.remove(&viewer_id);
     // 主控端已经走了，它没等到应答的 P2P 请求没有意义，别让被控端白打洞。
     state.clear_p2p_for_viewer(viewer_id).await;
+    state.clear_webrtc_for_viewer(viewer_id).await;
     state.close_sessions_for_viewer(viewer_id).await;
 }
 
@@ -674,6 +686,9 @@ async fn handle_view_text(
             // 真正的打洞与传输都在两端之间完成，服务器不碰这条链路。
             handle_view_p2p(state, viewer_id, user_id, restricted, tx, &value).await;
         }
+        "webrtc" => {
+            handle_view_webrtc(state, viewer_id, user_id, restricted, tx, &value).await;
+        }
         "ping" => {
             let _ = tx.send(WsOut::Text(
                 json!({ "t": "pong", "ts": now_ms() }).to_string(),
@@ -772,6 +787,265 @@ async fn handle_view_p2p(
             .to_string(),
         ));
     }
+}
+
+/// 网页端发起的 WebRTC 协商。
+///
+/// 与 QUIC 打洞不同，WebRTC 的 offer / answer / ICE 会来回多条消息：
+/// 第一次 `offer` 时登记 `(viewer_id, request)`，之后只转发给登记过的设备。
+async fn handle_view_webrtc(
+    state: &Arc<AppState>,
+    viewer_id: u64,
+    user_id: i64,
+    restricted: Option<&str>,
+    tx: &mpsc::UnboundedSender<WsOut>,
+    value: &Value,
+) {
+    if !state.webrtc.enabled {
+        return;
+    }
+    let Some(request) = value
+        .get("request")
+        .and_then(Value::as_u64)
+        .map(|id| id as u32)
+        .filter(|id| *id != 0)
+    else {
+        return;
+    };
+    match value.get("event").and_then(Value::as_str).unwrap_or_default() {
+        "offer" => {
+            let device_id = value
+                .get("deviceId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !valid_device_id(device_id) {
+                return;
+            }
+            if let Some(allowed) = restricted {
+                if device_id != allowed {
+                    return;
+                }
+            }
+            match state.db.device(user_id, device_id) {
+                Ok(Some(device)) if device.controllable => {}
+                _ => return,
+            }
+            let key = AppState::device_key(user_id, device_id);
+            if !state.devices.read().await.contains_key(&key) {
+                return;
+            }
+            let Some(sdp) = webrtc_sdp(value.get("sdp")) else {
+                return;
+            };
+            let viewer = value
+                .get("viewer")
+                .and_then(Value::as_str)
+                .unwrap_or("网页端")
+                .chars()
+                .take(64)
+                .collect::<String>();
+            if !state
+                .register_webrtc(viewer_id, request, key.clone())
+                .await
+            {
+                return;
+            }
+            let message = json!({
+                "t": "webrtc",
+                "request": request,
+                "viewerId": viewer_id,
+                "event": "offer",
+                "viewer": viewer,
+                "sdp": sdp,
+                "iceServers": crate::webrtc::ice_servers(&state.webrtc, user_id),
+            })
+            .to_string();
+            if !state.send_to_device(&key, WsOut::Text(message)).await {
+                state.finish_webrtc(viewer_id, request).await;
+                let _ = tx.send(WsOut::Text(
+                    json!({
+                        "t": "webrtc",
+                        "request": request,
+                        "event": "reject",
+                        "msg": "device offline"
+                    })
+                    .to_string(),
+                ));
+            }
+        }
+        "ice" => {
+            let Some(ice) = webrtc_ice(value.get("ice")) else {
+                return;
+            };
+            let Some(key) = state.webrtc_target(viewer_id, request).await else {
+                return;
+            };
+            if !state.bump_webrtc(viewer_id, request).await {
+                return;
+            }
+            let message = json!({
+                "t": "webrtc",
+                "request": request,
+                "viewerId": viewer_id,
+                "event": "ice",
+                "ice": ice,
+            })
+            .to_string();
+            let _ = state.send_to_device(&key, WsOut::Text(message)).await;
+        }
+        "bye" => {
+            if let Some(key) = state.webrtc_target(viewer_id, request).await {
+                let message = json!({
+                    "t": "webrtc",
+                    "request": request,
+                    "viewerId": viewer_id,
+                    "event": "bye",
+                })
+                .to_string();
+                let _ = state.send_to_device(&key, WsOut::Text(message)).await;
+            }
+            state.finish_webrtc(viewer_id, request).await;
+        }
+        _ => {}
+    }
+}
+
+/// 被控端回的 WebRTC 消息：answer / trickle ICE / reject / bye。
+async fn handle_device_webrtc(state: &Arc<AppState>, user_id: i64, key: &str, value: &Value) {
+    if !state.webrtc.enabled {
+        return;
+    }
+    let (Some(request), Some(viewer_id)) = (
+        value
+            .get("request")
+            .and_then(Value::as_u64)
+            .map(|id| id as u32),
+        value.get("viewerId").and_then(Value::as_u64),
+    ) else {
+        return;
+    };
+    let Some(target) = state.webrtc_target(viewer_id, request).await else {
+        return;
+    };
+    if target != key {
+        return;
+    }
+    let viewer = state.viewers.read().await.get(&viewer_id).cloned();
+    let Some(viewer) = viewer else {
+        state.finish_webrtc(viewer_id, request).await;
+        return;
+    };
+    if viewer.user_id != user_id {
+        return;
+    }
+    if !state.bump_webrtc(viewer_id, request).await {
+        return;
+    }
+    let message = match value.get("event").and_then(Value::as_str).unwrap_or_default() {
+        "answer" => {
+            let Some(sdp) = webrtc_sdp(value.get("sdp")) else {
+                return;
+            };
+            json!({
+                "t": "webrtc",
+                "request": request,
+                "event": "answer",
+                "sdp": sdp,
+            })
+        }
+        "ice" => {
+            let Some(ice) = webrtc_ice(value.get("ice")) else {
+                return;
+            };
+            json!({
+                "t": "webrtc",
+                "request": request,
+                "event": "ice",
+                "ice": ice,
+            })
+        }
+        "reject" => {
+            state.finish_webrtc(viewer_id, request).await;
+            let msg = value
+                .get("msg")
+                .and_then(Value::as_str)
+                .unwrap_or("device rejected webrtc")
+                .chars()
+                .take(128)
+                .collect::<String>();
+            json!({
+                "t": "webrtc",
+                "request": request,
+                "event": "reject",
+                "msg": msg,
+            })
+        }
+        "bye" => {
+            state.finish_webrtc(viewer_id, request).await;
+            json!({
+                "t": "webrtc",
+                "request": request,
+                "event": "bye",
+            })
+        }
+        _ => return,
+    };
+    let _ = viewer.tx.send(WsOut::Text(message.to_string()));
+}
+
+/// SDP 只接受字符串、必须像一份 SDP；限制 16 KiB 防止被当成通用信使。
+fn webrtc_sdp(value: Option<&Value>) -> Option<String> {
+    let sdp = value?.as_str()?.trim();
+    if sdp.len() < 8 || sdp.len() > 16 * 1024 {
+        return None;
+    }
+    if !sdp.starts_with("v=0") {
+        return None;
+    }
+    Some(sdp.to_string())
+}
+
+/// trickle ICE 的单个候选。
+///
+/// 浏览器给的是 `{candidate, sdpMid, sdpMLineIndex, usernameFragment}` 对象
+/// （`addIceCandidate` 需要后两个字段），也兼容只有 `candidate` 字符串的老写法。
+/// 逐字段重建，丢弃任何多余内容，并以 640 字节封顶。
+fn webrtc_ice(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    let candidate = match value {
+        Value::String(text) => text.trim(),
+        Value::Object(map) => map.get("candidate")?.as_str()?.trim(),
+        _ => return None,
+    };
+    if candidate.is_empty() || candidate.len() > 512 || !candidate.starts_with("candidate:") {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "candidate".to_string(),
+        Value::String(candidate.to_string()),
+    );
+    if let Value::Object(map) = value {
+        if let Some(mid) = map.get("sdpMid").and_then(Value::as_str) {
+            if mid.len() <= 64 {
+                out.insert("sdpMid".to_string(), Value::String(mid.to_string()));
+            }
+        }
+        if let Some(index) = map.get("sdpMLineIndex").and_then(Value::as_u64) {
+            if index < 16 {
+                out.insert("sdpMLineIndex".to_string(), Value::from(index));
+            }
+        }
+        if let Some(fragment) = map.get("usernameFragment").and_then(Value::as_str) {
+            if fragment.len() <= 256 {
+                out.insert(
+                    "usernameFragment".to_string(),
+                    Value::String(fragment.to_string()),
+                );
+            }
+        }
+    }
+    Some(Value::Object(out))
 }
 
 async fn handle_view_binary(state: &Arc<AppState>, viewer_id: u64, user_id: i64, data: &[u8]) {

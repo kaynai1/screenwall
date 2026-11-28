@@ -25,6 +25,7 @@ pub mod stats;
 pub mod sys;
 pub mod tls;
 pub mod virtual_display;
+pub mod webrtc_host;
 pub mod wol;
 
 pub use server::{run_server, AgentState};

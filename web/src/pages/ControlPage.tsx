@@ -262,6 +262,11 @@ export default function ControlPage({
   notify: (text: string) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** P2P 的远端画面：隐藏的 `<video>`，逐帧画到画布上（输入/缩放逻辑不用改）。 */
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenAudioRef = useRef<HTMLAudioElement | null>(null);
+  const p2pDrawRef = useRef(0);
+  const [p2p, setP2p] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [renderer] = useState(() => new VideoRenderer());
@@ -336,7 +341,10 @@ export default function ControlPage({
       // H.264 属于 v1 基线（不走能力协商），只要浏览器有 WebCodecs 就能试；
       // 真解不出来时被控端会回 4104，那时再降回 MJPEG。
       const subMessage = (options: StreamOptions) => {
-        const h264 = options.preferH264 && typeof VideoDecoder !== "undefined";
+        // P2P 的媒体轨道只打包 H.264，链路建好后一律按 H.264 订阅
+        // （编不出来时被控端会回 4104，控制页再切回中继）。
+        const h264 =
+          viewer.usesP2p || (options.preferH264 && typeof VideoDecoder !== "undefined");
         // 被控端按 maxBitrate 折算单帧字节预算、逐帧挑质量档（与桌面端的
         // 码率自适应同一套逻辑）。只有链路真拥塞过（排队时长涨起来）才压码率：
         // 静态桌面下到手码率本来就低，按它压会把画面压花，而链路其实很空。
@@ -407,7 +415,7 @@ export default function ControlPage({
     renderer.reset();
     const run = async () => {
       if (!viewer.isOpen) await viewer.connect();
-      await viewer.open(device.id);
+      await viewer.open(device.id, "control", Boolean(device.webrtc));
     };
     run().catch((error: unknown) => {
       setPhase("error");
@@ -420,7 +428,28 @@ export default function ControlPage({
         setErrorText(raw);
       }
     });
-  }, [device.id, renderer, viewer]);
+  }, [device.id, device.webrtc, renderer, viewer]);
+
+  /** P2P：远端轨道每出一帧就画到画布，保持和 MJPEG/H.264 相同的交互与缩放。 */
+  function startP2pDraw(video: HTMLVideoElement) {
+    if (p2pDrawRef.current) {
+      video.cancelVideoFrameCallback(p2pDrawRef.current);
+      p2pDrawRef.current = 0;
+    }
+    const draw = () => {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d", { alpha: false, desynchronized: true });
+      if (canvas && ctx && video.videoWidth && video.videoHeight) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+        ctx.drawImage(video, 0, 0);
+      }
+      p2pDrawRef.current = video.requestVideoFrameCallback(draw);
+    };
+    p2pDrawRef.current = video.requestVideoFrameCallback(draw);
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -458,6 +487,32 @@ export default function ControlPage({
           client: { name: "网页端", version: WEB_VERSION },
           caps: ["clipboard.text"],
         });
+      },
+      onP2pVideo: (stream) => {
+        const video = screenVideoRef.current;
+        if (!video) return;
+        if (video.srcObject !== stream) video.srcObject = stream;
+        void video.play().catch(() => undefined);
+        startP2pDraw(video);
+      },
+      onP2pAudio: (stream) => {
+        const audio = screenAudioRef.current;
+        if (!audio) return;
+        if (audio.srcObject !== stream) audio.srcObject = stream;
+        audio.muted = !audioOnRef.current;
+      },
+      onP2pActive: () => {
+        setP2p(true);
+        const video = screenVideoRef.current;
+        if (video?.srcObject) {
+          void video.play().catch(() => undefined);
+          startP2pDraw(video);
+        }
+      },
+      onP2pLost: (reason) => {
+        setP2p(false);
+        setPhase("error");
+        setErrorText(reason);
       },
       onMessage: (message) => {
         // 目录浏览与下载的消息由 RemoteFiles 消化，别让控制页当成未知消息。
@@ -537,6 +592,20 @@ export default function ControlPage({
             const code = Number(message.code ?? 0);
             const copy = describeCode(code, String(message.msg ?? ""));
             if (code === 4104 && subIdRef.current === 0) {
+              if (viewer.usesP2p) {
+                // P2P 轨道只有 H.264；设备编不出来就只能回中继走 MJPEG。
+                setP2p(false);
+                setPhase("waiting");
+                setActual(null);
+                setOptions((current) => ({ ...current, preferH264: false }));
+                optionsRef.current = { ...optionsRef.current, preferH264: false };
+                notify("这台设备不支持 H.264 编码，已切回中转");
+                viewer.switchToRelay(device.id).catch((failure: unknown) => {
+                  setPhase("error");
+                  setErrorText(failure instanceof Error ? failure.message : String(failure));
+                });
+                break;
+              }
               // H.264 编码器不可用：退回 MJPEG 再试一次。
               resubscribe({ ...optionsRef.current, preferH264: false });
               break;
@@ -568,6 +637,8 @@ export default function ControlPage({
           return;
         }
         if (frame.type === MEDIA_AUDIO && audioOnRef.current) {
+          // P2P 下 Opus 走 RTP 轨道，由隐藏的 <audio> 直接播放。
+          if (viewer.usesP2p && frame.codec === CODEC_OPUS) return;
           const player = audioPlayerRef.current;
           if (!player) return;
           const { sampleRate, channels } = audioFormatRef.current;
@@ -656,9 +727,12 @@ export default function ControlPage({
     };
 
     const statsTimer = window.setInterval(() => {
-      const sample = renderer.sample();
+      // P2P 的画面不进解码器，统计从 RTCPeerConnection.getStats() 取。
+      const sample = viewer.usesP2p
+        ? viewer.p2pStats
+        : { ...renderer.sample(), rtt: 0 };
       deliveredRef.current = sample.kbps;
-      setStats({ ...sample, rtt: rttRef.current });
+      setStats({ fps: sample.fps, kbps: sample.kbps, rtt: sample.rtt || rttRef.current });
       // 到手比例：这一秒被控端出了多少帧（序号差），实际收到多少帧。
       const lastSeq = seqRef.current;
       const mark = seqMarkRef.current;
@@ -678,6 +752,8 @@ export default function ControlPage({
     }, 2000);
     // 每 2 秒报一次播放缓冲，被控端据此调 Opus 码率（协议里的 audio.stats）。
     const audioStatsTimer = window.setInterval(() => {
+      // P2P 的音频由浏览器自己缓冲，不需要给被控端报播放缓冲。
+      if (viewer.usesP2p) return;
       const player = audioPlayerRef.current;
       const id = audioIdRef.current;
       if (!audioOnRef.current || !player || !id) return;
@@ -700,6 +776,16 @@ export default function ControlPage({
       remoteFiles.dispose();
       viewer.closeSession();
       renderer.detach();
+      const video = screenVideoRef.current;
+      if (video) {
+        if (p2pDrawRef.current) {
+          video.cancelVideoFrameCallback(p2pDrawRef.current);
+          p2pDrawRef.current = 0;
+        }
+        video.srcObject = null;
+      }
+      const audio = screenAudioRef.current;
+      if (audio) audio.srcObject = null;
     };
     // 只挂载一次：设备/视图在控制页生命周期内不变。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1137,7 +1223,22 @@ export default function ControlPage({
       }
       audioPlayerRef.current?.dispose();
       audioPlayerRef.current = null;
+      const element = screenAudioRef.current;
+      if (element) element.muted = true;
       setAudioInfo(null);
+      return;
+    }
+    if (viewer.usesP2p) {
+      // P2P 的 Opus 由媒体元素直接解码，不需要 WebAudio 播放器。
+      const element = screenAudioRef.current;
+      if (element) {
+        element.muted = false;
+        void element.play().catch(() => undefined);
+      }
+      viewer.sendJson({ t: "audio.sub", codec: "opus", source: "loopback" });
+      viewer.sendJson({ t: "audio.volume.get" });
+      setAudioOn(true);
+      audioOnRef.current = true;
       return;
     }
     // AudioContext 必须在用户手势里创建/恢复，否则自动播放策略会静音。
@@ -1258,6 +1359,9 @@ export default function ControlPage({
           onPointerCancel={endPointer}
           onContextMenu={onContextMenu}
         />
+        {/* P2P：远端轨道放这里，由 startP2pDraw 逐帧画到画布上。 */}
+        <video ref={screenVideoRef} className="screen-media" playsInline autoPlay muted />
+        <audio ref={screenAudioRef} autoPlay />
 
         {phase !== "streaming" && (
           <div className="stage-overlay">
@@ -1294,6 +1398,7 @@ export default function ControlPage({
           <strong>{device.name}</strong>
           <small>
             <Wifi size={11} />
+            {p2p ? "直连 · " : ""}
             {stats.fps} fps · {formatRate(stats.kbps)}
             {stats.rtt ? ` · ${stats.rtt}ms` : ""}
             {actual ? ` · ${actual.w}×${actual.h} ${codecLabel}` : ""}

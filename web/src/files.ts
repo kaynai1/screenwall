@@ -120,6 +120,9 @@ export async function uploadFiles(
         sent += start;
         onProgress?.(sent, total);
       }
+      // P2P 下走 DataChannel：webrtc-rs 单条消息默认上限 256 KiB，
+      // base64 后要留足余量，所以块大小压到 96 KiB。
+      const chunkBytes = viewer.usesP2p ? 96 * 1024 : CHUNK_BYTES;
       let offset = start;
       while (offset < file.size) {
         // 在途字节超过窗口就先等被控端的 file.progress。
@@ -131,7 +134,7 @@ export async function uploadFiles(
           );
           if (denied) throw new Error(denied);
         }
-        const end = Math.min(file.size, offset + CHUNK_BYTES);
+        const end = Math.min(file.size, offset + chunkBytes);
         const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
         viewer.sendJson({ t: "file.chunk", tid, item: index, offset, data: toBase64(bytes) });
         sent += bytes.length;

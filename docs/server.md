@@ -624,6 +624,36 @@ quick_connect_burst = 10         # 连接码尝试限流的桶容量
 - 触发限流时只打一条 `warn` 日志（含 key 与剩余秒数），不会每个被拒请求都刷屏。
 - 限流状态在内存里，重启后清零；多实例部署时各实例独立计数。
 
+### 6.2.1 网页端 P2P（`[webrtc]`）
+
+网页端在条件允许时会先试 WebRTC 直连（画面/声音走 SRTP，控制与文件走
+DataChannel），3 秒内连不上再回退到中转。信令由服务器转发，ICE 服务也由
+服务器下发，所以服务器要显式开启：
+
+```toml
+[webrtc]
+enabled = true
+stun = ["stun:stun.l.google.com:19302"]
+# TURN 可选；对称 NAT / 移动网络下没有 TURN 基本连不上。
+turn = "turn:turn.example.com:3478?transport=udp"
+turn_secret = "<coturn 的 static-auth-secret>"
+turn_ttl_secs = 3600               # 临时凭据有效期，默认 1 小时
+```
+
+- `enabled = false`（或整段省略）时 `POST /api/v1/p2p/ice` 返回 404，网页端
+  不会尝试 P2P，一切照旧走中转。
+- TURN 凭据用 coturn 的 `use-auth-secret` 模式现算：用户名是
+  `过期时间:用户ID`，密码是 `base64(HMAC-SHA1(secret, 用户名))`。
+  服务器只保存 `turn_secret`，不会把它下发给浏览器。
+- coturn 侧对应配置：`use-auth-secret` + `static-auth-secret=<同一个值>`，
+  并放行 UDP 3478（以及 relay 端口段）。
+- 被控端要 ≥ 0.2.20（连接时带 `webrtc=1`，设备列表里的 `webrtc` 字段为真）。
+  旧客户端不会回 answer，服务器 60 秒后清掉这条协商登记，网页端已经回退中继。
+- 同一主控端最多 3 条并发协商、单条协商双向合计 64 条消息、SDP ≤ 16 KiB、
+  ICE 候选 ≤ 512 字节；这些上限用于防刷，正常协商远低于它们。
+- P2P 下视频轨道只打包 H.264；被控端编不出 H.264 时（`error 4104`）网页端会
+  自动切回中转改用 MJPEG。
+
 ### 6.3 命令行
 
 ```powershell

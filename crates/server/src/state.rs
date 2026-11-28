@@ -29,6 +29,8 @@ pub struct DeviceConn {
     pub user_id: i64,
     pub device_id: String,
     pub tx: mpsc::UnboundedSender<WsOut>,
+    /// 被控端支持网页端 WebRTC P2P（连接时带 `webrtc=1`）。
+    pub webrtc: bool,
 }
 
 /// 主控端待发的最新画面帧。
@@ -358,6 +360,9 @@ pub struct DeviceView {
     /// 本机识别码（9 位数字）：别人在同一网段或已登录服务器时都能用它找人。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub local_id: String,
+    /// 被控端支持网页端 WebRTC P2P；网页端据此决定要不要先试直连。
+    #[serde(default)]
+    pub webrtc: bool,
 }
 
 pub struct AppState {
@@ -384,6 +389,12 @@ pub struct AppState {
     pub metrics: Metrics,
     /// 自托管更新源（`[update]` 段）；未配置时相关接口返回 404。
     pub update: UpdateState,
+    /// 网页端 WebRTC P2P（`[webrtc]` 段）；`enabled = false` 时整条链路关闭。
+    pub webrtc: crate::config::WebrtcConfig,
+    /// `/api/v1/p2p/ice` 的签发频率（按账号）。
+    pub ice_rate: RateLimiter,
+    /// WebRTC 信令登记：`(viewer_id, request)` → 目标设备，TTL 60 秒。
+    pub webrtc_pending: RwLock<HashMap<(u64, u32), PendingWebrtc>>,
     /// P2P 打洞请求：`(viewer_id, request)` → 发起方与目标设备。
     ///
     /// 只用来把被控端的 `answer` 送回正确的主控端连接，不参与会话。
@@ -397,6 +408,23 @@ pub struct AppState {
 pub struct PendingP2p {
     pub device_key: String,
     pub created: std::time::Instant,
+}
+
+/// 一段正在协商的网页端 WebRTC 会话。
+///
+/// 与 [`PendingP2p`] 不同，WebRTC 不是一次问答：offer / answer / trickle ICE
+/// 会来回多条消息，所以这里记录有效期与双向消息数，超时或刷屏就整段丢弃。
+pub struct PendingWebrtc {
+    pub device_key: String,
+    pub created: std::time::Instant,
+    pub messages: u32,
+}
+
+impl PendingWebrtc {
+    /// 一段协商最多允许的转发条数（双方合计）：足够 trickle ICE，又能防刷。
+    pub const MAX_MESSAGES: u32 = 128;
+    /// 协商最长存活时间；超过后新的消息一律丢弃，主控端会回退中继。
+    pub const TTL: std::time::Duration = std::time::Duration::from_secs(60);
 }
 
 impl AppState {
@@ -453,6 +481,9 @@ impl AppState {
             feedback_rate,
             metrics: Metrics::default(),
             update: UpdateState::default(),
+            webrtc: crate::config::WebrtcConfig::default(),
+            ice_rate: RateLimiter::new(12, std::time::Duration::from_secs(60), 6),
+            webrtc_pending: RwLock::new(HashMap::new()),
             p2p_pending: RwLock::new(HashMap::new()),
             next_session: AtomicU32::new(1),
             next_viewer: AtomicU64::new(1),
@@ -539,17 +570,20 @@ impl AppState {
                 return Vec::new();
             }
         };
-        let online: Vec<String> = {
+        let online: Vec<(String, bool)> = {
             let devices = self.devices.read().await;
             devices
                 .values()
                 .filter(|conn| conn.user_id == user_id)
-                .map(|conn| conn.device_id.clone())
+                .map(|conn| (conn.device_id.clone(), conn.webrtc))
                 .collect()
         };
         rows.into_iter()
-            .map(|row| DeviceView {
-                online: online.iter().any(|id| id == &row.id),
+            .map(|row| {
+                let conn = online.iter().find(|(id, _)| id == &row.id);
+                DeviceView {
+                online: conn.is_some(),
+                webrtc: conn.map(|(_, webrtc)| *webrtc).unwrap_or(false),
                 id: row.id,
                 name: row.name,
                 os: row.os,
@@ -559,6 +593,7 @@ impl AppState {
                 gpu: row.gpu,
                 ip: row.ip,
                 local_id: row.local_id,
+                }
             })
             .collect()
     }
@@ -722,6 +757,80 @@ impl AppState {
     /// 主控连接断开：它没等到应答的 P2P 请求全部作废。
     pub async fn clear_p2p_for_viewer(&self, viewer_id: u64) {
         self.p2p_pending
+            .write()
+            .await
+            .retain(|(owner, _), _| *owner != viewer_id);
+    }
+
+    /// 登记（或刷新）一段 WebRTC 协商。
+    ///
+    /// 同一主控连接最多同时协商 3 条；表满返回 false。
+    pub async fn register_webrtc(&self, viewer_id: u64, request: u32, device_key: String) -> bool {
+        const CAP: usize = 256;
+        const PER_VIEWER: usize = 3;
+        let now = std::time::Instant::now();
+        let mut pending = self.webrtc_pending.write().await;
+        pending.retain(|_, entry| now.duration_since(entry.created) < PendingWebrtc::TTL);
+        if pending.len() >= CAP {
+            return false;
+        }
+        let mine = pending
+            .keys()
+            .filter(|(owner, key)| *owner == viewer_id && *key != request)
+            .count();
+        if mine >= PER_VIEWER {
+            return false;
+        }
+        pending.insert(
+            (viewer_id, request),
+            PendingWebrtc {
+                device_key,
+                created: now,
+                messages: 0,
+            },
+        );
+        true
+    }
+
+    /// 查一段 WebRTC 协商的目标设备；过期或不存在返回 `None`。
+    pub async fn webrtc_target(&self, viewer_id: u64, request: u32) -> Option<String> {
+        let mut pending = self.webrtc_pending.write().await;
+        let now = std::time::Instant::now();
+        match pending.get(&(viewer_id, request)) {
+            Some(entry) if now.duration_since(entry.created) < PendingWebrtc::TTL => {
+                Some(entry.device_key.clone())
+            }
+            Some(_) => {
+                pending.remove(&(viewer_id, request));
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// 记一条转发；超过上限返回 false（调用方丢弃这条消息）。
+    pub async fn bump_webrtc(&self, viewer_id: u64, request: u32) -> bool {
+        let mut pending = self.webrtc_pending.write().await;
+        match pending.get_mut(&(viewer_id, request)) {
+            Some(entry) if entry.messages < PendingWebrtc::MAX_MESSAGES => {
+                entry.messages += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 协商结束（reject / bye）：删掉登记，后续消息不再转发。
+    pub async fn finish_webrtc(&self, viewer_id: u64, request: u32) {
+        self.webrtc_pending
+            .write()
+            .await
+            .remove(&(viewer_id, request));
+    }
+
+    /// 主控连接断开：它正在协商的 WebRTC 会话全部作废。
+    pub async fn clear_webrtc_for_viewer(&self, viewer_id: u64) {
+        self.webrtc_pending
             .write()
             .await
             .retain(|(owner, _), _| *owner != viewer_id);

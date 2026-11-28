@@ -514,6 +514,16 @@ textarea {
   will-change: transform;
 }
 
+/* P2P 的远端视频：只要解码和回调，不直接显示（由画布绘制）。 */
+.screen-media {
+  position: absolute;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .stage-overlay {
   position: absolute;
   inset: 0;

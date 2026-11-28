@@ -28,6 +28,11 @@ audiopus = "0.2"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# 网页端 P2P：纯 Rust WebRTC，浏览器做 offerer，被控端回 answer。
+webrtc = "0.21"
+rtc = "0.21"
+bytes = "1"
+async-trait = "0.1"
 urlencoding = "2"
 toml = "0.8"
 tracing = "0.1"

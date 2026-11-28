@@ -233,6 +233,57 @@ impl LimitsConfig {
     }
 }
 
+/// 网页端 WebRTC P2P 的 `[webrtc]` 段；没有这一段时功能关闭，行为与旧版一致。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WebrtcConfig {
+    /// 打开后 `/api/v1/p2p/ice` 才可用，`webrtc` 信令才会转发。
+    #[serde(default)]
+    pub enabled: bool,
+    /// STUN 服务器，例如 `stun:stun.example.com:3478`；可写多个。
+    #[serde(default)]
+    pub stun: Vec<String>,
+    /// TURN 服务器地址，例如 `turn:turn.example.com:3478?transport=udp`。
+    #[serde(default)]
+    pub turn: Option<String>,
+    /// coturn 的 `static-auth-secret`；只放服务器配置，绝不能下发给客户端。
+    #[serde(default)]
+    pub turn_secret: Option<String>,
+    /// TURN 临时凭据有效期（秒）。
+    #[serde(default = "default_turn_ttl")]
+    pub turn_ttl_secs: u64,
+}
+
+impl WebrtcConfig {
+    /// 读取 `[webrtc]` 段；配置文件或该段不存在时使用默认值（关闭）。
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("读取 {} 失败", path.display()))?;
+        let doc: WebrtcDoc =
+            toml::from_str(&text).with_context(|| format!("解析 {} 失败", path.display()))?;
+        let mut config = doc.webrtc.unwrap_or_default();
+        if config.turn.is_some() && config.turn_secret.as_deref().unwrap_or("").is_empty() {
+            bail!("[webrtc] 配置了 turn 但没有 turn_secret，TURN 凭据无法签发");
+        }
+        if config.turn_ttl_secs == 0 {
+            config.turn_ttl_secs = default_turn_ttl();
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WebrtcDoc {
+    #[serde(default)]
+    webrtc: Option<WebrtcConfig>,
+}
+
+fn default_turn_ttl() -> u64 {
+    3600
+}
+
 fn default_bind() -> String {
     "127.0.0.1:8787".to_string()
 }

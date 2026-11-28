@@ -10,6 +10,8 @@ export type DeviceView = {
   online: boolean;
   lastSeen: number;
   controllable: boolean;
+  /** 被控端支持网页端 WebRTC P2P（连接时带 `webrtc=1`）。 */
+  webrtc?: boolean;
 };
 
 export type Account = {
@@ -27,6 +29,9 @@ const VIEWER_NAME = "网页端";
 
 /** 连上 WebSocket 后等 `ready` 的上限；超时按失败处理，外层会退避重连。 */
 const CONNECT_TIMEOUT_MS = 10_000;
+
+/** WebRTC 从 offer 到 DataChannel 打开的上限；超时直接回退中继。 */
+const P2P_TIMEOUT_MS = 3_000;
 
 /** 网页端在这台浏览器上的固定设备 ID（存在 localStorage）。 */
 const DEVICE_KEY = "screenwall.web.deviceId";
@@ -198,6 +203,23 @@ export type ViewerHandlers = {
   onMessage?: (message: Record<string, unknown>) => void;
   onFrame?: (frame: MediaFrame) => void;
   onSocketClosed?: (reason: string) => void;
+  /** P2P 建立成功后的远端视频 / 声音轨道。 */
+  onP2pVideo?: (stream: MediaStream) => void;
+  onP2pAudio?: (stream: MediaStream) => void;
+  /** 已经走 P2P 后连接断开（和服务器 WebSocket 无关）。 */
+  onP2pLost?: (reason: string) => void;
+  /** P2P 会话建立完成（链路已经可以传控制消息和媒体）。 */
+  onP2pActive?: () => void;
+};
+
+/** WebRTC 链路的每秒统计（`RTCPeerConnection.getStats()` 取）。 */
+export type P2pStats = { fps: number; kbps: number; rtt: number; w: number; h: number };
+
+type P2pHandles = {
+  pc: RTCPeerConnection;
+  dc: RTCDataChannel;
+  request: number;
+  active: boolean;
 };
 
 /**
@@ -218,7 +240,41 @@ export class Viewer {
   private closedByUs = false;
   private readonly subscribers = new Set<ViewerHandlers>();
 
+  /** 当前会话走哪条链路：中继（服务器 WebSocket）还是 P2P（DataChannel）。 */
+  private transport: "relay" | "p2p" = "relay";
+  private p2p: P2pHandles | null = null;
+  private p2pRequest = 0;
+  private p2pRemoteSet = false;
+  private p2pIceQueue: RTCIceCandidateInit[] = [];
+  /** 等 DataChannel 打开 / 等 `open.ok` 的挂起回调，超时或失败时一起收尾。 */
+  private p2pWait: ((channel: RTCDataChannel | null) => void) | null = null;
+  private p2pPendingOpen: { request: number; settle: (session: number | null) => void } | null = null;
+  private p2pStatsTimer = 0;
+  private p2pSampleValue: P2pStats = { fps: 0, kbps: 0, rtt: 0, w: 0, h: 0 };
+  private p2pBytes = 0;
+  private p2pSampleAt = 0;
+
   constructor(private readonly account: Account) {}
+
+  /** 当前会话是否走 P2P。 */
+  get usesP2p(): boolean {
+    return this.transport === "p2p";
+  }
+
+  /** P2P 链路的最近一秒统计；中转链路返回全 0（调用方继续用解码器统计）。 */
+  get p2pStats(): P2pStats {
+    return this.p2pSampleValue;
+  }
+
+  /**
+   * P2P 轨道只承载 H.264；设备编不出来时（`error 4104`）切回中继重新开会话。
+   * 调用方拿到 `onOpen` 后会按现有流程重新握手、重新订阅。
+   */
+  async switchToRelay(deviceId: string): Promise<number> {
+    this.session = 0;
+    this.dropP2p();
+    return this.open(deviceId, "control", false);
+  }
 
   /** 订阅事件（App 和设备页/控制页各订阅一份，互不覆盖）。 */
   subscribe(handlers: ViewerHandlers): () => void {
@@ -249,6 +305,7 @@ export class Viewer {
   connect(): Promise<void> {
     this.closedByUs = false;
     this.session = 0;
+    this.dropP2p();
     const base = this.account.serverUrl.replace(/^http/i, "ws");
     const url = `${base}/ws/view?token=${encodeURIComponent(this.account.token)}`;
     return new Promise((resolve, reject) => {
@@ -286,6 +343,7 @@ export class Viewer {
         }
         this.pendingOpen?.reject(new Error("连接已断开"));
         this.pendingOpen = null;
+        this.dropP2p();
         if (!this.closedByUs) this.emit("onSocketClosed", event.reason || `连接已断开（${event.code}）`);
       };
       socket.onmessage = (event) => {
@@ -306,10 +364,22 @@ export class Viewer {
     });
   }
 
-  open(deviceId: string, mode: "control" | "wall" = "control"): Promise<number> {
+  /**
+   * 建立会话。`p2p` 为真时先试 WebRTC（3 秒连不上就关掉），失败再走中继，
+   * 用户只会多看到一两秒「正在连接」。
+   */
+  async open(
+    deviceId: string,
+    mode: "control" | "wall" = "control",
+    p2p = false,
+  ): Promise<number> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("连接尚未就绪"));
+      throw new Error("连接尚未就绪");
+    }
+    if (p2p && mode === "control" && (await this.openP2p(deviceId))) {
+      this.emit("onOpen", this.session);
+      return this.session;
     }
     this.request = (this.request + 1) >>> 0;
     const request = this.request;
@@ -334,8 +404,17 @@ export class Viewer {
   }
 
   sendJson(message: Record<string, unknown>): void {
+    if (!this.session) return;
+    if (this.transport === "p2p") {
+      const dc = this.p2p?.dc;
+      if (dc?.readyState === "open") {
+        // 复制一份到普通 ArrayBuffer：DataChannel 的 `send` 不接受 SharedArrayBuffer 视图。
+        dc.send(new Uint8Array(tunnelJson(this.session, message)).buffer);
+      }
+      return;
+    }
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !this.session) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(tunnelJson(this.session, message));
   }
 
@@ -346,6 +425,15 @@ export class Viewer {
 
   /** 只关会话，保留到服务器的 WebSocket（从控制页返回设备列表时用）。 */
   closeSession(): void {
+    if (this.transport === "p2p") {
+      const dc = this.p2p?.dc;
+      if (dc?.readyState === "open" && this.session) {
+        dc.send(JSON.stringify({ t: "close", session: this.session }));
+      }
+      this.session = 0;
+      this.dropP2p();
+      return;
+    }
     const socket = this.socket;
     if (socket?.readyState === WebSocket.OPEN && this.session) {
       socket.send(JSON.stringify({ t: "close", session: this.session }));
@@ -356,9 +444,306 @@ export class Viewer {
   close(): void {
     this.closedByUs = true;
     this.closeSession();
+    this.dropP2p();
     const socket = this.socket;
     this.socket = null;
     socket?.close();
+  }
+
+  // ------------------------------------------------------------ WebRTC P2P
+
+  /** ICE 服务来自服务器；接口不可用（未启用 WebRTC）就不尝试 P2P。 */
+  private async fetchIceServers(): Promise<RTCIceServer[] | null> {
+    try {
+      const response = await fetch(`${this.account.serverUrl}/api/v1/p2p/ice`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.account.token}` },
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as { iceServers?: RTCIceServer[] };
+      return Array.isArray(data.iceServers) ? data.iceServers : [];
+    } catch {
+      return null;
+    }
+  }
+
+  private sendP2pSignal(
+    request: number,
+    deviceId: string,
+    payload: Record<string, unknown>,
+  ): boolean {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(
+      JSON.stringify({ t: "webrtc", request, deviceId, viewer: VIEWER_NAME, ...payload }),
+    );
+    return true;
+  }
+
+  /** 试建 WebRTC；任何一步失败都返回 false，外层回退中继。 */
+  private async openP2p(deviceId: string): Promise<boolean> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    if (typeof RTCPeerConnection === "undefined") return false;
+    const iceServers = await this.fetchIceServers();
+    if (!iceServers) return false;
+
+    this.dropP2p();
+    this.p2pRemoteSet = false;
+    this.p2pIceQueue = [];
+    const request = (this.p2pRequest = (this.p2pRequest + 1) >>> 0);
+    const pc = new RTCPeerConnection({ iceServers });
+    // 两条 recvonly 的 m-line：被控端把 answer 里的轨道挂到这两路上。
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    const dc = pc.createDataChannel("ctrl", { ordered: true });
+    dc.binaryType = "arraybuffer";
+    const handles: P2pHandles = { pc, dc, request, active: false };
+    this.p2p = handles;
+
+    pc.ontrack = (event) => {
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      if (event.track.kind === "video") this.emit("onP2pVideo", stream);
+      else if (event.track.kind === "audio") this.emit("onP2pAudio", stream);
+    };
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      this.sendP2pSignal(request, deviceId, { event: "ice", ice: event.candidate.toJSON() });
+    };
+    pc.onconnectionstatechange = () => {
+      if (this.p2p !== handles) return;
+      if (pc.connectionState === "failed") this.p2pFailed(handles, "直连已断开");
+      else if (pc.connectionState === "connected") handles.active = true;
+    };
+    dc.onmessage = (event) => {
+      if (typeof event.data === "string") this.handleDcControl(event.data);
+      else if (event.data instanceof ArrayBuffer) void this.handleBinary(event.data);
+    };
+    dc.onclose = () => {
+      if (this.p2p === handles) this.p2pFailed(handles, "直连通道已关闭");
+    };
+
+    const opened = new Promise<RTCDataChannel | null>((resolve) => {
+      const timer = window.setTimeout(() => {
+        this.p2pWait = null;
+        resolve(null);
+      }, P2P_TIMEOUT_MS);
+      this.p2pWait = (channel) => {
+        window.clearTimeout(timer);
+        this.p2pWait = null;
+        resolve(channel);
+      };
+    });
+    dc.onopen = () => {
+      if (this.p2p !== handles) return;
+      this.p2pWait?.(dc);
+    };
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const sdp = pc.localDescription?.sdp ?? "";
+      if (!sdp || !this.sendP2pSignal(request, deviceId, { event: "offer", sdp })) {
+        throw new Error("发送 offer 失败");
+      }
+    } catch {
+      this.dropP2p();
+      return false;
+    }
+
+    const channel = await opened;
+    if (!channel || this.p2p !== handles) {
+      this.dropP2p();
+      return false;
+    }
+    const session = await this.openDcSession(channel);
+    if (!session || this.p2p !== handles) {
+      this.dropP2p();
+      return false;
+    }
+    handles.active = true;
+    this.transport = "p2p";
+    this.session = session;
+    this.startP2pStats(pc);
+    this.emit("onP2pActive");
+    return true;
+  }
+
+  /** DataChannel 上用直连协议发 `open`，拿被控端分配的会话号。 */
+  private openDcSession(channel: RTCDataChannel): Promise<number | null> {
+    return new Promise((resolve) => {
+      const request = (this.request = (this.request + 1) >>> 0);
+      const timer = window.setTimeout(() => {
+        if (this.p2pPendingOpen?.request === request) {
+          this.p2pPendingOpen = null;
+          resolve(null);
+        }
+      }, 10_000);
+      this.p2pPendingOpen = {
+        request,
+        settle: (session) => {
+          window.clearTimeout(timer);
+          this.p2pPendingOpen = null;
+          resolve(session);
+        },
+      };
+      try {
+        channel.send(JSON.stringify({ t: "open", request, viewer: VIEWER_NAME }));
+      } catch {
+        this.p2pPendingOpen?.settle(null);
+      }
+    });
+  }
+
+  private handleP2pSignal(value: Record<string, unknown>): void {
+    const p2p = this.p2p;
+    if (!p2p || Number(value.request ?? 0) !== p2p.request) return;
+    switch (value.event) {
+      case "answer":
+        void this.applyP2pAnswer(String(value.sdp ?? ""));
+        break;
+      case "ice":
+        void this.applyP2pIce(value.ice);
+        break;
+      case "reject":
+      case "bye":
+        this.dropP2p();
+        break;
+      default:
+        break;
+    }
+  }
+
+  private async applyP2pAnswer(sdp: string): Promise<void> {
+    const p2p = this.p2p;
+    if (!p2p || !sdp) return;
+    try {
+      await p2p.pc.setRemoteDescription({ type: "answer", sdp });
+      this.p2pRemoteSet = true;
+      for (const ice of this.p2pIceQueue.splice(0)) {
+        await p2p.pc.addIceCandidate(ice).catch(() => undefined);
+      }
+    } catch {
+      this.dropP2p();
+    }
+  }
+
+  private async applyP2pIce(ice: unknown): Promise<void> {
+    const p2p = this.p2p;
+    if (!p2p || !ice || typeof ice !== "object") return;
+    const init = ice as RTCIceCandidateInit;
+    if (!this.p2pRemoteSet) {
+      if (this.p2pIceQueue.length < 64) this.p2pIceQueue.push(init);
+      return;
+    }
+    await p2p.pc.addIceCandidate(init).catch(() => undefined);
+  }
+
+  /** DataChannel 上的握手消息（`open.ok` 之外的都是会话层的 `closed` 之类）。 */
+  private handleDcControl(text: string): void {
+    const value = safeJson(text);
+    if (!value) return;
+    if (value.t === "open.ok") {
+      const pending = this.p2pPendingOpen;
+      if (pending && Number(value.request ?? 0) === pending.request) {
+        pending.settle(Number(value.session ?? 0) || null);
+      }
+      return;
+    }
+    if (value.t === "open.err") {
+      this.p2pPendingOpen?.settle(null);
+      return;
+    }
+    this.handleControl(text);
+  }
+
+  private p2pFailed(handles: P2pHandles, reason: string): void {
+    if (this.p2p !== handles) return;
+    const active = handles.active;
+    this.dropP2p();
+    if (active) this.emit("onP2pLost", reason);
+  }
+
+  private dropP2p(): void {
+    const p2p = this.p2p;
+    this.p2p = null;
+    this.transport = "relay";
+    if (this.p2pStatsTimer) {
+      window.clearInterval(this.p2pStatsTimer);
+      this.p2pStatsTimer = 0;
+    }
+    this.p2pSampleValue = { fps: 0, kbps: 0, rtt: 0, w: 0, h: 0 };
+    const wait = this.p2pWait;
+    this.p2pWait = null;
+    wait?.(null);
+    const pending = this.p2pPendingOpen;
+    this.p2pPendingOpen = null;
+    pending?.settle(null);
+    if (p2p) {
+      try {
+        p2p.dc.close();
+      } catch {
+        // 已经关闭就忽略。
+      }
+      try {
+        p2p.pc.close();
+      } catch {
+        // 已经关闭就忽略。
+      }
+    }
+  }
+
+  /** 每秒从 `getStats()` 取 P2P 的帧率 / 码率 / 往返延迟。 */
+  private startP2pStats(pc: RTCPeerConnection): void {
+    this.p2pBytes = 0;
+    this.p2pSampleAt = performance.now();
+    this.p2pStatsTimer = window.setInterval(() => {
+      void pc
+        .getStats()
+        .then((stats) => {
+          let bytes = 0;
+          let fps = 0;
+          let rtt = 0;
+          let w = 0;
+          let h = 0;
+          stats.forEach((entry) => {
+            const report = entry as RTCStats & {
+              kind?: string;
+              bytesReceived?: number;
+              framesPerSecond?: number;
+              frameWidth?: number;
+              frameHeight?: number;
+              state?: string;
+              currentRoundTripTime?: number;
+            };
+            if (report.type === "inbound-rtp" && report.kind === "video") {
+              bytes = report.bytesReceived ?? 0;
+              fps = report.framesPerSecond ?? 0;
+              w = report.frameWidth ?? 0;
+              h = report.frameHeight ?? 0;
+            } else if (
+              report.type === "candidate-pair" &&
+              report.state === "succeeded" &&
+              report.currentRoundTripTime
+            ) {
+              rtt = Math.round(report.currentRoundTripTime * 1000);
+            }
+          });
+          const now = performance.now();
+          const seconds = Math.max(0.001, (now - this.p2pSampleAt) / 1000);
+          const kbps = Math.round(((bytes - this.p2pBytes) * 8) / seconds / 1000);
+          this.p2pBytes = bytes;
+          this.p2pSampleAt = now;
+          this.p2pSampleValue = {
+            fps: Math.round(fps),
+            kbps: Math.max(0, kbps),
+            rtt: rtt || this.p2pSampleValue.rtt,
+            w,
+            h,
+          };
+        })
+        .catch(() => undefined);
+    }, 1000);
   }
 
   private handleControl(text: string): void {
@@ -401,6 +786,9 @@ export class Viewer {
         this.session = 0;
         break;
       }
+      case "webrtc":
+        this.handleP2pSignal(value);
+        break;
       default:
         break;
     }

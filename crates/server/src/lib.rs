@@ -9,6 +9,7 @@ pub mod ratelimit;
 pub mod state;
 pub mod tls;
 pub mod update;
+pub mod webrtc;
 pub mod ws;
 
 use std::path::PathBuf;
@@ -55,6 +56,7 @@ pub fn router_with_web(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router
         .route("/api/v1/quick/rotate", post(api::quick_rotate))
         .route("/api/v1/quick/connect", post(api::quick_connect))
         .route("/api/v1/resolve-id", post(api::resolve_local_id))
+        .route("/api/v1/p2p/ice", post(api::p2p_ice))
         .route("/api/v1/feedback", post(api::submit_feedback))
         .route("/api/v1/connect-link", post(api::create_connect_link))
         .route("/api/v1/connect-link/use", post(api::use_connect_link))
