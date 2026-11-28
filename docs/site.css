@@ -1878,6 +1878,22 @@ figcaption {
   margin-top: auto;
 }
 
+.dl-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 12px;
+  border-radius: 14px;
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--accent);
+}
+
+.dl-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
 .dl-fit {
   margin: 0 0 4px;
   font-size: 11.5px;
